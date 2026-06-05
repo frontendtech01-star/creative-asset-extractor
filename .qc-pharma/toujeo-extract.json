@@ -1,0 +1,56 @@
+{
+  "images": 48,
+  "fonts": 10,
+  "videos": 8,
+  "sampleImages": [
+    "https://www.toujeo.com/dam/jcr:ea61476b-f349-4ef9-b0a7-024f0f37a25c/logo-header-color-76-20.png",
+    "https://www.toujeo.com/dam/jcr:00ac4f2a-fa02-4ccb-bcdb-b94685ff5eb2/Toujeologo.png",
+    "https://www.toujeo.com/dam/jcr:be988db2-fd90-4b82-93e4-fc9d56a1e7b6/Pointing_bullet.2023-06-08-20-28-37.png",
+    "https://www.toujeo.com/dam/jcr:65cae9a8-6066-441b-830b-ebd8dd1082b4/toujeo_solostar.2023-01-11-09-12-29.png",
+    "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+  ],
+  "sampleFonts": [
+    {
+      "family": "ITCAvantGardeStd-Demi",
+      "url": "https://www.toujeo.com/dam/jcr:bfdc4105-7e53-46cb-a2c8-41e954d32f95/ITCAvantGardeStd-Demi.woff2"
+    },
+    {
+      "family": "ITCAvantGardeStd-Book",
+      "url": "https://www.toujeo.com/dam/jcr:81a97032-1f88-48ce-80a0-c1abf66d9c61/ITCAvantGardeStd-Bk.woff2"
+    },
+    {
+      "family": "itcavantgardestd-bold",
+      "url": "https://www.toujeo.com/dam/jcr:2bc5ad7e-88ba-4b47-94fd-333cbfaa545a/itcavantgardestd-bold.woff2"
+    },
+    {
+      "family": "ITC Avant Garde Gothic Std Bold",
+      "url": "https://www.toujeo.com/dam/jcr:9103f4c5-7ccd-46c1-95a2-d21d65403cd7/ITC%20Avant%20Garde%20Gothic%20Std%20Bold.woff2"
+    },
+    {
+      "family": "ITC Avant Garde Gothic Std Demi",
+      "url": "https://www.toujeo.com/dam/jcr:3061644a-566b-4aac-9447-ec5767c1d861/ITC%20Avant%20Garde%20Gothic%20Std%20Demi.woff2"
+    }
+  ],
+  "sampleVideos": [
+    {
+      "url": "https://vimeo.com/952166459",
+      "provider": "vimeo"
+    },
+    {
+      "url": "https://vimeo.com/952166913",
+      "provider": "vimeo"
+    },
+    {
+      "url": "https://vimeo.com/952166309",
+      "provider": "vimeo"
+    },
+    {
+      "url": "https://vimeo.com/952166610",
+      "provider": "vimeo"
+    },
+    {
+      "url": "https://vimeo.com/952166767",
+      "provider": "vimeo"
+    }
+  ]
+}

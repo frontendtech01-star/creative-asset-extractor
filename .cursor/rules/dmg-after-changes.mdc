@@ -1,0 +1,24 @@
+---
+description: Rebuild the universal macOS DMG after app or package revisions
+alwaysApply: true
+---
+
+# macOS DMG After Revisions
+
+After making any code changes that affect the packaged desktop app, always rebuild the macOS installer from the project root:
+
+```bash
+npm run dmg
+```
+
+This includes changes to frontend (`src/`, `dist/`), server (`server.ts`, `desktop/`), Electron (`electron/`), build config (`package.json`, `vite.config.*`, electron-builder `build` field), or bundled runtime scripts (`scripts/prepare-desktop-runtime.mjs`, `scripts/electron-before-pack.cjs`, `scripts/build-dmg.mjs`).
+
+On macOS, confirm the output exists when the build finishes:
+
+- `release/Creative Asset Extractor-1.0.0-universal.dmg`
+
+If the version in `package.json` changes, the DMG filename will use the new version — check `release/*.dmg` for the latest file.
+
+- Do not skip the DMG rebuild when shipping or revising the desktop package.
+- `npm run dmg` is macOS-only; on other platforms, note that the DMG must be built on a Mac.
+- Run `npm run dev` after the DMG build as well (see dev-server rule).

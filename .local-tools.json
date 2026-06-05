@@ -1,0 +1,8 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "ffmpegPath": "/Users/rohitashkumar/Downloads/Rnd/VDX-main_DNS_streaming/node_modules/ffmpeg-static/ffmpeg",
+  "ytdlpPath": "/Users/rohitashkumar/Downloads/Rnd/VDX-main_DNS_streaming/node_modules/youtube-dl-exec/bin/yt-dlp",
+  "aria2Path": "/opt/homebrew/bin/aria2c",
+  "updatedAt": "2026-06-05T21:02:42.721Z"
+}

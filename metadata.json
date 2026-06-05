@@ -1,0 +1,5 @@
+{
+  "name": "Creative Asset Extractor",
+  "description": "Extract fonts, images, and videos from websites.",
+  "requestFramePermissions": []
+}

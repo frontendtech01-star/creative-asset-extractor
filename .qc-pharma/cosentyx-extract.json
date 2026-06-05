@@ -1,0 +1,35 @@
+{
+  "images": 44,
+  "fonts": 78,
+  "videos": 0,
+  "sampleImages": [
+    "https://www.cosentyx.com/images/google-map-marker.svg",
+    "https://www.cosentyx.com/images/icon-warning.svg",
+    "http://www.google.com/intl/en_us/mapfiles/close.gif",
+    "https://usim.beprod.cosentyx.com/sites/cosentyx_com/files/secondary_navigation/logo_full/microsoftteams-image-33.png",
+    "https://usim.beprod.cosentyx.com/sites/cosentyx_com/files/icons/2026-03/joint-xray-stroke.svg"
+  ],
+  "sampleFonts": [
+    {
+      "family": "Barlow",
+      "url": "https://fonts.gstatic.com/s/barlow/v13/7cHrv4kjgoGqM7E3b_s0wH8DnzcjTrA.woff2"
+    },
+    {
+      "family": "Barlow",
+      "url": "https://fonts.gstatic.com/s/barlow/v13/7cHrv4kjgoGqM7E3b_s1wH8DnzcjTrA.woff2"
+    },
+    {
+      "family": "Barlow",
+      "url": "https://fonts.gstatic.com/s/barlow/v13/7cHrv4kjgoGqM7E3b_s7wH8Dnzcj.woff2"
+    },
+    {
+      "family": "Barlow",
+      "url": "https://fonts.gstatic.com/s/barlow/v13/7cHqv4kjgoGqM7E3w-os6Fostz0rdom9.woff2"
+    },
+    {
+      "family": "Barlow",
+      "url": "https://fonts.gstatic.com/s/barlow/v13/7cHqv4kjgoGqM7E3w-os6Vostz0rdom9.woff2"
+    }
+  ],
+  "sampleVideos": []
+}

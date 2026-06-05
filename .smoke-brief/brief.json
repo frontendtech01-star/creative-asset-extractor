@@ -1,0 +1,588 @@
+{
+  "heading": "phyrago",
+  "hero_images": [
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/About-PHYRAGO-Hero-Image-v2-2-scaled-e1751016179182.jpg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 3220,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/banner-background.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 3100,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/iStock-2198687523.jpg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 720,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_color_RGB-scaled-e1749456832423.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/0710e5442cc58e94e15967226289aee6f87c07b7.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/not-actual-patient-1.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/869de2e686256e3001c89bc88a9a50fb2c673cf0.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/not-actual-patient-1-300x91.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/e8acd8d3283c2287b3f08d12cec9e3da019d0eca.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/not-actual-patient-1-350x106.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/72eacce16875e4addbedbfb3a1b4f406dc01482d.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/naps.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/0e7279ac7e096cb48db0b23574fea458b32af0ad.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/naps-300x91.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/7850a42dba1eaf6c415e0206f47b80675acdcb05.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/naps-350x106.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/bb0dc9ddf08cef5c91ac66ab38ba28dc5994c766.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/22ad0f144b19f585ef6a875ab20e5505f974695b.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-300x157.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/db66e5016b8572a43f874e1186d339ce0b36cc29.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-1024x537.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-768x403.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/715fe519c7b2759e9d5d528d2686c849ce99c872.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-1536x806.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/086a5b5dfcf3b7b21d68a56f6db544c08beab562.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-2048x1074.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/e8b903fd802770f14f34be16f85f1f1ef1b47530.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    }
+  ],
+  "hero_videos": [],
+  "main_focus": "phyrago.comChecking the site connection security",
+  "main_focus_cards": [
+    {
+      "title": "phyrago",
+      "text": "phyrago.comChecking the site connection security",
+      "stage": "Awareness",
+      "source_url": "https://phyrago.com/hcp/"
+    }
+  ],
+  "features": [],
+  "feature_cards": [],
+  "testimonials": [],
+  "testimonial_cards": [],
+  "gallery": [
+    "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-350x184.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-720x378.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-1032x541.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-300x56.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1024x192.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-768x144.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1536x289.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-2048x385.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-350x66.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-uai-720x135.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-uai-1032x194.png",
+    "https://phyrago.com/wp-content/uploads/2025/10/PHYRAGO_logo_color_padding.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-32x32.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-192x192.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-180x180.png",
+    "https://phyrago.com/wp-content/uploads/2026/03/stroke-2.png",
+    "https://phyrago.com/wp-content/uploads/2026/03/stroke-2-1-e1773236849998.png",
+    "https://phyrago.com/wp-content/uploads/2026/03/stroke-purple.png",
+    "https://phyrago.com/wp-content/uploads/2026/03/stroke-purple-1-e1773237635184.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/lady-looking-door.png",
+    "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-270x270.png",
+    "https://phyrago.com/06/not-actual-patient-1.png",
+    "https://phyrago.com/06/naps.png",
+    "https://phyrago.com/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502.png",
+    "https://phyrago.com/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png",
+    "https://d1rozh26tys225.cloudfront.net/loader.svg"
+  ],
+  "gallery_assets": [
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-350x184.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/76cae42e908b99af1d3a1f089cc3cfb04a4bfb95.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-720x378.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-1032x541.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/f40157059e44d89006b6d514f31fbfdb90d99f39.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-300x56.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/dc6fda60628b4f1a6dd0cdbf8e421e3c125b5a28.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1024x192.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/f998a5cadb265569da686916a4d330ede817d5b8.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-768x144.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/bec49be36b07c1328b92d6836e260cf63f6d94c5.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1536x289.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/c290b8ec0147c78c459dc68ed7d65ede4871c5ee.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-2048x385.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/5281566fb014e9cfc7dff85f7da170cdcda7bcf3.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-350x66.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/0bae3e817a7e22de9b5db1f3c31c48ebedeedf50.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-uai-720x135.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/09b3ddde04371cf7d20f3ce2ed565c26ae0fe2b7.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-uai-1032x194.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/39bf40373f8f9a67054f72c747c03c5db043a3c2.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/10/PHYRAGO_logo_color_padding.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/a5cb43c11d98540b9e5b15a105e161ab60192ee8.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-32x32.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/e667d5e1963e7058dcb48d50393c17e0e586fd74.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-192x192.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/6de5191d916d2b934ac09f287cf6ace51bf6d30b.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-180x180.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/45ad99abba2ac932fc8b35ce079fbb5753e00857.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2026/03/stroke-2.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/60ec427b8bebd2527ecc4460cac18a3e24ee4197.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2026/03/stroke-2-1-e1773236849998.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/20beadca42df0ee6fa2f6160604aacbc11b32961.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2026/03/stroke-purple.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "preview_url": "/cached-images-original/5552d4593c78a4d3321a24edc948f344575d9ca3.png",
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2026/03/stroke-purple-1-e1773237635184.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/lady-looking-door.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/wp-content/uploads/2025/06/cropped-favicon-270x270.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 600,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/06/not-actual-patient-1.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/06/naps.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://phyrago.com/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://d1rozh26tys225.cloudfront.net/loader.svg",
+      "alt": "CDN icon",
+      "source": "image",
+      "width": 100,
+      "height": 100,
+      "priority": 790,
+      "pageUrl": "https://phyrago.com/hcp/",
+      "stage": "Awareness"
+    }
+  ],
+  "videos": [],
+  "important_information": [],
+  "important_information_blocks": [],
+  "disclaimers": [],
+  "disclaimers_blocks": [],
+  "legals": [],
+  "legal_blocks": [],
+  "references": [],
+  "reference_blocks": [],
+  "keywords": [
+    "phyrago",
+    "comchecking",
+    "site",
+    "connection",
+    "security"
+  ],
+  "ad_headlines": [
+    "phyrago.com",
+    "phyrago",
+    "Phyrago for comchecking"
+  ],
+  "brief_tabs": [
+    {
+      "id": 1,
+      "label": "Tab 1",
+      "layout": "hero-video",
+      "heading": "phyrago",
+      "subheading": "phyrago.comChecking the site connection security",
+      "cta": "phyrago.com",
+      "hero_video": null,
+      "hero_image": {
+        "url": "https://phyrago.com/wp-content/uploads/2025/06/About-PHYRAGO-Hero-Image-v2-2-scaled-e1751016179182.jpg",
+        "alt": "",
+        "source": "extracted-asset",
+        "priority": 3220,
+        "pageUrl": "",
+        "stage": "Awareness",
+        "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/About-PHYRAGO-Hero-Image-v2-2-scaled-e1751016179182.jpg"
+      },
+      "slides": []
+    },
+    {
+      "id": 2,
+      "label": "Tab 2",
+      "layout": "slides",
+      "slides": [
+        {
+          "layout": "image-text",
+          "heading": "phyrago",
+          "body": "phyrago.comChecking the site connection security",
+          "cta": "phyrago.com",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-350x184.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "preview_url": "/cached-images-original/76cae42e908b99af1d3a1f089cc3cfb04a4bfb95.png",
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-350x184.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Supporting visual",
+          "body": "",
+          "cta": "Learn more",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-720x378.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-720x378.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Supporting visual",
+          "body": "",
+          "cta": "Learn more",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-1032x541.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/Phyrago-vs-Sprycel-Figure_RGB_png-02-scaled-e1751016424502-uai-1032x541.png"
+          },
+          "media_assets": []
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "label": "Tab 3",
+      "layout": "slides",
+      "slides": [
+        {
+          "layout": "image-text",
+          "heading": "Supporting visual",
+          "body": "",
+          "cta": "Learn more",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "preview_url": "/cached-images-original/f40157059e44d89006b6d514f31fbfdb90d99f39.png",
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Supporting visual",
+          "body": "",
+          "cta": "Learn more",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-300x56.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "preview_url": "/cached-images-original/dc6fda60628b4f1a6dd0cdbf8e421e3c125b5a28.png",
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-300x56.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Supporting visual",
+          "body": "",
+          "cta": "Learn more",
+          "image": {
+            "url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1024x192.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 600,
+            "preview_url": "/cached-images-original/f998a5cadb265569da686916a4d330ede817d5b8.png",
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://phyrago.com/wp-content/uploads/2025/06/PHYRAGO_logo_reversed_RGB-scaled-e1749809097963-1024x192.png"
+          },
+          "media_assets": []
+        }
+      ]
+    }
+  ],
+  "indication": "UNCODE.initHeader();\n\n\t\tA dasatinib thatworks with life\n\nPHYRAGO™ (dasatinib) tablets are the first and only FDA approved dasatinib product that can be taken with proton pump inhibitors (PPIs) and H2 receptor antagonists (H2RAs).1\nUNCODE.initRow(document.getElementById(\"row-unique-0\"));\nPHYRAGO is a kinase inhibitor indicated for the treatment of:\nNewly diagnosed adultsNewly diagnosed adults with Philadelphia chromosome-positive chronic myeloid leukemia (Ph+ CML) in chronic phase.1\nAdults with Ph+ CMLAdults with chronic, accelerated, or myeloid or lymphoid blast phase Ph+ CML with resistance or intolerance to prior therapy including imatinib.1\nAdults with Ph+ ALLAdults with Philadelphia chromosome-positive acute lymphoblastic leukemia (Ph+ ALL) with resistance or intolerance to prior therapy.1\nPediatric patients with Ph+ CMLPediatric patients 1 year of age and older with Ph+ CML in chronic phase.1\n\nPediatric patients with Ph+ ALLPediatric patients 1 year of age and older with newly diagnosed Ph+ ALL in combination with chemotherapy.1\n\nUNCODE.initRow(document.getElementById(\"row-unique-1\"));Why PHYRAGO?\n\nUNCODE.initRow(document.getElementById(\"row-unique-3\"));\n\n\t\t\t\tCompatible with PPIs and H2RAs\n\nPHYRAGO has a unique clinical benefit; it is the only dasatinib that can be taken concomitantly with proton pump inhibitors (PPIs), and H2 receptor antagonists (H2RAs), which may help patients manage acid reflux.2\nSee the dataComprehensive patient support\n\nPHYRAGO is accompanied by Cycle Vita™, which offers dedicated support* to help your patients access medication, secure savings and manage their treatment.\nFind supportConvenient once daily dosing, and flexibility to be taken with or without food.1\n\nSee dosage and administration\nA proven TKI treatment for Ph+ CML and Ph+ ALL, bioequivalent to Sprycel®.1\n\nSee bioequivalence\n\nUNCODE.initRow(document.getElementById(\"row-unique-4\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-6\"));\n\nPHYRAGO is bioequivalent to Sprycel® (dasatinib) tablets\n\nUNCODE.initRow(document.getElementById(\"row-unique-7\"));\n\n\t\t\t\t\t\t\t\t\t\tTable 1. Mean pharmacokinetic parameters of dasatinib comparing PHYRAGO and Sprycel®, under fasted conditions.2\n\n\tCmax (ng/mL)AUCt (ng∙h/mL)AUC∞ (ng∙h/mL)Tmax (h)\n\n\tPHYRAGO93.13324151.25\n\n\tSprycel®1013253361.00\n\n\tPHYRAGO\n\n\tCmax (ng/mL)93.1\n\n\tAUCt (ng∙h/mL)332\n\n\tAUC∞ (ng∙h/mL)415\n\n\tTmax (h)1.25\n\n\tSprycel®\n\n\tCmax (ng/mL)101\n\n\tAUCt (ng∙h/mL)325\n\n\tAUC∞ (ng∙h/mL)336\n\n\tTmax (h)1.00\n\nFigure 1. Mean dasatinib concentration against time, under fasted conditions.2\nUNCODE.initRow(document.getElementById(\"row-unique-8\"));\n\n\t\tDosage and administrationEnroll your patientsUNCODE.initRow(document.getElementById(\"row-unique-9\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-10\"));\n\nPHYRAGO is the only dasatinib that can be taken concomitantly with PPIs and H2RAs1\n\nUNCODE.initRow(document.getElementById(\"row-unique-11\"));\n\n\t\t\t\t\t\t\t\t\t\tNo clinically significant differences in the pharmacokinetics were found when PHYRAGO was used concomitantly with PPIs and H2RAs (table 2). In contrast, the absorption of Sprycel® was reduced considerably under the same conditions.2PHYRAGO delivers therapeutic bioavailability regardless of gastric pH, addressing a key unmet need for Ph+ CML and Ph+ ALL patients with severe acid reflux.2\nTable 2. Mean (± SD) pharmacokinetic parameters for PHYRAGO and Sprycel® after premedication with 20 mg famotidine three hours prior to dasatinib, under fasted conditions.2\n\n\tCmax (ng/mL)AUCt (ng∙h/mL)AUC∞ (ng∙h/mL)Tmax (h)\n\n\tPHYRAGO227.903 ± 69.622889.090 ± 215.376920.751 ± 220.2792.500\n\n\tSprycel®7.610 ± 4.36077.828 ± 36.339157.566 ± 81.3782.750\n\n\tPHYRAGO\n\n\tCmax (ng/mL)227.903 ± 69.622\n\n\tAUCt (ng∙h/mL)889.090 ± 215.376\n\n\tAUC∞ (ng∙h/mL)920.751 ± 220.279\n\n\tTmax (h)2.500\n\n\tSprycel®\n\n\tCmax (ng/mL)7.610 ± 4.360\n\n\tAUCt (ng∙h/mL)77.828 ± 36.339\n\n\tAUC∞ (ng∙h/mL)157.566 ± 81.378\n\n\tTmax (h)2.750\n\nUNCODE.initRow(document.getElementById(\"row-unique-12\"));\n\n\t\t\t\t\t\t\t\t\t\tPHYRAGO co-administered with H2RAsPHYRAGO (dasatinib, 100 mg) was administered three hours after a single dose of famotidine (H2RA, 20 mg). The geometric mean ratio (GMR) and 90% confidence interval (CI) data indicate that famotidine did not have an effect on the bioavailability of PHYRAGO.2\nTable 3. Summary of statistical comparison of pharmacokinetic parameters of dasatinib between administration of PHYRAGO with and without pretreatment with famotidine.2\n\n\tGMR90% CI\n\n\tCmax0.9590.812-1.132\n\n\tAUC0-last1.0760.995-1.164\n\n\tAUC0-∞1.0510.983-1.123\n\nPHYRAGO co-administered with PPIsPHYRAGO (dasatinib, 100 mg) was administered two hours after a single dose of omeprazole (PPI, 40 mg). The GMR and 90% CI data indicate that omeprazole did not have an effect on the bioavailability of PHYRAGO.2\nTable 4. Summary of statistical comparison of pharmacokinetic parameters of dasatinib between administration of PHYRAGO with and without pretreatment with omeprazole.2\n\n\tGMR90% CI\n\n\tCmax0.9730.895-1.058\n\n\tAUC0-last1.0711.016-1.129\n\n\tAUC0-∞1.0471.005-1.092\n\nUNCODE.initRow(document.getElementById(\"row-unique-13\"));\nEnroll your patientsUNCODE.initRow(document.getElementById(\"row-unique-14\"));\n\nCycle Vita -dedicated support for your patients\n\nCycle Vita is here to support* your patients with the individualized product support they need to navigate treatment.\n\nCo-Pay Assistance Program†\n\t\t\t\t\t\tCommercially insured eligible patients may pay as little as $0.\nBridge Program\n\t\t\t\t\t\tA free supply of PHYRAGO allows patients to begin therapy immediately while Cycle Vita secures appropriate Benefit Verification and assists with Prior Authorization. The Bridge Program is also available to patients who have enrolled via Cycle Vita and are experiencing a temporary lapse in insurance. Bridge duration is driven by insurance coverage and the active pursuit of insurance coverage by you and your team.\nReimbursement Research Support\n\t\t\t\t\t\tThe Cycle Vita team are experts in assisting with securing coverage, and can help support you in the process, including a Benefit Investigation and Prior Authorization assistance. Where an appeal is needed, Cycle Vita will work with you and your patients’ insurers to understand the requirements and help with any reimbursement gaps.\nContinuous Clinical Product Education and Support\n\t\t\t\t\t\tCycle Vita provides patients with product support to help manage every aspect of the PHYRAGO treatment journey, such as clinical education and onboarding onto therapy.\nPrescription Routing and Renewal\n\t\t\t\t\t\tTo ensure an uninterrupted supply in your patients’ therapy, our proactive team will set up pharmacy routing and provide reminders when a prescription renewal is due.\nTranslation Services\n\t\t\t\t\t\tTranslation services in over 200 languages are available on request to take care of your patients’ needs and optimize their care.\n\nUNCODE.initRow(document.getElementById(\"row-unique-15\"));\nDosage and administration\n\n \tPHYRAGO is taken once daily, orally.1\n \tPHYRAGO is to be swallowed whole. The tablets should not be crushed, cut, or chewed.1\n \tPHYRAGO can be taken with or without food, either in the morning or in the evening.1\n\nUNCODE.initRow(document.getElementById(\"row-unique-17\"));\n\n\t\t\t\t\t\t\t\t\t\tAdult patientsPediatric patients\n\t\t\t\tPHYRAGO dosage for adult patients1The recommended daily dosage for adult patients is as follows:\n\n\tInitial doseEscalated dose\n\n\tChronic phase Ph+ CML100 mg140 mg\n\n\tAccelerated phase Ph+ CML140 mg180 mg\n\n\tMyeloid/lymphoid blast phase Ph+ CML140 mg180 mg\n\n\tPh+ ALL140 mg180 mg\n\n\t\t\t\tPHYRAGO dosage for pediatric patients1For pediatric patients, the recommended daily dosage of PHYRAGO is based on body weight. Recalculate the dose every three months, or more often if necessary.\nDose escalation is not recommended for pediatric patients with Ph+ ALL, where PHYRAGO is administered in combination with chemotherapy.\n\n\tBody weight (kg)Daily dose (mg)Escalation (for CML only)\n\n\t10 to <2040 mg50 mg\n\n\t≥20 to <3060 mg70 mg\n\n\t≥30 to <4070 mg90 mg\n\n\t≥45100 mg120 mg\n\nFor more information on dose adjustment and adverse events, please refer to the full Prescribing Information.\nUNCODE.initRow(document.getElementById(\"row-unique-18\"));UNCODE.initRow(document.getElementById(\"row-unique-19\"));*Some areas of support may not be accessible to all patients. Eligibility criteria may apply to ensure compliance with all applicable federal and state requirements, and benefits may be limited to commercially insured patients only. For more detailed information about eligibility, terms and conditions, please contact the Cycle Vita team at 888-360-8482.\n†Patients who do not wish to have Cycle Vita hub support may be eligible for co-pay.\n††Please consult the National Comprehensive Cancer Network for the latest guidance.\nSprycel® is a registered trademark of Bristol-Myers Squibb Company.\n\nReferences1. PHYRAGO™ (dasatinib). Prescribing Information. Handa Therapeutics, LLC.\n2. Study NC9013-002. Center for Drug Evaluation and Research – Clinical Pharmacology Review(s). (2022). [online]. Available at: https://www.accessdata.fda.gov/drugsatfda_docs/nda/2024/216099Orig1s000ClinPharmR.pdf. [Accessed: May 21 2025].\nUNCODE.initRow(document.getElementById(\"row-unique-20\"));",
+  "indication_source_url": "https://phyrago.com/hcp/",
+  "important_safety_information": "UNCODE.initBox();\n\n\t\tInformation for US Healthcare Providers\n\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tCo-Pay Assistance\nPI\nFor Healthcare Providers\nFor Patients\n\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tAbout PHYRAGO\nAccessing PHYRAGO\nEnroll\nPI\nFor Patients\n\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tUNCODE.fixMenuHeight();\n\nUNCODE.initHeader();\n\n\t\tA dasatinib thatworks with life\n\nPHYRAGO™ (dasatinib) tablets are the first and only FDA approved dasatinib product that can be taken with proton pump inhibitors (PPIs) and H2 receptor antagonists (H2RAs).1\nUNCODE.initRow(document.getElementById(\"row-unique-0\"));\nPHYRAGO is a kinase inhibitor indicated for the treatment of:\nNewly diagnosed adultsNewly diagnosed adults with Philadelphia chromosome-positive chronic myeloid leukemia (Ph+ CML) in chronic phase.1\nAdults with Ph+ CMLAdults with chronic, accelerated, or myeloid or lymphoid blast phase Ph+ CML with resistance or intolerance to prior therapy including imatinib.1\nAdults with Ph+ ALLAdults with Philadelphia chromosome-positive acute lymphoblastic leukemia (Ph+ ALL) with resistance or intolerance to prior therapy.1\nPediatric patients with Ph+ CMLPediatric patients 1 year of age and older with Ph+ CML in chronic phase.1\n\nPediatric patients with Ph+ ALLPediatric patients 1 year of age and older with newly diagnosed Ph+ ALL in combination with chemotherapy.1\n\nUNCODE.initRow(document.getElementById(\"row-unique-1\"));Why PHYRAGO?\n\nUNCODE.initRow(document.getElementById(\"row-unique-3\"));\n\n\t\t\t\tCompatible with PPIs and H2RAs\n\nPHYRAGO has a unique clinical benefit; it is the only dasatinib that can be taken concomitantly with proton pump inhibitors (PPIs), and H2 receptor antagonists (H2RAs), which may help patients manage acid reflux.2\nSee the dataComprehensive patient support\n\nPHYRAGO is accompanied by Cycle Vita™, which offers dedicated support* to help your patients access medication, secure savings and manage their treatment.\nFind supportConvenient once daily dosing, and flexibility to be taken with or without food.1\n\nSee dosage and administration\nA proven TKI treatment for Ph+ CML and Ph+ ALL, bioequivalent to Sprycel®.1\n\nSee bioequivalence\n\nUNCODE.initRow(document.getElementById(\"row-unique-4\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-6\"));\n\nPHYRAGO is bioequivalent to Sprycel® (dasatinib) tablets\n\nUNCODE.initRow(document.getElementById(\"row-unique-7\"));\n\n\t\t\t\t\t\t\t\t\t\tTable 1. Mean pharmacokinetic parameters of dasatinib comparing PHYRAGO and Sprycel®, under fasted conditions.2\n\n\tCmax (ng/mL)AUCt (ng∙h/mL)AUC∞ (ng∙h/mL)Tmax (h)\n\n\tPHYRAGO93.13324151.25\n\n\tSprycel®1013253361.00\n\n\tPHYRAGO\n\n\tCmax (ng/mL)93.1\n\n\tAUCt (ng∙h/mL)332\n\n\tAUC∞ (ng∙h/mL)415\n\n\tTmax (h)1.25\n\n\tSprycel®\n\n\tCmax (ng/mL)101\n\n\tAUCt (ng∙h/mL)325\n\n\tAUC∞ (ng∙h/mL)336\n\n\tTmax (h)1.00\n\nFigure 1. Mean dasatinib concentration against time, under fasted conditions.2\nUNCODE.initRow(document.getElementById(\"row-unique-8\"));\n\n\t\tDosage and administrationEnroll your patientsUNCODE.initRow(document.getElementById(\"row-unique-9\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-10\"));\n\nPHYRAGO is the only dasatinib that can be taken concomitantly with PPIs and H2RAs1\n\nUNCODE.initRow(document.getElementById(\"row-unique-11\"));\n\n\t\t\t\t\t\t\t\t\t\tNo clinically significant differences in the pharmacokinetics were found when PHYRAGO was used concomitantly with PPIs and H2RAs (table 2). In contrast, the absorption of Sprycel® was reduced considerably under the same conditions.2PHYRAGO delivers therapeutic bioavailability regardless of gastric pH, addressing a key unmet need for Ph+ CML and Ph+ ALL patients with severe acid reflux.2\nTable 2. Mean (± SD) pharmacokinetic parameters for PHYRAGO and Sprycel® after premedication with 20 mg famotidine three hours prior to dasatinib, under fasted conditions.2\n\n\tCmax (ng/mL)AUCt (ng∙h/mL)AUC∞ (ng∙h/mL)Tmax (h)\n\n\tPHYRAGO227.903 ± 69.622889.090 ± 215.376920.751 ± 220.2792.500\n\n\tSprycel®7.610 ± 4.36077.828 ± 36.339157.566 ± 81.3782.750\n\n\tPHYRAGO\n\n\tCmax (ng/mL)227.903 ± 69.622\n\n\tAUCt (ng∙h/mL)889.090 ± 215.376\n\n\tAUC∞ (ng∙h/mL)920.751 ± 220.279\n\n\tTmax (h)2.500\n\n\tSprycel®\n\n\tCmax (ng/mL)7.610 ± 4.360\n\n\tAUCt (ng∙h/mL)77.828 ± 36.339\n\n\tAUC∞ (ng∙h/mL)157.566 ± 81.378\n\n\tTmax (h)2.750\n\nUNCODE.initRow(document.getElementById(\"row-unique-12\"));\n\n\t\t\t\t\t\t\t\t\t\tPHYRAGO co-administered with H2RAsPHYRAGO (dasatinib, 100 mg) was administered three hours after a single dose of famotidine (H2RA, 20 mg). The geometric mean ratio (GMR) and 90% confidence interval (CI) data indicate that famotidine did not have an effect on the bioavailability of PHYRAGO.2\nTable 3. Summary of statistical comparison of pharmacokinetic parameters of dasatinib between administration of PHYRAGO with and without pretreatment with famotidine.2\n\n\tGMR90% CI\n\n\tCmax0.9590.812-1.132\n\n\tAUC0-last1.0760.995-1.164\n\n\tAUC0-∞1.0510.983-1.123\n\nPHYRAGO co-administered with PPIsPHYRAGO (dasatinib, 100 mg) was administered two hours after a single dose of omeprazole (PPI, 40 mg). The GMR and 90% CI data indicate that omeprazole did not have an effect on the bioavailability of PHYRAGO.2\nTable 4. Summary of statistical comparison of pharmacokinetic parameters of dasatinib between administration of PHYRAGO with and without pretreatment with omeprazole.2\n\n\tGMR90% CI\n\n\tCmax0.9730.895-1.058\n\n\tAUC0-last1.0711.016-1.129\n\n\tAUC0-∞1.0471.005-1.092\n\nUNCODE.initRow(document.getElementById(\"row-unique-13\"));\nEnroll your patientsUNCODE.initRow(document.getElementById(\"row-unique-14\"));\n\nCycle Vita -dedicated support for your patients\n\nCycle Vita is here to support* your patients with the individualized product support they need to navigate treatment.\n\nCo-Pay Assistance Program†\n\t\t\t\t\t\tCommercially insured eligible patients may pay as little as $0.\nBridge Program\n\t\t\t\t\t\tA free supply of PHYRAGO allows patients to begin therapy immediately while Cycle Vita secures appropriate Benefit Verification and assists with Prior Authorization. The Bridge Program is also available to patients who have enrolled via Cycle Vita and are experiencing a temporary lapse in insurance. Bridge duration is driven by insurance coverage and the active pursuit of insurance coverage by you and your team.\nReimbursement Research Support\n\t\t\t\t\t\tThe Cycle Vita team are experts in assisting with securing coverage, and can help support you in the process, including a Benefit Investigation and Prior Authorization assistance. Where an appeal is needed, Cycle Vita will work with you and your patients’ insurers to understand the requirements and help with any reimbursement gaps.\nContinuous Clinical Product Education and Support\n\t\t\t\t\t\tCycle Vita provides patients with product support to help manage every aspect of the PHYRAGO treatment journey, such as clinical education and onboarding onto therapy.\nPrescription Routing and Renewal\n\t\t\t\t\t\tTo ensure an uninterrupted supply in your patients’ therapy, our proactive team will set up pharmacy routing and provide reminders when a prescription renewal is due.\nTranslation Services\n\t\t\t\t\t\tTranslation services in over 200 languages are available on request to take care of your patients’ needs and optimize their care.\n\nUNCODE.initRow(document.getElementById(\"row-unique-15\"));\nDosage and administration\n\n \tPHYRAGO is taken once daily, orally.1\n \tPHYRAGO is to be swallowed whole. The tablets should not be crushed, cut, or chewed.1\n \tPHYRAGO can be taken with or without food, either in the morning or in the evening.1\n\nUNCODE.initRow(document.getElementById(\"row-unique-17\"));\n\n\t\t\t\t\t\t\t\t\t\tAdult patientsPediatric patients\n\t\t\t\tPHYRAGO dosage for adult patients1The recommended daily dosage for adult patients is as follows:\n\n\tInitial doseEscalated dose\n\n\tChronic phase Ph+ CML100 mg140 mg\n\n\tAccelerated phase Ph+ CML140 mg180 mg\n\n\tMyeloid/lymphoid blast phase Ph+ CML140 mg180 mg\n\n\tPh+ ALL140 mg180 mg\n\n\t\t\t\tPHYRAGO dosage for pediatric patients1For pediatric patients, the recommended daily dosage of PHYRAGO is based on body weight. Recalculate the dose every three months, or more often if necessary.\nDose escalation is not recommended for pediatric patients with Ph+ ALL, where PHYRAGO is administered in combination with chemotherapy.\n\n\tBody weight (kg)Daily dose (mg)Escalation (for CML only)\n\n\t10 to <2040 mg50 mg\n\n\t≥20 to <3060 mg70 mg\n\n\t≥30 to <4070 mg90 mg\n\n\t≥45100 mg120 mg\n\nFor more information on dose adjustment and adverse events, please refer to the full Prescribing Information.\nUNCODE.initRow(document.getElementById(\"row-unique-18\"));UNCODE.initRow(document.getElementById(\"row-unique-19\"));*Some areas of support may not be accessible to all patients. Eligibility criteria may apply to ensure compliance with all applicable federal and state requirements, and benefits may be limited to commercially insured patients only. For more detailed information about eligibility, terms and conditions, please contact the Cycle Vita team at 888-360-8482.\n†Patients who do not wish to have Cycle Vita hub support may be eligible for co-pay.\n††Please consult the National Comprehensive Cancer Network for the latest guidance.\nSprycel® is a registered trademark of Bristol-Myers Squibb Company.\n\nReferences1. PHYRAGO™ (dasatinib). Prescribing Information. Handa Therapeutics, LLC.\n2. Study NC9013-002. Center for Drug Evaluation and Research – Clinical Pharmacology Review(s). (2022). [online]. Available at: https://www.accessdata.fda.gov/drugsatfda_docs/nda/2024/216099Orig1s000ClinPharmR.pdf. [Accessed: May 21 2025].\nUNCODE.initRow(document.getElementById(\"row-unique-20\"));\n\nIndication and Important Safety Information\n\n\t\t\t\tUNCODE.initRow(document.getElementById(\"row-unique-5\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-21\"));\n\nIndication and Important Safety Information\n\n\t\t\t\tUNCODE.initRow(document.getElementById(\"row-unique-5\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-22\"));\n\n\t\t\t\t\tIndicationsPHYRAGO™ is a kinase inhibitor indicated for the treatment of:\n\nNewly diagnosed adults with Philadelphia chromosome-positive (Ph+) chronic myeloid leukemia (CML) in chronic phase.\nAdults with chronic, accelerated, or myeloid or lymphoid blast phase Ph+ CML with resistance or intolerance to prior therapy including imatinib.\nAdults with Philadelphia chromosome-positive acute lymphoblastic leukemia (Ph + ALL) with resistance or intolerance to prior therapy.\nPediatric patients 1 year of age and older with Ph+ CML in chronic phase.\nPediatric patients 1 year of age and older with newly diagnosed Ph+ ALL in combination with chemotherapy.\n\nImportant Safety Information\nWarnings and Precautions:Myelosuppression and Bleeding Events: Severe thrombocytopenia, neutropenia and anemia may occur. Use caution if used concomitantly with medication that inhibits platelet function or anticoagulants. Monitor complete blood counts regularly. Transfuse and interrupt PHYRAGO when indicated.\nFluid Retention: Fluid retention, sometimes severe, including pleural effusions. Manage with supportive care measures and/or dose modification.\nCardiovascular Toxicity: Monitor patients for signs or symptoms and treat appropriately.\nPulmonary Arterial Hypertension (PAH): PHYRAGO may increase the risk of developing PAH which may be reversible on discontinuation. Consider baseline risk and evaluate patients for signs and symptoms of PAH during treatment. Stop PHYRAGO if PAH is confirmed.\nQT Prolongation: Use PHYRAGO with caution in patients who have or may develop prolongation of the QT interval.\nSevere Dermatologic Reactions: Individual cases of severe mucocutaneous dermatologic reactions have been reported.\nTumor Lysis Syndrome: Tumor lysis syndrome has been reported. Maintain adequate hydration and correct uric acid levels prior to initiating therapy with PHYRAGO.\nEmbryo-Fetal Toxicity: Can cause fetal harm. Advise patients of reproductive potential, of potential risk to fetus and to use effective contraception.\nEffects on Growth and Development in Pediatric Patients: Epiphyses delayed fusion, osteopenia, growth retardation, and gynecomastia have been reported. Monitor bone growth and development in pediatric patients.\nHepatotoxicity: Assess liver function before initiation of treatment and monthly thereafter or as clinically indicated. Monitor liver function when combined with chemotherapy known to be associated with liver dysfunction.\n\nAdverse Reactions:Most common adverse reactions (≥15%) in patients receiving dasatinib as a single-agent therapy included myelosuppression, fluid retention events, diarrhea, headache, skin rash, hemorrhage, dyspnea, fatigue, nausea, and musculoskeletal pain.\nMost common adverse reactions (≥30%) in pediatric patients receiving dasatinib in combination with chemotherapy included mucositis, febrile neutropenia, pyrexia, diarrhea, nausea, vomiting, musculoskeletal pain, abdominal pain, cough, headache, rash, fatigue, constipation, arrhythmia, hypertension, edema, infections (bacterial, viral and fungal), hypotension, decreased appetite, hypersensitivity, dyspnea, epistaxis, peripheral neuropathy, and altered state of consciousness.\n\nPostmarketing Experience:The following adverse reactions have been identified during post approval use of dasatinib:\nHepatitis B virus reactivation, atrial fibrillation/atrial flutter, interstitial lung disease, chylothorax, Stevens-Johnson syndrome, nephrotic syndrome, thrombotic microangiopathy, hepatotoxicity.\n\nDrug Interactions:Strong CYP3A4 Inhibitors: Dose reduction may be necessary.\nStrong CYP3A4 Inducers: Dose increase may be necessary.\nAntacids: Avoid concomitant use.\n\nUse in Specific Populations:Pregnancy: Based on limited human data, PHYRAGO can cause fetal harm when administered to a pregnant woman which may result in neonatal death. Advise a pregnant woman of the potential risk to a fetus.\nContraception: Advise females of reproductive potential and males with female partners with reproductive potential to use effective contraception during treatment and for 30 days after the last dose.\nLactation: Breastfeeding is not recommended during treatment with PHYRAGO and for 2 weeks after the last dose.\nPediatric Use:\nPh+ CML in Chronic Phase\nSafety and effectiveness of dasatinib monotherapy have been demonstrated in pediatric patients with newly diagnosed chronic phase CML. There is no data in children under 1 year of age. Adverse reactions associated with bone growth and development were reported.\nPh+ ALL\nSafety and effectiveness of dasatinib in combination with chemotherapy have been demonstrated in pediatric patients 1 year and over with newly diagnosed Ph+ ALL. There is no data in children under 1 year of age.\nMonitor bone growth and development in pediatric patients.\nRefer to the full USPI for pediatric patients with difficulty swallowing tablets.\nMonitor bone growth and development in pediatric patients.\nRefer to the full USPI for pediatric patients with difficulty swallowing tablets.\nGeriatric Use: Patients aged 65 years and older may experience commonly reported adverse reactions such as fatigue, pleural effusion, diarrhea, dyspnea, cough, lower gastrointestinal hemorrhage, and appetite disturbance. Less frequently reported adverse reactions include abdominal distention, dizziness, pericardial effusion, congestive heart failure, hypertension, pulmonary edema, and weight decrease. Careful monitoring is recommended in this population.\n\nFor more detailed information, please refer to the full Prescribing Information at https://phyrago.com/pi/.\nTo report SUSPECTED ADVERSE REACTIONS, contact Cycle Pharmaceuticals at 1-844-784-1807, or the FDA at: 1-800-FDA-1088 or www.fda.gov/medwatch.\nUNCODE.initRow(document.getElementById(\"row-unique-24\"));\n\nUNCODE.initRow(document.getElementById(\"row-unique-23\"));\n\nPHYRAGO™ is a trademark of Handa Therapeutics, LLC.\nCycle Vita™ is a trademark of Cycle Pharmaceuticals Limited in the United States.\n© 2026 Cycle Pharmaceuticals Limited. All rights reserved.\n\nContact us\nwww.cyclepharma.com@CycleVitaUSAwww.cyclevita.life@CycleVitaUSA@cycle-pharmaceuticalsUNCODE.initRow(document.getElementById(\"row-unique-25\"));\n\n\t\t\t\t\t\t\t\t\t\tCompliance & Policies  Accessibility Statement Modern Slavery Statement\nUS-DAS-2600010 | February 2026\nUNCODE.initRow(document.getElementById(\"row-unique-26\"));",
+  "important_safety_information_source_url": "https://phyrago.com/hcp/",
+  "crawled_pages": [
+    "https://phyrago.com/hcp/"
+  ]
+}
