@@ -20,6 +20,7 @@ import { getDesktopBridge } from './lib/desktopBridge';
 import { fetchAppMeta } from './lib/appVersion';
 import {
   fetchLatestGithubRelease,
+  fetchReleaseNotes,
   getSessionDismissedRelease,
   resolveReleaseDownloadUrl,
   setSessionDismissedRelease,
@@ -375,7 +376,7 @@ export default function App() {
   const openReleaseNotes = async () => {
     setReleaseViewMode('notes');
     try {
-      const release = latestRelease || (await fetchLatestGithubRelease());
+      const release = await fetchReleaseNotes();
       setLatestRelease(release);
     } catch {
       // Release notes are best-effort.

@@ -74,6 +74,39 @@ export function LatestReleaseModal({
               <pre className="mt-3 whitespace-pre-wrap font-sans text-sm leading-6 text-zinc-700">
                 {formatReleaseNotes(release.body)}
               </pre>
+              {isNotesView && (release.dmgDownloadUrl || release.releasesUrl || release.repoUrl) ? (
+                <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
+                  <p className="font-medium text-zinc-900">Download source</p>
+                  {release.dmgDownloadUrl ? (
+                    <p className="text-zinc-700">
+                      macOS DMG:{' '}
+                      <a
+                        href={release.dmgDownloadUrl}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          onDownload();
+                        }}
+                        className="break-all font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        {release.dmgAssetName || 'Creative Asset Extractor.dmg'}
+                      </a>
+                    </p>
+                  ) : null}
+                  {release.releasesUrl ? (
+                    <p className="text-zinc-700">
+                      GitHub releases:{' '}
+                      <a
+                        href={release.releasesUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="break-all font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        {release.releasesUrl}
+                      </a>
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </>
           ) : (
             <p className="text-sm text-zinc-600">Release notes are not available right now.</p>

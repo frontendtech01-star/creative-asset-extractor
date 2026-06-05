@@ -629,6 +629,9 @@ const resolvePackageMeta = async () => {
   return { version: '1.0.0', productName: 'Creative Asset Extractor' };
 };
 
+const DEFAULT_GITHUB_OWNER = 'frontendtech01-star';
+const DEFAULT_GITHUB_REPO = 'creative-asset-extractor';
+
 const resolveGithubRepoConfig = () => {
   const repository = String(process.env.GITHUB_REPOSITORY || '').trim();
   if (repository.includes('/')) {
@@ -636,9 +639,79 @@ const resolveGithubRepoConfig = () => {
     return { githubOwner: owner, githubRepo: repo };
   }
   return {
-    githubOwner: String(process.env.GITHUB_OWNER || process.env.VITE_GITHUB_OWNER || '').trim(),
-    githubRepo: String(process.env.GITHUB_REPO || process.env.VITE_GITHUB_REPO || '').trim(),
+    githubOwner: String(
+      process.env.GITHUB_OWNER || process.env.VITE_GITHUB_OWNER || DEFAULT_GITHUB_OWNER
+    ).trim(),
+    githubRepo: String(
+      process.env.GITHUB_REPO || process.env.VITE_GITHUB_REPO || DEFAULT_GITHUB_REPO
+    ).trim(),
   };
+};
+
+const normalizeReleaseTag = (version: string) => {
+  const trimmed = String(version || '').trim();
+  return trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
+};
+
+const buildDmgAssetName = (productName: string, version: string) => {
+  const cleanVersion = String(version || '').replace(/^v/i, '');
+  return `${productName}-${cleanVersion}-arm64.dmg`;
+};
+
+const buildGithubReleaseLinks = (
+  githubOwner: string,
+  githubRepo: string,
+  version: string,
+  productName: string
+) => {
+  const tagName = normalizeReleaseTag(version);
+  const dmgName = buildDmgAssetName(productName, version);
+  const repoUrl = `https://github.com/${githubOwner}/${githubRepo}`;
+  return {
+    tagName,
+    htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
+    releasesUrl: `${repoUrl}/releases`,
+    repoUrl,
+    dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
+    dmgAssetName: dmgName,
+  };
+};
+
+const parseGithubReleasePayload = (data: any) => {
+  const assets = Array.isArray(data?.assets) ? data.assets : [];
+  const dmgAsset = assets.find((asset: any) => /\.dmg$/i.test(String(asset?.name || '')));
+  const exeAsset = assets.find((asset: any) => /\.exe$/i.test(String(asset?.name || '')));
+  return {
+    tagName: String(data?.tag_name || ''),
+    name: String(data?.name || data?.tag_name || 'Latest release'),
+    body: String(data?.body || ''),
+    htmlUrl: String(data?.html_url || ''),
+    dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
+    exeDownloadUrl: String(exeAsset?.browser_download_url || ''),
+    dmgAssetName: String(dmgAsset?.name || ''),
+  };
+};
+
+const readProjectReleaseNotes = async () => {
+  const candidates = [
+    path.join(getAppRoot(), 'RELEASE_NOTES.md'),
+    path.join(process.cwd(), 'RELEASE_NOTES.md'),
+  ];
+  for (const notesPath of candidates) {
+    try {
+      const raw = await fsp.readFile(notesPath, 'utf8');
+      const text = String(raw || '').trim();
+      if (!text) continue;
+      const currentSection = text.split(/## Current Release/i)[1];
+      if (currentSection) {
+        return currentSection.split(/## /)[0].trim();
+      }
+      return text.replace(/^#\s*Release Notes\s*/i, '').trim();
+    } catch {
+      // try next candidate
+    }
+  }
+  return '';
 };
 
 app.get('/api/app-meta', async (_req, res) => {
@@ -651,6 +724,20 @@ app.get('/api/app-meta', async (_req, res) => {
     githubRepo: github.githubRepo,
   });
 });
+
+const fetchGithubReleaseByTag = async (githubOwner: string, githubRepo: string, tagName: string) => {
+  const response = await axios.get(
+    `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases/tags/${encodeURIComponent(tagName)}`,
+    {
+      timeout: 12000,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Creative-Asset-Extractor',
+      },
+    }
+  );
+  return parseGithubReleasePayload(response.data || {});
+};
 
 app.get('/api/github-latest-release', async (_req, res) => {
   const { githubOwner, githubRepo } = resolveGithubRepoConfig();
@@ -666,19 +753,16 @@ app.get('/api/github-latest-release', async (_req, res) => {
         'User-Agent': 'Creative-Asset-Extractor',
       },
     });
-    const data = response.data || {};
-    const assets = Array.isArray(data.assets) ? data.assets : [];
-    const dmgAsset = assets.find((asset: any) => /\.dmg$/i.test(String(asset?.name || '')));
-    const exeAsset = assets.find((asset: any) => /\.exe$/i.test(String(asset?.name || '')));
+    const release = parseGithubReleasePayload(response.data || {});
+    const links = buildGithubReleaseLinks(githubOwner, githubRepo, release.tagName, (await resolvePackageMeta()).productName);
     return res.json({
       available: true,
       release: {
-        tagName: String(data.tag_name || ''),
-        name: String(data.name || data.tag_name || 'Latest release'),
-        body: String(data.body || ''),
-        htmlUrl: String(data.html_url || ''),
-        dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
-        exeDownloadUrl: String(exeAsset?.browser_download_url || ''),
+        ...release,
+        repoUrl: links.repoUrl,
+        releasesUrl: links.releasesUrl,
+        dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
+        dmgAssetName: release.dmgAssetName || links.dmgAssetName,
       },
     });
   } catch (error: any) {
@@ -691,6 +775,49 @@ app.get('/api/github-latest-release', async (_req, res) => {
       error: 'Unable to check GitHub releases right now.',
     });
   }
+});
+
+app.get('/api/release-notes', async (_req, res) => {
+  const pkg = await resolvePackageMeta();
+  const { githubOwner, githubRepo } = resolveGithubRepoConfig();
+  const links = buildGithubReleaseLinks(githubOwner, githubRepo, pkg.version, pkg.productName);
+  const localNotes = await readProjectReleaseNotes();
+
+  let release = {
+    tagName: links.tagName,
+    name: `${pkg.productName} ${links.tagName}`,
+    body: localNotes,
+    htmlUrl: links.htmlUrl,
+    repoUrl: links.repoUrl,
+    releasesUrl: links.releasesUrl,
+    dmgDownloadUrl: links.dmgDownloadUrl,
+    dmgAssetName: links.dmgAssetName,
+    exeDownloadUrl: '',
+    source: 'local' as 'local' | 'github',
+  };
+
+  try {
+    const githubRelease = await fetchGithubReleaseByTag(githubOwner, githubRepo, links.tagName);
+    release = {
+      ...release,
+      ...githubRelease,
+      body: githubRelease.body || localNotes,
+      htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
+      dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
+      source: 'github',
+    };
+  } catch (error: any) {
+    const status = Number(error?.response?.status || 0);
+    if (status !== 404) {
+      return res.status(502).json({
+        available: false,
+        error: 'Unable to load release notes right now.',
+      });
+    }
+  }
+
+  return res.json({ available: true, release });
 });
 
 app.get('/api/system-check', async (_req, res) => {

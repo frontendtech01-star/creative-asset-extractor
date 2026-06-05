@@ -6,8 +6,12 @@ export type GithubReleaseInfo = {
   name: string;
   body: string;
   htmlUrl: string;
+  repoUrl?: string;
+  releasesUrl?: string;
   dmgDownloadUrl?: string;
+  dmgAssetName?: string;
   exeDownloadUrl?: string;
+  source?: 'local' | 'github';
 };
 
 export const resolveReleaseDownloadUrl = (release: GithubReleaseInfo | null | undefined) => {
@@ -49,6 +53,13 @@ export const setSessionDismissedRelease = (tagName: string) => {
 
 export const fetchLatestGithubRelease = async (): Promise<GithubReleaseInfo | null> => {
   const response = await apiFetch('/api/github-latest-release');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.release?.tagName) return null;
+  return data.release as GithubReleaseInfo;
+};
+
+export const fetchReleaseNotes = async (): Promise<GithubReleaseInfo | null> => {
+  const response = await apiFetch('/api/release-notes');
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data?.release?.tagName) return null;
   return data.release as GithubReleaseInfo;

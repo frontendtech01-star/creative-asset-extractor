@@ -7,5 +7,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.local-tools.json
 vendor/chromium/
 vendor/chromium-pack/
