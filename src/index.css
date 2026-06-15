@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@keyframes progress-shine {
+  0% { transform: translateX(-120%); opacity: 0.2; }
+  50% { opacity: 0.75; }
+  100% { transform: translateX(120%); opacity: 0.2; }
+}
+
+@keyframes progress-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(37, 99, 235, 0); }
+  50% { box-shadow: 0 0 28px rgba(37, 99, 235, 0.28); }
+}
+
+@keyframes waveform {
+  0%, 100% { height: 24%; opacity: 0.5; }
+  35% { height: 100%; opacity: 1; }
+  70% { height: 42%; opacity: 0.75; }
+}
+
+@keyframes success-pop {
+  0% { opacity: 0; transform: translateY(8px) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes fade-in {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -180% 0; }
+}
+
+.progress-shell {
+  animation: fade-in 220ms ease-out both;
+}
+
+.progress-orb {
+  align-items: center;
+  border-radius: 9999px;
+  display: inline-flex;
+  height: 2.75rem;
+  justify-content: center;
+  min-width: 2.75rem;
+  width: 2.75rem;
+}
+
+.progress-glow {
+  position: relative;
+  transition: width 180ms ease-out;
+}
+
+.progress-glow::after {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent);
+  content: "";
+  inset: 0;
+  position: absolute;
+  width: 42%;
+}
+
+.waveform-bar {
+  min-height: 0.45rem;
+}
+
+.success-pop {
+  animation: success-pop 260ms cubic-bezier(.2,.9,.2,1.08) both;
+}
+
+.fade-in {
+  animation: fade-in 220ms ease-out both;
+}
+
+.thumb-shimmer {
+  background: #f4f4f5;
+}
+
+.extract-button-active {
+  animation: none;
+}
+
+.media-card-enter {
+  animation: fade-in 240ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-shell,
+  .progress-orb,
+  .progress-glow,
+  .progress-glow::after,
+  .waveform-bar,
+  .success-pop,
+  .fade-in,
+  .thumb-shimmer,
+  .extract-button-active,
+  .media-card-enter {
+    animation: none;
+    transition: none;
+  }
+}

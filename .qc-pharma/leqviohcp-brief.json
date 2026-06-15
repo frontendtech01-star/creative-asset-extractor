@@ -1,0 +1,781 @@
+{
+  "heading": "Quick Links",
+  "hero_images": [
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_576/public/2025-04/hero-s-plum-2x.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_1000/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/hero_full_width_width_1200/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_576/public/2025-04/hero-s-plum-2x.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_1000/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/hero_full_width_width_1200/public/2025-04/hero-plum.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 2500,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png.webp?itok=IWuVlqhb",
+      "alt": "LEQVIO® (inclisiran) injection 284 mg/1.5 mL",
+      "source": "image",
+      "width": 1200,
+      "height": 314,
+      "priority": 1542,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png?itok=BVjGoIbd",
+      "alt": "LEQVIO® (inclisiran) injection 284 mg/1.5 mL",
+      "source": "image",
+      "width": 1200,
+      "height": 314,
+      "priority": 1542,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png.webp?itok=1rV3nUEd",
+      "alt": "Start form thumbnail",
+      "source": "image",
+      "width": 270,
+      "height": 340,
+      "priority": 702,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png?itok=1yB_r_jh",
+      "alt": "Start form thumbnail",
+      "source": "image",
+      "width": 270,
+      "height": 340,
+      "priority": 702,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png.webp?itok=HvFB52lY",
+      "alt": "Alternate site of care (ASOC) locator",
+      "source": "image",
+      "width": 319,
+      "height": 177,
+      "priority": 56,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png?itok=u0wArVEm",
+      "alt": "Alternate site of care (ASOC) locator",
+      "source": "image",
+      "width": 319,
+      "height": 177,
+      "priority": 56,
+      "pageUrl": "https://www.leqviohcp.com/start-your-patients",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/secondary_navigation/logo_full/leqvio-logo_1.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    }
+  ],
+  "hero_videos": [],
+  "main_focus": "GET YOUR PATIENTS STARTED ON LEQVIO®.",
+  "main_focus_cards": [
+    {
+      "title": "GET YOUR PATIENTS STARTED ON LEQVIO®",
+      "text": "GET YOUR PATIENTS STARTED ON LEQVIO®.",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "Coverage ToolStart FormLEQVIO Locator",
+      "text": "Coverage ToolStart FormLEQVIO Locator.",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "The LEQVIO locator is not an exhaustive list of ASOCs",
+      "text": "The LEQVIO locator is not an exhaustive list of ASOCs.",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not",
+      "text": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis..",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "START FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to",
+      "text": "START FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start Form.",
+      "stage": "Conversion",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "Download the single-page Patient Start Form and fax it to 877-537-8468 to receive support",
+      "text": "Download the single-page Patient Start Form and fax it to 877-537-8468 to receive support..",
+      "stage": "Conversion",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "LEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate si",
+      "text": "LEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool.",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+      "text": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION.",
+      "stage": "Consideration",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "features": [
+    "The LEQVIO locator is not an exhaustive list of ASOCs.",
+    "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.",
+    "Coverage ToolStart FormLEQVIO Locator",
+    "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION"
+  ],
+  "feature_cards": [
+    {
+      "title": "The LEQVIO locator is not an exhaustive list of ASOCs",
+      "text": "The LEQVIO locator is not an exhaustive list of ASOCs.",
+      "image": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png.webp?itok=1rV3nUEd",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not",
+      "text": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.",
+      "image": "",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "Coverage ToolStart FormLEQVIO Locator",
+      "text": "Coverage ToolStart FormLEQVIO Locator",
+      "image": "",
+      "stage": "Awareness",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "title": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+      "text": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+      "image": "",
+      "stage": "Consideration",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "testimonials": [
+    "GET YOUR PATIENTS STARTED ON LEQVIO®"
+  ],
+  "testimonial_cards": [
+    {
+      "quote": "GET YOUR PATIENTS STARTED ON LEQVIO®",
+      "name": "",
+      "stage": "Consideration",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "gallery": [
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/download_16dp_ffffff_fill0_wght400_grad0_opsz20-4.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/open_in_new_16dp_ffffff_fill0_wght400_grad0_opsz20-1_2.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/footer/logo/novartis_logo_rgb.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_608/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_400/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_608/public/2025-01/start-form.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_608/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_400/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_552/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_608/public/2025-04/6.0-asoc-locator-thumb.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/leqvio-favicon.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/secondary_navigation/logo_reduced/leqvio-logo_1.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/0.0_home.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-03/experiment_24dp_712770_fill0_wght400_grad0_opsz24.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-03/health_and_safety_24dp_712770_fill0_wght400_grad0_opsz24.png",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/3.0_dosing-moa.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/4.0_unmet-need.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/5.0_coverage-and-acquisition.svg",
+    "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/6.0_start-your-patients.svg",
+    "https://www.google.com/images/logos/google_logo_41.png"
+  ],
+  "gallery_assets": [
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/download_16dp_ffffff_fill0_wght400_grad0_opsz20-4.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/open_in_new_16dp_ffffff_fill0_wght400_grad0_opsz20-1_2.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/footer/logo/novartis_logo_rgb.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_608/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_400/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_608/public/2025-01/start-form.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_608/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/common_width_400/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_552/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_608/public/2025-04/6.0-asoc-locator-thumb.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/leqvio-favicon.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/secondary_navigation/logo_reduced/leqvio-logo_1.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/0.0_home.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-03/experiment_24dp_712770_fill0_wght400_grad0_opsz24.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-03/health_and_safety_24dp_712770_fill0_wght400_grad0_opsz24.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/3.0_dosing-moa.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/4.0_unmet-need.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/5.0_coverage-and-acquisition.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/6.0_start-your-patients.svg",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    },
+    {
+      "url": "https://www.google.com/images/logos/google_logo_41.png",
+      "alt": "",
+      "source": "extracted-asset",
+      "priority": 0,
+      "pageUrl": "",
+      "stage": "Awareness"
+    }
+  ],
+  "videos": [],
+  "important_information": [
+    "Quick Links\nCoverage Lookup Tool\nPatient Start Form\nLEQVIO Locator\nHome\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients",
+    "Home\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients",
+    "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+    "Skip to main contentQuick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your PatientsPatientsHCPThis site is for US Health Care Professionals only.Prescribing InformationGET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372Back to top",
+    "Skip to main contentQuick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your PatientsPatientsHCPThis site is for US Health Care Professionals only.Prescribing InformationGET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+    "Quick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your Patients",
+    "HomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your Patients",
+    "Proven Safety Profile",
+    "GET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+    "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+    "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).",
+    "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis.",
+    "IMPORTANT SAFETY INFORMATION"
+  ],
+  "important_information_blocks": [
+    {
+      "text": "Quick Links\nCoverage Lookup Tool\nPatient Start Form\nLEQVIO Locator\nHome\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Home\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Skip to main contentQuick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your PatientsPatientsHCPThis site is for US Health Care Professionals only.Prescribing InformationGET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372Back to top",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Skip to main contentQuick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your PatientsPatientsHCPThis site is for US Health Care Professionals only.Prescribing InformationGET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Quick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your Patients",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "HomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your Patients",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Proven Safety Profile",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "GET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "IMPORTANT SAFETY INFORMATION",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "disclaimers": [
+    "Skip to main content\nQuick Links\nCoverage Lookup Tool\nPatient Start Form\nLEQVIO Locator\nHome\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients\nPatients\nHCP\nThis site is for US Health Care Professionals only.\nPrescribing Information\n\nGET YOUR PATIENTS STARTED ON LEQVIO®\n\nCoverage Tool\nStart Form\nLEQVIO Locator\n\nSTART FORM\n\nFill Out the Start Form\n\nDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.\n\nDownload Start Form\n\nLEQVIO LOCATOR\n\nOut-of-Office Administration\n\nAdministration can take place at an alternate site of care (ASOC) other than your office.*\nTry our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†\n\nVisit LEQVIO Locator Tool\n*May include a clinic, hospital outpatient department, or another physician’s office.\n†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.\nClick or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION\n\nLicensed from Alnylam Pharmaceuticals, Inc.\n\nContact Us\nNon-US Residents\nSitemap\nMedical Information\nYour Privacy Choices\n\nUse of website is governed by the Terms of Use and Privacy Policy.\n \n\nCopyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.\n\n10/25     FA-11512372"
+  ],
+  "disclaimers_blocks": [
+    {
+      "text": "Skip to main content\nQuick Links\nCoverage Lookup Tool\nPatient Start Form\nLEQVIO Locator\nHome\nClinical Efficacy\nPivotal Trials\nReal-World Adherence\nReal-World Setting\nLong-Term Efficacy\nProven Safety Profile\nDosing & Mechanism of Action\nDosing & Administration\nMechanism of Action\nUnmet Need\nCoverage & Acquisition\nPractice Resources\nPatient Coverage & Support\nAcquiring LEQVIO\nStart Your Patients\nPatients\nHCP\nThis site is for US Health Care Professionals only.\nPrescribing Information\n\nGET YOUR PATIENTS STARTED ON LEQVIO®\n\nCoverage Tool\nStart Form\nLEQVIO Locator\n\nSTART FORM\n\nFill Out the Start Form\n\nDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.\n\nDownload Start Form\n\nLEQVIO LOCATOR\n\nOut-of-Office Administration\n\nAdministration can take place at an alternate site of care (ASOC) other than your office.*\nTry our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†\n\nVisit LEQVIO Locator Tool\n*May include a clinic, hospital outpatient department, or another physician’s office.\n†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.\nClick or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION\n\nLicensed from Alnylam Pharmaceuticals, Inc.\n\nContact Us\nNon-US Residents\nSitemap\nMedical Information\nYour Privacy Choices\n\nUse of website is governed by the Terms of Use and Privacy Policy.\n \n\nCopyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.\n\n10/25     FA-11512372",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "legals": [
+    "GET YOUR PATIENTS STARTED ON LEQVIO®\n\nCoverage Tool\nStart Form\nLEQVIO Locator\n\nSTART FORM\n\nFill Out the Start Form\n\nDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.\n\nDownload Start Form\n\nLEQVIO LOCATOR\n\nOut-of-Office Administration\n\nAdministration can take place at an alternate site of care (ASOC) other than your office.*\nTry our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†\n\nVisit LEQVIO Locator Tool\n*May include a clinic, hospital outpatient department, or another physician’s office.\n†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.\nClick or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION\n\nLicensed from Alnylam Pharmaceuticals, Inc.\n\nContact Us\nNon-US Residents\nSitemap\nMedical Information\nYour Privacy Choices\n\nUse of website is governed by the Terms of Use and Privacy Policy.\n \n\nCopyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.\n\n10/25     FA-11512372",
+    "Use of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+    "Use of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.",
+    "Use of website is governed by the Terms of Use and Privacy Policy.",
+    "Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved."
+  ],
+  "legal_blocks": [
+    {
+      "text": "GET YOUR PATIENTS STARTED ON LEQVIO®\n\nCoverage Tool\nStart Form\nLEQVIO Locator\n\nSTART FORM\n\nFill Out the Start Form\n\nDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.\n\nDownload Start Form\n\nLEQVIO LOCATOR\n\nOut-of-Office Administration\n\nAdministration can take place at an alternate site of care (ASOC) other than your office.*\nTry our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†\n\nVisit LEQVIO Locator Tool\n*May include a clinic, hospital outpatient department, or another physician’s office.\n†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.\nClick or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION\n\nLicensed from Alnylam Pharmaceuticals, Inc.\n\nContact Us\nNon-US Residents\nSitemap\nMedical Information\nYour Privacy Choices\n\nUse of website is governed by the Terms of Use and Privacy Policy.\n \n\nCopyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.\n\n10/25     FA-11512372",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Use of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Use of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Use of website is governed by the Terms of Use and Privacy Policy.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "references": [
+    "Contraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis.",
+    "Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis."
+  ],
+  "reference_blocks": [
+    {
+      "text": "Contraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    },
+    {
+      "text": "Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis.",
+      "source_url": "https://www.leqviohcp.com/start-your-patients"
+    }
+  ],
+  "keywords": [
+    "leqvio",
+    "locator",
+    "start",
+    "asoc",
+    "patient",
+    "tool",
+    "form",
+    "formleqvio",
+    "coverage",
+    "toolstart",
+    "office",
+    "single-page",
+    "receive",
+    "support"
+  ],
+  "ad_headlines": [
+    "Quick Links",
+    "GET YOUR PATIENTS STARTED ON LEQVIO®",
+    "Leqvio for locator"
+  ],
+  "brief_tabs": [
+    {
+      "id": 1,
+      "label": "Tab 1",
+      "layout": "hero-video",
+      "heading": "Quick Links",
+      "subheading": "Coverage ToolStart FormLEQVIO Locator.",
+      "cta": "Quick Links",
+      "hero_video": null,
+      "hero_image": {
+        "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png",
+        "alt": "",
+        "source": "extracted-asset",
+        "priority": 2500,
+        "pageUrl": "",
+        "stage": "Awareness",
+        "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/hero_full_width_width_2560/public/2025-04/hero-plum.png"
+      },
+      "slides": []
+    },
+    {
+      "id": 2,
+      "label": "Tab 2",
+      "layout": "slides",
+      "slides": [
+        {
+          "layout": "image-text",
+          "heading": "The LEQVIO locator is not an exhaustive list of ASOCs",
+          "body": "The LEQVIO locator is not an exhaustive list of ASOCs.",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/download_16dp_ffffff_fill0_wght400_grad0_opsz20-4.svg",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/download_16dp_ffffff_fill0_wght400_grad0_opsz20-4.svg"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not",
+          "body": "The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/single_featured_content_card_without_content_width_744/public/2025-04/6.0-asoc-locator-thumb.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Coverage ToolStart FormLEQVIO Locator",
+          "body": "Coverage ToolStart FormLEQVIO Locator.",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/open_in_new_16dp_ffffff_fill0_wght400_grad0_opsz20-1_2.svg",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/icons/2025-01/open_in_new_16dp_ffffff_fill0_wght400_grad0_opsz20-1_2.svg"
+          },
+          "media_assets": []
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "label": "Tab 3",
+      "layout": "slides",
+      "slides": [
+        {
+          "layout": "image-text",
+          "heading": "Coverage ToolStart FormLEQVIO Locator",
+          "body": "Coverage ToolStart FormLEQVIO Locator",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/footer/logo/novartis_logo_rgb.svg",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/footer/logo/novartis_logo_rgb.svg"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+          "body": "Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATION",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-01/start-form.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/common_width_400/public/2025-01/start-form.png"
+          },
+          "media_assets": []
+        },
+        {
+          "layout": "image-text",
+          "heading": "GET YOUR PATIENTS STARTED ON LEQVIO®",
+          "body": "GET YOUR PATIENTS STARTED ON LEQVIO®",
+          "cta": "Quick Links",
+          "image": {
+            "url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png",
+            "alt": "",
+            "source": "extracted-asset",
+            "priority": 0,
+            "pageUrl": "",
+            "stage": "Awareness",
+            "remote_url": "https://usim.beprod.leqviohcp.com/sites/leqviohcp_com/files/styles/webp/public/styles/single_featured_content_card_without_content_width_552/public/2025-01/start-form.png"
+          },
+          "media_assets": []
+        }
+      ]
+    }
+  ],
+  "indication": "INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).",
+  "indication_source_url": "https://www.leqviohcp.com/start-your-patients",
+  "important_safety_information": "Skip to main contentQuick LinksCoverage Lookup ToolPatient Start FormLEQVIO LocatorHomeClinical EfficacyPivotal Trials Real-World Adherence Real-World SettingLong-Term EfficacyProven Safety ProfileDosing & Mechanism of ActionDosing & AdministrationMechanism of ActionUnmet NeedCoverage & AcquisitionPractice ResourcesPatient Coverage & SupportAcquiring LEQVIOStart Your PatientsPatientsHCPThis site is for US Health Care Professionals only.Prescribing InformationGET YOUR PATIENTS STARTED ON LEQVIO®Coverage ToolStart FormLEQVIO LocatorSTART FORMFill Out the Start FormDownload the single-page Patient Start Form and fax it to 877-537-8468 to receive support.Download Start FormLEQVIO LOCATOROut-of-Office AdministrationAdministration can take place at an alternate site of care (ASOC) other than your office.*Try our LEQVIO locator tool to find an ASOC that is convenient for you and your patient.†Visit LEQVIO Locator Tool*May include a clinic, hospital outpatient department, or another physician’s office.†Novartis does not recommend the use of any specific ASOC. The LEQVIO locator is not an exhaustive list of ASOCs. The list of ASOCs is maintained by a third party, and inclusion in the locator tool is not an endorsement by Novartis.IMPORTANT SAFETY INFORMATIONContraindication: LEQVIO (inclisiran) is contraindicated in patients with a prior serious hypersensitivity reaction to inclisiran or any of the excipients in LEQVIO. Serious hypersensitivity reactions have included anaphylaxis and angioedema.Hypersensitivity Reactions: Hypersensitivity reactions, including anaphylaxis and angioedema, have been reported in patients treated with LEQVIO. Advise patients on the signs and symptoms of hypersensitivity reactions and instruct patients to seek medical attention promptly.Adverse Reactions: Adverse reactions in clinical trials (≥3% of adult patients treated with LEQVIO and more frequently than placebo) were injection site reaction, arthralgia, and bronchitis. INDICATIONLEQVIO injection is indicated as an adjunct to diet and exercise to reduce low-density lipoprotein cholesterol (LDL-C) in adults with hypercholesterolemia, including heterozygous familial hypercholesterolemia (HeFH).Click or scroll to see IMPORTANT SAFETY INFORMATION and INDICATIONLicensed from Alnylam Pharmaceuticals, Inc.Contact UsNon-US ResidentsSitemapMedical InformationYour Privacy ChoicesUse of website is governed by the Terms of Use and Privacy Policy. Copyright © 2025 Novartis Pharmaceuticals Corporation. All rights reserved.10/25     FA-11512372Back to top",
+  "important_safety_information_source_url": "https://www.leqviohcp.com/start-your-patients",
+  "crawled_pages": [
+    "https://www.leqviohcp.com/start-your-patients"
+  ]
+}

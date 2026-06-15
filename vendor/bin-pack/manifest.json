@@ -1,0 +1,12 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "updatedAt": "2026-06-15T11:09:36.580Z",
+  "binaries": {
+    "ffmpeg": "/Users/rohitashkumar/Downloads/creative-asset-extractor-1.0/vendor/bin-pack/ffmpeg",
+    "ffprobe": "/Users/rohitashkumar/Downloads/creative-asset-extractor-1.0/vendor/bin-pack/ffprobe",
+    "ytdlp": "/Users/rohitashkumar/Downloads/creative-asset-extractor-1.0/vendor/bin-pack/yt-dlp",
+    "aria2": "/Users/rohitashkumar/Downloads/creative-asset-extractor-1.0/vendor/bin-pack/aria2c"
+  },
+  "standaloneYtDlp": true
+}

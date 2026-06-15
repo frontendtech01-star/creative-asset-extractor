@@ -1,0 +1,11 @@
+---
+description: Restart the dev server after making code changes
+alwaysApply: true
+---
+
+# Dev Server After Changes
+
+After making any code changes in this project, always run `npm run dev` from the project root.
+
+- If a dev server is already running, stop it first, then start a fresh one.
+- Confirm the server URL/port from the terminal output before finishing.

@@ -1,0 +1,35 @@
+{
+  "images": 14,
+  "fonts": 25,
+  "videos": 0,
+  "sampleImages": [
+    "https://www.wayrilz.com/dam/jcr:cb991347-8e6c-4565-ac8a-911a34975230/WAYRILZ_TM_Dose_RGB_FC_Pos.svg",
+    "https://www.wayrilz.com/.imaging/default/dam/Marketing/rilzabrutinib-full/homepage/Wayrilz_Homepage_Header_Art_Desktop_UPDATED_2_13_26-copy.webp",
+    "https://www.wayrilz.com/.imaging/default/dam/Marketing/rilzabrutinib-full/homepage/long-lasting-image-and-icon/jcr:content.webp",
+    "https://www.wayrilz.com/.imaging/default/dam/Marketing/rilzabrutinib-full/homepage/target-key-source-image-and-icon-v3/jcr:content.webp",
+    "https://www.wayrilz.com/.imaging/default/dam/Marketing/rilzabrutinib-full/homepage/support-image-and-icon/jcr:content.webp"
+  ],
+  "sampleFonts": [
+    {
+      "family": "Material Symbols Rounded",
+      "url": "https://fonts.gstatic.com/s/materialsymbolsrounded/v344/syl0-zNym6YjUruM-QrEh7-nyTnjDwKNJ_190FjpZIvDmUSVOK7BDB_Qb9vUSzq3wzLK-P0J-V_Zs-QtQth3-jOcbTCVpeRL2w5rwZu2rIelXxc.woff2"
+    },
+    {
+      "family": "Sanofi Sans",
+      "url": "https://cdn.prod.accelerator.sanofi/fonts/sanofi-sans/woff2/Sanofi_Sans-Regular.woff2"
+    },
+    {
+      "family": "Sanofi Sans",
+      "url": "https://cdn.prod.accelerator.sanofi/fonts/sanofi-sans/woff2/Sanofi_Sans-Italic.woff2"
+    },
+    {
+      "family": "Sanofi Sans",
+      "url": "https://cdn.prod.accelerator.sanofi/fonts/sanofi-sans/woff2/Sanofi_Sans-Bold.woff2"
+    },
+    {
+      "family": "Sanofi Sans",
+      "url": "https://cdn.prod.accelerator.sanofi/fonts/sanofi-sans/woff2/Sanofi_Sans-Bold_Italic.woff2"
+    }
+  ],
+  "sampleVideos": []
+}

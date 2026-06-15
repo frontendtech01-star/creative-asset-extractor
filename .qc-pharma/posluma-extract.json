@@ -1,0 +1,35 @@
+{
+  "images": 14,
+  "fonts": 9,
+  "videos": 0,
+  "sampleImages": [
+    "https://www.posluma.com/POSLUMA-logo_white.png",
+    "https://www.posluma.com/document-icon.png",
+    "https://www.posluma.com/money-icon.png",
+    "https://www.posluma.com/location-icon.png",
+    "https://www.posluma.com/blue-earth_logo.png"
+  ],
+  "sampleFonts": [
+    {
+      "family": "02743a8d10a3d186-s",
+      "url": "https://www.posluma.com/_next/static/media/02743a8d10a3d186-s.p.woff2"
+    },
+    {
+      "family": "1e41be92c43b3255-s",
+      "url": "https://www.posluma.com/_next/static/media/1e41be92c43b3255-s.p.woff2"
+    },
+    {
+      "family": "cddf20da50eef6ec-s",
+      "url": "https://www.posluma.com/_next/static/media/cddf20da50eef6ec-s.p.woff2"
+    },
+    {
+      "family": "dc1a31dd116e0329-s",
+      "url": "https://www.posluma.com/_next/static/media/dc1a31dd116e0329-s.p.woff2"
+    },
+    {
+      "family": "3484b7eabcdb241d-s",
+      "url": "https://www.posluma.com/_next/static/media/3484b7eabcdb241d-s.p.woff2"
+    }
+  ],
+  "sampleVideos": []
+}

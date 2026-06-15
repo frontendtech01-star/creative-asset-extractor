@@ -1,0 +1,316 @@
+{
+  "ranAt": "2026-06-09T17:01:01.578Z",
+  "base": "http://localhost:3000",
+  "totals": {
+    "sites": 13,
+    "extractOk": 12,
+    "warmOk": 12,
+    "previewOk": 11,
+    "pass": 11
+  },
+  "rows": [
+    {
+      "url": "https://phyrago.com/hcp/",
+      "slug": "phyrago",
+      "extract": {
+        "ok": true,
+        "ms": 6026,
+        "images": 37,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 6523,
+        "warmed": 37,
+        "total": 37,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "56168b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.posluma.com/",
+      "slug": "posluma",
+      "extract": {
+        "ok": true,
+        "ms": 4997,
+        "images": 2,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 9548,
+        "warmed": 2,
+        "total": 2,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "18312b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.wayrilz.com/us",
+      "slug": "wayrilz",
+      "extract": {
+        "ok": true,
+        "ms": 32038,
+        "images": 0,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": false,
+        "ms": 0,
+        "warmed": 0,
+        "total": 0,
+        "error": ""
+      },
+      "preview": {
+        "ok": false,
+        "detail": "skipped"
+      },
+      "issues": [
+        "extract: no images"
+      ]
+    },
+    {
+      "url": "https://www.cosentyx.com/psoriatic-arthritis/index",
+      "slug": "cosentyx",
+      "extract": {
+        "ok": true,
+        "ms": 3655,
+        "images": 10,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 50025,
+        "warmed": 7,
+        "total": 10,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "412269b jpg"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.toujeo.com/",
+      "slug": "toujeo",
+      "extract": {
+        "ok": true,
+        "ms": 13725,
+        "images": 15,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 50083,
+        "warmed": 12,
+        "total": 15,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "43666b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.iqirvohcp.com/",
+      "slug": "iqirvohcp",
+      "extract": {
+        "ok": true,
+        "ms": 3481,
+        "images": 25,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 14312,
+        "warmed": 25,
+        "total": 25,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "3432b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.duvyzathcp.com/how-duvyzat-works/",
+      "slug": "duvyzathcp",
+      "extract": {
+        "ok": true,
+        "ms": 2703,
+        "images": 19,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 2912,
+        "warmed": 19,
+        "total": 19,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "7202b svg"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.rhapsido.com/",
+      "slug": "rhapsido",
+      "extract": {
+        "ok": true,
+        "ms": 721,
+        "images": 8,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 50221,
+        "warmed": 5,
+        "total": 8,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "14295b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.otezlapro.com/start-today/",
+      "slug": "otezlapro",
+      "extract": {
+        "ok": true,
+        "ms": 6317,
+        "images": 146,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 103079,
+        "warmed": 103,
+        "total": 120,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "4688b webp"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://us.pluvicto.com/",
+      "slug": "us",
+      "extract": {
+        "ok": true,
+        "ms": 1268,
+        "images": 7,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 50078,
+        "warmed": 4,
+        "total": 7,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "130355b jpg"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://www.leqviohcp.com/start-your-patients",
+      "slug": "leqviohcp",
+      "extract": {
+        "ok": true,
+        "ms": 3331,
+        "images": 8,
+        "cached": 1,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 50045,
+        "warmed": 7,
+        "total": 8,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "2408b png"
+      },
+      "issues": []
+    },
+    {
+      "url": "https://nestasia.in/products/lemon-drink-dispenser-6000ml",
+      "slug": "nestasia",
+      "extract": {
+        "ok": true,
+        "ms": 3104,
+        "images": 236,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 18846,
+        "warmed": 120,
+        "total": 120,
+        "error": ""
+      },
+      "preview": {
+        "ok": false,
+        "detail": "bad-bytes 3651"
+      },
+      "issues": [
+        "preview: bad-bytes 3651"
+      ]
+    },
+    {
+      "url": "http://vaaree.com/collections/king-size-bedsheets",
+      "slug": "vaaree",
+      "extract": {
+        "ok": true,
+        "ms": 1348,
+        "images": 391,
+        "cached": 0,
+        "error": ""
+      },
+      "warm": {
+        "ok": true,
+        "ms": 2107,
+        "warmed": 120,
+        "total": 120,
+        "error": ""
+      },
+      "preview": {
+        "ok": true,
+        "detail": "34446b webp"
+      },
+      "issues": []
+    }
+  ]
+}
