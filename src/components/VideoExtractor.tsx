@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe } from 'lucide-react';
 import { apiFetchWithTimeout, MERGE_PREP_TIMEOUT_MS } from '../lib/api';
 import { getDesktopBridge } from '../lib/desktopBridge';
@@ -201,6 +201,12 @@ const videoCardTitle = (video: any, idx: number, videos: any[]) => {
   return `${base} ${duplicatePosition}`;
 };
 
+const DEFAULT_VIDEO_URLS = [
+  { label: 'Instagram', url: 'https://www.instagram.com/reel/DZK34RqhrSr/' },
+  { label: 'Facebook', url: 'https://www.facebook.com/facebook/videos/grandpas-have-the-best-life-hacks-tbh-video-by-life-with-wes-alison-comedy-sketc/454290807152360/' },
+  { label: 'X.com', url: 'https://x.com/LetsXOtt/status/1991751366520500536' },
+];
+
 export default function VideoExtractor({
   videos,
   seedUrl = '',
@@ -216,8 +222,14 @@ export default function VideoExtractor({
   const [bulkJobs, setBulkJobs] = useState<WebsiteBulkDownloadJob[]>([]);
   const [bulkMessage, setBulkMessage] = useState<{ text: string; error?: boolean } | null>(null);
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
-  const [manualUrl, setManualUrl] = useState(seedUrl);
+  const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
+
+  useEffect(() => {
+    if (!seedUrl && manualUrl && !activeManualUrl) {
+      setActiveManualUrl(manualUrl);
+    }
+  }, []);
 
   const handleDownload = async (video: any, title: string) => {
     const cardUrl = String(video?.url || '');
@@ -250,8 +262,11 @@ export default function VideoExtractor({
         message: data.reused ? `Already downloaded: ${data.displayPath}` : `Downloaded: ${data.displayPath}`,
       });
     } catch (error: any) {
-      console.error('Download error:', error);
-      setDownloadResult({ url: cardUrl, message: error?.message || 'Failed to download video.', error: true });
+      const msg = error?.message || '';
+      if (!/no downloadable vimeo stream/i.test(msg)) {
+        console.error('Download error:', error);
+      }
+      setDownloadResult({ url: cardUrl, message: msg || 'Failed to download video.', error: true });
     } finally {
       setDownloading(null);
     }
@@ -410,46 +425,16 @@ export default function VideoExtractor({
   };
 
   const renderExternalOptions = (url: string) => (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4">
       <a
-        href={`https://en.savefrom.net/1-youtube-video-downloader-360/?url=${encodeURIComponent(url)}`}
+        href={`https://www.viddown.net/?url=${encodeURIComponent(url)}`}
         target="_blank"
         rel="noopener noreferrer"
         className="flex flex-col items-center justify-center p-4 border border-zinc-200 rounded-xl bg-white hover:bg-zinc-50 transition-colors shadow-sm"
-        title="Open in SaveFrom.net"
+        title="Open in Viddown"
       >
-        <span className="font-semibold text-zinc-900 mb-1">SaveFrom.net</span>
-        <span className="text-xs text-zinc-500 text-center">Video & Audio Download (Fast)</span>
-      </a>
-      <a
-        href={`https://ssyoutube.com/en175/?url=${encodeURIComponent(url)}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex flex-col items-center justify-center p-4 border border-zinc-200 rounded-xl bg-white hover:bg-zinc-50 transition-colors shadow-sm"
-        title="Open in SSYouTube"
-      >
-        <span className="font-semibold text-zinc-900 mb-1">SSYouTube</span>
-        <span className="text-xs text-zinc-500 text-center">Video & Audio Download (HD)</span>
-      </a>
-      <a
-        href={`https://www.dirpy.com/studio?url=${encodeURIComponent(url)}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex flex-col items-center justify-center p-4 border border-zinc-200 rounded-xl bg-white hover:bg-zinc-50 transition-colors shadow-sm"
-        title="Open in Dirpy"
-      >
-        <span className="font-semibold text-zinc-900 mb-1">Dirpy Studio</span>
-        <span className="text-xs text-zinc-500 text-center">Advanced Audio/Video Converter</span>
-      </a>
-      <a
-        href={`https://cobalt.tools`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex flex-col items-center justify-center p-4 border border-zinc-200 rounded-xl bg-white hover:bg-zinc-50 transition-colors shadow-sm"
-        title="Open in Cobalt"
-      >
-        <span className="font-semibold text-zinc-900 mb-1">Cobalt.tools</span>
-        <span className="text-xs text-zinc-500 text-center">No-Ads Secure Downloader</span>
+        <span className="font-semibold text-zinc-900 mb-1">Viddown</span>
+        <span className="text-xs text-zinc-500 text-center">Video Downloader</span>
       </a>
     </div>
   );
@@ -475,7 +460,9 @@ export default function VideoExtractor({
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Globe className="w-5 h-5 text-zinc-400" />
             </div>
+            <label htmlFor="video-url-input" className="sr-only">Video URL</label>
             <input
+              id="video-url-input"
               type="url"
               value={manualUrl}
               onChange={(e) => setManualUrl(e.target.value)}
@@ -492,6 +479,25 @@ export default function VideoExtractor({
             Search
           </button>
         </form>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {DEFAULT_VIDEO_URLS.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => {
+                setManualUrl(item.url);
+                setActiveManualUrl(item.url);
+              }}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                activeManualUrl === item.url
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
 
         {activeManualUrl && (
           <div className="mt-6 bg-zinc-50 p-6 border border-zinc-100 rounded-xl animate-in fade-in slide-in-from-top-4 duration-300">

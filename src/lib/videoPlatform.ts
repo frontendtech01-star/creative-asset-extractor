@@ -7,9 +7,9 @@ export const VIDEO_PLATFORMS: Array<{
 }> = [
   { id: 'youtube', label: 'YouTube', exampleUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
   { id: 'vimeo', label: 'Vimeo', exampleUrl: 'https://vimeo.com/76979871' },
-  { id: 'instagram', label: 'Instagram', exampleUrl: '' },
-  { id: 'facebook', label: 'Facebook', exampleUrl: '' },
-  { id: 'x', label: 'X.com', exampleUrl: '' },
+  { id: 'instagram', label: 'Instagram', exampleUrl: 'https://www.instagram.com/reel/DZK34RqhrSr/' },
+  { id: 'facebook', label: 'Facebook', exampleUrl: 'https://www.facebook.com/facebook/videos/grandpas-have-the-best-life-hacks-tbh-video-by-life-with-wes-alison-comedy-sketc/454290807152360/' },
+  { id: 'x', label: 'X.com', exampleUrl: 'https://x.com/LetsXOtt/status/1991751366520500536' },
   { id: 'ispot', label: 'iSpot.tv', exampleUrl: 'https://www.ispot.tv/ad/gejf/burger-king-loaded-jalapeno-whopper-you-tell-us' },
 ];
 

@@ -300,7 +300,7 @@ export function FriendlyError({
 }) {
   const heading =
     title ||
-    (retrying ? 'Retrying extraction...' : 'That source needs another route');
+    (retrying ? 'Retrying extraction...' : 'Could not extract from this source');
   return (
     <div className="fade-in rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
       <div className="flex items-start gap-3">

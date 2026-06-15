@@ -2,6 +2,7 @@ import React from 'react';
 import { Download, PackageOpen, Sparkles, X } from 'lucide-react';
 import type { GithubReleaseInfo } from '../lib/githubRelease';
 import { releaseDownloadLabel, resolveReleaseDownloadUrl } from '../lib/githubRelease';
+import { openExternalUrl } from '../lib/openExternal';
 
 export function LatestReleaseModal({
   open,
@@ -69,13 +70,13 @@ export function LatestReleaseModal({
                 v{releaseTag}
               </span>
 
-              {isNotesView && downloadUrl ? (
+              {isNotesView ? (
                 <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
                   <p className="font-medium text-zinc-900">Latest GitHub package</p>
                   <p className="text-zinc-700">
                     <button
                       type="button"
-                      onClick={onDownload}
+                      onClick={() => openExternalUrl('https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip')}
                       className="font-medium text-blue-600 hover:text-blue-700"
                     >
                       Download latest package from GitHub
@@ -88,14 +89,25 @@ export function LatestReleaseModal({
                 <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-950">
                   <div className="flex items-center gap-2 font-semibold">
                     <PackageOpen className="h-4 w-4" />
-                    Installation guide
+                    Installation guide (source code)
                   </div>
                   <ol className="mt-2 list-decimal space-y-1 pl-5 text-blue-900">
-                    <li>Download the latest package from the GitHub release above.</li>
-                    <li>Open the downloaded package and follow the installer prompts.</li>
-                    <li>Replace the previous app version when prompted, then reopen the app.</li>
-                    <li>If your system blocks first launch, allow the app from system security settings.</li>
+                    <li>Download the v2.0 source code ZIP from the link above.</li>
+                    <li>Extract the archive and open the folder in a terminal.</li>
+                    <li>Run <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm install</code> to install dependencies.</li>
+                    <li>Run <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm run dev</code> to start the app, then open the printed URL.</li>
                   </ol>
+                  <p className="mt-2 text-blue-800">
+                    For detailed setup, platform notes, and troubleshooting →{' '}
+                    <a
+                      href="/INSTALLATION.md"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium underline hover:text-blue-950"
+                    >
+                      INSTALLATION.md
+                    </a>
+                  </p>
                 </div>
               ) : null}
             </>
@@ -114,7 +126,7 @@ export function LatestReleaseModal({
               Remind Me Later
             </button>
           ) : null}
-          {downloadUrl ? (
+          {!isNotesView && downloadUrl ? (
             <button
               type="button"
               onClick={onDownload}

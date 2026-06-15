@@ -1,6 +1,25 @@
 # Release Notes
 
-## Current Release
+## v2.0
+
+**Download source code:** [creative-asset-extractor-v2.0.zip](https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip)
+
+### Installation
+
+1. Download and extract the ZIP archive
+2. Open the folder and run `npm install`
+3. Start the app with `npm run dev`
+4. Open the URL printed in the terminal (typically `http://localhost:3000`)
+
+For detailed setup, platform notes, and troubleshooting → [INSTALLATION.md](INSTALLATION.md)
+
+### What's new
+
+- Initial v2.0 release — migrated to new branch structure and updated dependencies.
+
+---
+
+## v1.0
 
 **macOS download (Apple Silicon):** [Creative-Asset-Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative-Asset-Extractor-1.0.0-arm64.dmg)
 
