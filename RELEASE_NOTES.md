@@ -2,7 +2,7 @@
 
 ## Latest Release
 
-**macOS download (Apple Silicon):** [Creative Asset Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative%20Asset%20Extractor-1.0.0-arm64.dmg)
+**macOS download (Apple Silicon):** [Creative-Asset-Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative-Asset-Extractor-1.0.0-arm64.dmg)
 
 ### DMG Installation
 

@@ -6,7 +6,7 @@ This guide covers the macOS DMG install for Creative Asset Extractor.
 
 Download the latest Apple Silicon DMG from the GitHub release page:
 
-[Creative Asset Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative%20Asset%20Extractor-1.0.0-arm64.dmg)
+[Creative-Asset-Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative-Asset-Extractor-1.0.0-arm64.dmg)
 
 ## Install
 
