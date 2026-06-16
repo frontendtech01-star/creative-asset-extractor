@@ -26,8 +26,9 @@ export function LatestReleaseModal({
   const versionLabel = currentVersion.replace(/^v/i, '');
   const isNotesView = viewMode === 'notes';
   const downloadUrl = resolveReleaseDownloadUrl(release);
-  const downloadLabel = releaseDownloadLabel(release, viewMode);
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
+  const notesDownloadUrl = release?.dmgDownloadUrl || downloadUrl;
+  const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
 
   return (
     <div
@@ -44,7 +45,7 @@ export function LatestReleaseModal({
             </div>
             <div>
               <h2 id="latest-release-title" className="text-xl font-semibold text-zinc-950">
-                {isNotesView ? 'Release note' : 'Latest release available'}
+                {isNotesView ? 'Latest Release' : 'Latest release available'}
               </h2>
               <p className="mt-1 text-sm text-zinc-500">
                 {isNotesView
@@ -72,14 +73,15 @@ export function LatestReleaseModal({
 
               {isNotesView ? (
                 <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
-                  <p className="font-medium text-zinc-900">Latest GitHub package</p>
+                  <p className="font-medium text-zinc-900">Latest Release</p>
                   <p className="text-zinc-700">
                     <button
                       type="button"
-                      onClick={() => openExternalUrl('https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip')}
+                      onClick={() => notesDownloadUrl ? openExternalUrl(notesDownloadUrl) : undefined}
+                      disabled={!notesDownloadUrl}
                       className="font-medium text-blue-600 hover:text-blue-700"
                     >
-                      Download latest package from GitHub
+                      Download latest DMG
                     </button>
                   </p>
                 </div>
@@ -89,23 +91,23 @@ export function LatestReleaseModal({
                 <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-950">
                   <div className="flex items-center gap-2 font-semibold">
                     <PackageOpen className="h-4 w-4" />
-                    Installation guide (source code)
+                    Installation guide (DMG)
                   </div>
                   <ol className="mt-2 list-decimal space-y-1 pl-5 text-blue-900">
-                    <li>Download the v2.0 source code ZIP from the link above.</li>
-                    <li>Extract the archive and open the folder in a terminal.</li>
-                    <li>Run <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm install</code> to install dependencies.</li>
-                    <li>Run <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm run dev</code> to start the app, then open the printed URL.</li>
+                    <li>Download the macOS DMG from the link above.</li>
+                    <li>Open the DMG after it finishes downloading.</li>
+                    <li>Drag <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">Creative Asset Extractor</code> into <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">Applications</code>.</li>
+                    <li>Launch the app from Applications and allow the usual macOS first-open prompt if needed.</li>
                   </ol>
                   <p className="mt-2 text-blue-800">
-                    For detailed setup, platform notes, and troubleshooting →{' '}
+                    For the DMG install guide and first-launch help →{' '}
                     <a
-                      href="/INSTALLATION.md"
+                      href="/INSTALLATION_DMG.md"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="font-medium underline hover:text-blue-950"
                     >
-                      INSTALLATION.md
+                      INSTALLATION_DMG.md
                     </a>
                   </p>
                 </div>
@@ -133,7 +135,7 @@ export function LatestReleaseModal({
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700"
             >
               <Download className="h-4 w-4" />
-              {downloadLabel}
+              {updateDownloadLabel}
             </button>
           ) : null}
         </div>

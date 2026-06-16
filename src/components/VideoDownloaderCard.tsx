@@ -29,11 +29,15 @@ const formatDuration = (seconds?: number) => {
 
 export const qualityAvailable = (video: VideoCardData, quality: 'fhd' | 'hd') =>
   quality === 'fhd'
-    ? Boolean(video.qualityVariants?.fhd?.formatAvailable || video.streams?.FHD?.ready)
+    ? Boolean(
+        video.qualityVariants?.fhd?.formatAvailable ||
+          video.streams?.FHD?.ready ||
+          video.qualityVariants?.hd?.formatAvailable ||
+          video.streams?.HD?.ready
+      )
     : Boolean(video.qualityVariants?.hd?.formatAvailable || video.streams?.HD?.ready);
 
-export const pickVideoDownloadQuality = (video: VideoCardData): 'fhd' | 'hd' =>
-  qualityAvailable(video, 'fhd') ? 'fhd' : 'hd';
+export const pickVideoDownloadQuality = (_video: VideoCardData): 'fhd' | 'hd' => 'fhd';
 
 export default function VideoDownloaderCard({
   video,
@@ -113,7 +117,7 @@ export default function VideoDownloaderCard({
 
         <div className="mt-3 flex flex-wrap gap-2">
           <span className="rounded-md bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
-            {fhdAvailable ? 'FHD available' : 'HD fallback'}
+            {video.maxHeight && video.maxHeight < 1000 ? 'Best available' : 'FHD preferred'}
           </span>
           {video.maxHeight ? (
             <span className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
@@ -188,7 +192,7 @@ export default function VideoDownloaderCard({
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy && job?.quality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Download FHD
+            Download FHD / Best
           </button>
           <button
             type="button"

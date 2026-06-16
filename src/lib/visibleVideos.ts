@@ -204,6 +204,14 @@ export const toCanonicalVideoKey = (item: any, seedUrl = '') => {
       if (item?.vimeoId) return `vimeo:${item.vimeoId}`;
       return `vimeo:${parsed.pathname.replace(/\/+$/, '').toLowerCase()}`;
     }
+    if (host.includes('googlevideo.com')) {
+      const watchUrl = resolveYouTubeWatchUrlFromItem(item, seedUrl);
+      if (watchUrl) {
+        const videoId = new URL(watchUrl).searchParams.get('v');
+        if (videoId) return `youtube:${videoId}`;
+      }
+      return 'youtube:stream';
+    }
     if (host.includes('wistia.com') || host.includes('wistia.net')) {
       if (item?.wistiaHashedId) return `wistia:${item.wistiaHashedId}:${item?.height || item?.displayQualityKey || 'stream'}`;
       const idMatch = parsed.pathname.match(/\/(?:embed\/medias|medias|embed\/iframe)\/([a-z0-9]{8,12})/i);
@@ -339,11 +347,23 @@ export const isTechnicalStream = (item: any) => {
 export const streamRank = (item: any) => {
   const url = String(item?.url || '');
   const lowered = url.toLowerCase();
+  const qualityKey = String(item?.displayQualityKey || item?.qualityRequested || getCleanQualityKey(item) || 'best').toLowerCase();
+  const qualityScore: Record<string, number> = {
+    '4k': 70000,
+    '2k': 60000,
+    fhd: 50000,
+    best: 45000,
+    hd: 40000,
+    '480p': 20000,
+    '360p': 10000,
+    audio: 0,
+  };
+  const heightScore = Math.min(9000, Number(getStreamHeight(item) || 0) * 6);
   const mp4Score = /\.mp4(\?|$)/i.test(lowered) || /\/api\/youtube-merged-stream|\/api\/download|\/api\/download-local-video|\/converted-videos\/|googlevideo\.com\/videoplayback|vimeo\.com\/progressive_redirect|wistia\.com\/deliveries\//i.test(lowered) ? 10000 : 0;
   const audioScore = streamHasAudio(item) ? 4000 : 0;
   const directScore = item?.isDirect || item?.isVimeoDirect || item?.isWistiaDirect || item?.isYouTubeDirect || isDirectVideoAssetUrl(url) ? 1000 : 0;
   const sizeScore = Math.min(900, Number(item?.filesize || item?.filesize_approx || 0) / 100000);
-  return mp4Score + audioScore + directScore + sizeScore;
+  return (qualityScore[qualityKey] ?? qualityScore.best) + heightScore + mp4Score + audioScore + directScore + sizeScore;
 };
 
 const unwrapProxyMediaUrl = (rawUrl: string, baseUrl?: string) => {
@@ -395,6 +415,14 @@ export const sourceIdentityForStream = (item: any, seedUrl = '') => {
     try {
       const parsed = new URL(underlyingUrl);
       const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+      if (host.includes('googlevideo.com')) {
+        const watchUrl = resolveYouTubeWatchUrlFromItem(item, seedUrl);
+        if (watchUrl) {
+          const videoId = new URL(watchUrl).searchParams.get('v');
+          if (videoId) return `youtube:${videoId}`;
+        }
+        return 'youtube:stream';
+      }
       if (host.includes('vimeo.com')) {
         const match =
           parsed.pathname.match(/\/progressive_redirect\/download\/(\d+)/) ||

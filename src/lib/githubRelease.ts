@@ -19,23 +19,21 @@ export type GithubReleaseInfo = {
 
 export const resolveReleaseDownloadUrl = (release: GithubReleaseInfo | null | undefined) => {
   if (!release) return '';
-  if (release.packageDownloadUrl) return release.packageDownloadUrl;
   const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
   if (/win/i.test(platform) && release.exeDownloadUrl) return release.exeDownloadUrl;
   if (release.dmgDownloadUrl) return release.dmgDownloadUrl;
+  if (release.packageDownloadUrl) return release.packageDownloadUrl;
   return release.htmlUrl;
 };
 
 export const releaseDownloadLabel = (release: GithubReleaseInfo | null | undefined, viewMode: 'update' | 'notes' = 'update') => {
-  if (release?.packageDownloadUrl) {
-    return viewMode === 'notes' ? 'Download Latest Package' : 'Download Update';
-  }
   const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
   if (/win/i.test(platform) && release?.exeDownloadUrl) {
-    return viewMode === 'notes' ? 'Download installer' : 'Download Update';
+    return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
   }
-  if (release?.dmgDownloadUrl) return viewMode === 'notes' ? 'Download Latest Package' : 'Download Update';
-  return viewMode === 'notes' ? 'View on GitHub' : 'Download Update';
+  if (release?.dmgDownloadUrl) return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
+  if (release?.packageDownloadUrl) return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
+  return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
 };
 
 const RELEASE_DISMISS_SESSION_KEY = 'vdx.release.dismissedVersion';

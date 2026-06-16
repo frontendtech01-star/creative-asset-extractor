@@ -1249,8 +1249,8 @@ const parseGithubReleasePayload = (data: any) => {
     body: String(data?.body || ''),
     publishedAt: String(data?.published_at || ''),
     htmlUrl: String(data?.html_url || ''),
-    packageDownloadUrl: String(packageAsset?.browser_download_url || data?.html_url || ''),
-    packageAssetName: String(packageAsset?.name || 'Latest GitHub release package'),
+    packageDownloadUrl: String(dmgAsset?.browser_download_url || packageAsset?.browser_download_url || data?.html_url || ''),
+    packageAssetName: String(dmgAsset?.name || packageAsset?.name || 'Latest Release'),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
     exeDownloadUrl: String(exeAsset?.browser_download_url || ''),
     dmgAssetName: String(dmgAsset?.name || ''),
@@ -1278,13 +1278,6 @@ const readProjectReleaseNotes = async () => {
   }
   return '';
 };
-
-const removeInstallerLinksFromReleaseNotes = (body: string) =>
-  String(body || '')
-    .split(/\r?\n/)
-    .filter((line) => !/\.dmg\b|macos\s+download/i.test(line))
-    .join('\n')
-    .trim();
 
 app.get('/api/app-meta', async (_req, res) => {
   const pkg = await resolvePackageMeta();
@@ -1319,8 +1312,8 @@ app.get('/api/github-latest-release', async (_req, res) => {
         ...release,
         repoUrl: links.repoUrl,
         releasesUrl: links.releasesUrl,
-        packageDownloadUrl: release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
-        packageAssetName: release.packageAssetName || 'Latest GitHub release package',
+        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl || release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
+        packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || 'Latest Release',
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
         dmgAssetName: release.dmgAssetName || links.dmgAssetName,
       },
@@ -1350,10 +1343,10 @@ app.get('/api/release-notes', async (_req, res) => {
     htmlUrl: links.htmlUrl,
     repoUrl: links.repoUrl,
     releasesUrl: links.releasesUrl,
-    packageDownloadUrl: links.releasesUrl,
-    packageAssetName: 'Latest GitHub release package',
-    dmgDownloadUrl: '',
-    dmgAssetName: '',
+    packageDownloadUrl: links.dmgDownloadUrl,
+    packageAssetName: links.dmgAssetName,
+    dmgDownloadUrl: links.dmgDownloadUrl,
+    dmgAssetName: links.dmgAssetName,
     exeDownloadUrl: '',
     source: 'local' as 'local' | 'github',
   };
@@ -1370,12 +1363,12 @@ app.get('/api/release-notes', async (_req, res) => {
     release = {
       ...release,
       ...githubRelease,
-      body: removeInstallerLinksFromReleaseNotes(githubRelease.body || localNotes),
+      body: githubRelease.body || localNotes,
       htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
-      packageDownloadUrl: githubRelease.packageDownloadUrl || githubRelease.htmlUrl || links.releasesUrl,
-      packageAssetName: 'Latest GitHub release package',
-      dmgDownloadUrl: '',
-      dmgAssetName: '',
+      packageDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl || githubRelease.packageDownloadUrl || githubRelease.htmlUrl || links.releasesUrl,
+      packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName || githubRelease.packageAssetName || 'Latest Release',
+      dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       source: 'github',
     };
   } catch (error: any) {

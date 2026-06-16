@@ -1,21 +1,22 @@
 # Release Notes
 
-## v2.0
+## Latest Release
 
-**Download source code:** [creative-asset-extractor-v2.0.zip](https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip)
+**macOS download (Apple Silicon):** [Creative Asset Extractor-1.0.0-arm64.dmg](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v1.0.0/Creative%20Asset%20Extractor-1.0.0-arm64.dmg)
 
-### Installation
+### DMG Installation
 
-1. Download and extract the ZIP archive
-2. Open the folder and run `npm install`
-3. Start the app with `npm run dev`
-4. Open the URL printed in the terminal (typically `http://localhost:3000`)
+1. Download the DMG from the link above.
+2. Open the DMG in Finder.
+3. Drag `Creative Asset Extractor` into `Applications`.
+4. Launch the app from `Applications`.
 
-For detailed setup, platform notes, and troubleshooting → [INSTALLATION.md](INSTALLATION.md)
+For the DMG install guide and first-launch help → [INSTALLATION_DMG.md](INSTALLATION_DMG.md)
 
 ### What's new
 
-- Initial v2.0 release — migrated to new branch structure and updated dependencies.
+- Rebuilt Video Downloader with DMG-first release notes and install guidance.
+- Updated release links to point directly to the macOS DMG.
 
 ---
 
