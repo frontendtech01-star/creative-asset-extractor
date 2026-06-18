@@ -132,6 +132,13 @@ export const readDownloaderJob = async (id: string) => {
   return data.job as DownloaderJob;
 };
 
+export const listDownloaderJobs = async () => {
+  const response = await apiFetch('/api/downloader/jobs');
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not load downloader jobs.');
+  return (Array.isArray(data?.items) ? data.items : []) as DownloaderJob[];
+};
+
 export const waitForDownloaderJob = async (
   initial: DownloaderJob,
   onProgress?: (job: DownloaderJob) => void
@@ -153,11 +160,15 @@ export const listDownloaderFiles = async () => {
   return (Array.isArray(data?.items) ? data.items : []) as DownloaderFile[];
 };
 
-export const clearDownloaderFiles = async () => {
-  const response = await apiFetch('/api/downloader/downloads', { method: 'DELETE' });
+export const clearDownloaderFiles = async (deleteFiles = false) => {
+  const response = await apiFetch('/api/downloader/downloads', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deleteFiles }),
+  });
   const data = await readJson(response);
   if (!response.ok) throw new Error(data?.error || 'Could not clear downloads.');
-  return data as { ok: true; removed: number };
+  return data as { ok: true; removed: number; mode?: 'history' | 'files' };
 };
 
 export const downloaderFileUrl = (file: DownloaderFile | DownloaderResult) =>

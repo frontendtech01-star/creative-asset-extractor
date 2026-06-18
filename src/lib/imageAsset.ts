@@ -25,6 +25,7 @@ export const resolveImageConvertRequestUrl = (img: { url?: string; cachedUrl?: s
   const remote = String(img?.url || '').trim();
   if (remote.startsWith('data:')) return remote;
   const cached = String(img?.cachedUrl || '').trim();
+  if (cached.startsWith('data:image/')) return cached;
   if (cached.startsWith('/cached-images-original/')) return cached;
   return remote;
 };

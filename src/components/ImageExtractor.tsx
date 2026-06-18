@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Download, Image as ImageIcon, Search, Filter } from 'lucide-react';
+import { Check, Download, FolderOpen, Image as ImageIcon, Search, Filter } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import LazyCachedImageThumb from './LazyCachedImageThumb';
 import {
   buildImageZipItem,
   getImageAssetKey,
@@ -31,8 +32,49 @@ export default function ImageExtractor({
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);
   const [zipResult, setZipResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [fetchedMeta, setFetchedMeta] = useState<Record<string, { format?: string; dimensions?: string; size?: string }>>({});
+  const [previewState, setPreviewState] = useState<Record<string, 'ready' | 'failed'>>({});
+
+  const openDownloadFolder = async () => {
+    try {
+      await apiFetch('/api/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: 'images',
+          sourcePageUrl: sourcePageUrl || undefined,
+        }),
+      });
+    } catch {
+      // best-effort local shortcut
+    }
+  };
+
+  const saveDataImage = async (dataUrl: string, filename: string) => {
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) throw new Error('Invalid cached image payload.');
+    const header = dataUrl.slice(0, comma);
+    const payload = dataUrl.slice(comma + 1);
+    const extMatch = header.match(/^data:image\/([a-z0-9.+-]+)/i);
+    const ext = (extMatch?.[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+    const saveFilename = filename.replace(/\.[^.]+$/, '') + `.${ext}`;
+    const base64 = header.includes(';base64') ? payload : btoa(decodeURIComponent(payload));
+    const response = await apiFetch('/api/save-asset-buffer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64, filename: saveFilename, kind: 'image', sourcePageUrl: sourcePageUrl || undefined }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result?.error || 'Image save failed');
+    return result;
+  };
+
+  useEffect(() => {
+    setPreviewState({});
+    setSelected(new Set());
+  }, [images, sourcePageUrl]);
 
   useEffect(() => {
     if (!images.length) return;
@@ -67,18 +109,12 @@ export default function ImageExtractor({
   const handleDownload = async (img: any, filename: string) => {
     const key = getImageAssetKey(img);
     setDownloading(key);
+    setDownloadResult(null);
     try {
-      if (key.startsWith('data:')) {
-        const comma = key.indexOf(',');
-        const payload = comma >= 0 ? key.slice(comma + 1) : '';
-        const base64 = key.slice(0, comma).includes(';base64') ? payload : btoa(decodeURIComponent(payload));
-        const response = await apiFetch('/api/save-asset-buffer', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ base64, filename, kind: 'image', sourcePageUrl: sourcePageUrl || undefined }),
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result?.error || 'Image save failed');
+      const cachedDataUrl = String(img?.cachedUrl || '').trim();
+      if (key.startsWith('data:') || cachedDataUrl.startsWith('data:image/')) {
+        const saved = await saveDataImage(key.startsWith('data:') ? key : cachedDataUrl, filename);
+        setDownloadResult({ ok: true, message: `${saved?.filename || filename} saved to Downloads.`, url: key });
         return;
       }
 
@@ -92,16 +128,21 @@ export default function ImageExtractor({
       const response = await apiFetch(`/api/download-image?${params.toString()}`);
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Image save failed');
+      setDownloadResult({ ok: true, message: `${filename} saved to Downloads.`, url: key });
     } catch (error: any) {
       console.error('Download error:', error);
-      alert(error?.message || 'Failed to download image.');
+      const rawMessage = String(error?.message || 'Failed to download image.');
+      const blockedMessage = /failed to fetch a valid image|not a valid image|403|forbidden|cloudflare|blocked/i.test(rawMessage)
+        ? 'This site blocked the direct image download. Open the source URL in the authenticated browser tab, or use Download Selected after the image has been cached.'
+        : rawMessage;
+      setDownloadResult({ ok: false, message: blockedMessage, url: key });
     } finally {
       setDownloading(null);
     }
   };
 
   const handleDownloadAll = async () => {
-    const selectedImages = filteredImages.filter((img) => selected.has(getImageAssetKey(img)));
+    const selectedImages = visibleImages.filter((img) => selected.has(getImageAssetKey(img)));
     if (selectedImages.length === 0) return;
     setDownloadingZip(true);
     setZipResult(null);
@@ -147,9 +188,11 @@ export default function ImageExtractor({
     const matchesFilter = filterType === 'all' || img.type.toLowerCase() === filterType.toLowerCase();
     return matchesSearch && matchesFilter;
   });
+  const visibleImages = filteredImages.filter((img) => previewState[getImageAssetKey(img)] === 'ready');
+  const loadingPreviewCount = filteredImages.filter((img) => previewState[getImageAssetKey(img)] !== 'failed').length - visibleImages.length;
 
   const uniqueTypes = Array.from(new Set(images.map(img => img.type.toLowerCase()))).filter(Boolean);
-  const selectedCount = filteredImages.filter((img) => selected.has(getImageAssetKey(img))).length;
+  const selectedCount = visibleImages.filter((img) => selected.has(getImageAssetKey(img))).length;
 
   if (images.length === 0) {
     return (
@@ -224,12 +267,83 @@ export default function ImageExtractor({
               : 'border-red-200 bg-red-50 text-red-800'
           }`}
         >
-          {zipResult.message}
+          <p>{zipResult.message}</p>
+          {zipResult.ok ? (
+            <button
+              type="button"
+              onClick={() => void openDownloadFolder()}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Open Folder
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-        {filteredImages.map((img, idx) => {
+      {downloadResult ? (
+        <div
+          role="status"
+          className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+            downloadResult.ok
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+              : 'border-amber-200 bg-amber-50 text-amber-900'
+          }`}
+        >
+          <p>{downloadResult.message}</p>
+          {downloadResult.ok ? (
+            <button
+              type="button"
+              onClick={() => void openDownloadFolder()}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Open Folder
+            </button>
+          ) : null}
+          {!downloadResult.ok && downloadResult.url ? (
+            <p className="mt-1 truncate text-xs font-normal opacity-80" title={downloadResult.url}>
+              {downloadResult.url}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {visibleImages.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-200 bg-white py-16 text-center text-zinc-500">
+          <ImageIcon className="mb-3 h-10 w-10 text-zinc-300" />
+          <p className="text-sm font-semibold text-zinc-900">
+            {loadingPreviewCount > 0 ? 'Loading image previews…' : 'No image previews could be loaded'}
+          </p>
+          <p className="mt-1 max-w-lg text-xs text-zinc-500">
+            Open the website in Chrome, clear any captcha or blocker, then use Extract From Open Website to capture browser-session previews.
+          </p>
+        </div>
+      ) : null}
+
+      <div className="fixed left-0 top-0 h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
+        {filteredImages
+          .filter((img) => !previewState[getImageAssetKey(img)])
+          .map((img, idx) => {
+            const key = getImageAssetKey(img);
+            const filename = getImageDisplayName(img, idx);
+            return (
+              <div key={`preload-${key || idx}`} className="h-1 w-1 overflow-hidden">
+                <LazyCachedImageThumb
+                  img={img}
+                  sourcePageUrl={sourcePageUrl}
+                  alt=""
+                  fallbackLabel={filename}
+                  onReady={() => setPreviewState((current) => ({ ...current, [key]: 'ready' }))}
+                  onFailed={() => setPreviewState((current) => ({ ...current, [key]: 'failed' }))}
+                />
+              </div>
+            );
+          })}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+        {visibleImages.map((img, idx) => {
           const key = getImageAssetKey(img);
           const filename = getImageDisplayName(img, idx);
           const isSelected = selected.has(key);
@@ -237,24 +351,23 @@ export default function ImageExtractor({
           return (
             <div key={key || idx} className={`group relative bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all ${isSelected ? 'border-indigo-600 ring-2 ring-indigo-600/20' : 'border-zinc-200'}`}>
               <div className="aspect-square bg-zinc-100 relative">
-                <img
-                  src={img.url}
+                <LazyCachedImageThumb
+                  img={img}
+                  sourcePageUrl={sourcePageUrl}
                   alt={`Extracted ${idx}`}
-                  className="w-full h-full object-contain p-2"
-                  loading="lazy"
-                  onLoad={(event) => {
-                    const target = event.currentTarget;
-                    if (!key || target.naturalWidth <= 0 || target.naturalHeight <= 0) return;
+                  fallbackLabel={filename}
+                  className="object-contain p-2"
+                  onReady={() => setPreviewState((current) => ({ ...current, [key]: 'ready' }))}
+                  onFailed={() => setPreviewState((current) => ({ ...current, [key]: 'failed' }))}
+                  onDimensions={(width, height) => {
+                    if (!key || width <= 0 || height <= 0) return;
                     setFetchedMeta((current) => ({
                       ...current,
                       [key]: {
                         ...(current[key] || {}),
-                        dimensions: `${target.naturalWidth}×${target.naturalHeight}`,
+                        dimensions: `${width}×${height}`,
                       },
                     }));
-                  }}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNkNGRkZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgeD0iMyIgeT0iMyIgcng9IjIiIHJ5PSIyIi8+PGNpcmNsZSBjeD0iOSIgY3k9IjkiIHI9IjIiLz48cGF0aCBkPSJtMjEgMTUtMy4wODYtMy4wODZhMiAyIDAgMCAwLTIuODI4IDBMMCAyMSIvPjwvc3ZnPg==';
                   }}
                 />
                 <button

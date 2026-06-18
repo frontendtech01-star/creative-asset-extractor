@@ -184,9 +184,6 @@ var resolvePlatformVideoAssetsDir = (platform) => {
   const root = path.join(os.homedir(), "Downloads", buildPlatformCreativeAssetsFolderName(platform));
   return path.join(root, VIDEO_ASSET_SUBFOLDER);
 };
-var ensurePlatformVideoFolderOnly = async (platform) => {
-  await fsp.mkdir(resolvePlatformVideoAssetsDir(platform), { recursive: true });
-};
 var removeDirectoryWhenEmpty = async (directory) => {
   const entries = await fsp.readdir(directory).catch(() => null);
   if (!entries) return;
@@ -214,6 +211,19 @@ var removeEmptyCreativeAssetFolders = async (sourcePageUrl) => {
 
 // server/video-downloader-routes.ts
 var execFileAsync = promisify(execFile);
+var writeLog = async (jobId, data) => {
+  try {
+    const logsDir = path2.join(os2.homedir(), "Downloads", "youtube_CreativeAssets", "Logs");
+    await fsp2.mkdir(logsDir, { recursive: true });
+    const logFile = path2.join(logsDir, `${jobId || "unknown"}-${Date.now()}.log`);
+    const entry = {
+      ...data,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await fsp2.writeFile(logFile, JSON.stringify(entry, null, 2) + "\n", "utf8");
+  } catch {
+  }
+};
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "direct"];
 var jobs = /* @__PURE__ */ new Map();
@@ -281,29 +291,22 @@ var validateDownloaderUrl = (rawUrl, validateUrl) => {
   }
   return { url: normalizeDownloaderUrl(parsed.href, platform), platform };
 };
-var toolCandidates = (options, name) => {
-  const file = binaryName(name);
-  return [
-    path2.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin", file),
-    path2.join(options.resourcesPath, "bin", file),
-    path2.join(options.appRoot, "vendor", "bin-pack", file),
-    path2.join(process.cwd(), "vendor", "bin-pack", file)
-  ];
+var resolveTool = (options, name) => {
+  const fileName = binaryName(name);
+  const candidates = [
+    path2.join(options.resourcesPath || "", "bin", fileName),
+    path2.join(options.appRoot || "", "vendor", "bin-pack", fileName),
+    path2.join(options.resourcesPath || "", "vendor", "bin-pack", fileName),
+    path2.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin", fileName),
+    path2.join(process.cwd(), "runtime-bin", fileName)
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 };
-var resolveTool = (options, name) => toolCandidates(options, name).find((candidate) => fs.existsSync(candidate)) || "";
 var ensureRuntimeYtDlp = async (options) => {
-  const runtimeDir = path2.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin");
-  const runtimePath = path2.join(runtimeDir, binaryName("yt-dlp"));
-  if (fs.existsSync(runtimePath)) {
-    await fsp2.chmod(runtimePath, 493).catch(() => void 0);
-    return runtimePath;
-  }
-  const source = toolCandidates(options, "yt-dlp").find((candidate) => candidate !== runtimePath && fs.existsSync(candidate));
-  if (!source) throw new Error("Video extractor is missing. Run npm install, then restart the app.");
-  await fsp2.mkdir(runtimeDir, { recursive: true });
-  await fsp2.copyFile(source, runtimePath);
-  await fsp2.chmod(runtimePath, 493).catch(() => void 0);
-  return runtimePath;
+  const toolPath = resolveTool(options, "yt-dlp");
+  if (!toolPath) throw new Error("Video extractor is missing. Reinstall the app.");
+  await fsp2.chmod(toolPath, 493).catch(() => void 0);
+  return toolPath;
 };
 var platformHeaders = (platform) => {
   if (platform === "instagram") return ["--referer", "https://www.instagram.com/", "--add-header", "Origin:https://www.instagram.com"];
@@ -331,21 +334,9 @@ var commonYtDlpArgs = (options, platform) => {
     ...platformHeaders(platform)
   ];
 };
-var ytDlpDownloadAccelerationArgs = (options, quality) => {
-  if (quality === "audio") return [];
+var aria2cAvailable = (options) => {
   const aria2Path2 = resolveTool(options, "aria2c");
-  return [
-    "--concurrent-fragments",
-    "16",
-    "--buffer-size",
-    "64K",
-    ...aria2Path2 ? [
-      "--downloader",
-      "aria2c",
-      "--downloader-args",
-      "aria2c:-x 16 -s 16 -k 1M --file-allocation=none --summary-interval=0 --console-log-level=warn"
-    ] : []
-  ];
+  return aria2Path2 ? aria2Path2 : "";
 };
 var toolPathEnv = (options) => {
   const dirs = ["ffmpeg", "ffprobe", "yt-dlp", "aria2c"].map((tool) => resolveTool(options, tool)).filter(Boolean).map((toolPath) => path2.dirname(toolPath));
@@ -363,6 +354,27 @@ var cookieAttempts = (platform) => {
   return attempts;
 };
 var errorText = (error) => [error?.message, error?.stderr, error?.stdout].filter(Boolean).join("\n").trim();
+var parseYtDlpProgressLine = (line) => {
+  if (line.startsWith("__VDX_PROGRESS__|")) {
+    const [, percentText, downloadedText, totalText, speed, eta] = line.split("|");
+    return {
+      percent: Number(String(percentText || "").replace("%", "").trim()),
+      downloadedBytes: Number(downloadedText || 0) || void 0,
+      totalBytes: Number(totalText || 0) || void 0,
+      speed: String(speed || "").trim() || void 0,
+      eta: String(eta || "").trim() || void 0
+    };
+  }
+  const percentMatch = line.match(/\[download\]\s+(\d+(?:\.\d+)?)%/i) || line.match(/\((\d+(?:\.\d+)?)%\)/);
+  if (!percentMatch?.[1]) return null;
+  const speedMatch = line.match(/\b(?:at|DL:)\s*([0-9.]+\s*[KMGT]?i?B\/s)/i);
+  const etaMatch = line.match(/\bETA\s*([0-9:]+|[0-9]+s)/i);
+  return {
+    percent: Number(percentMatch[1]),
+    speed: speedMatch?.[1]?.trim(),
+    eta: etaMatch?.[1]?.trim()
+  };
+};
 var isXGuestTokenError = (message) => /bad guest token|guest token|twitter.*querying api|x\.com.*extract/i.test(message);
 var isAuthLikeError = (message) => /login|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available/i.test(message);
 var friendlyDownloaderError = (platform, message) => {
@@ -382,7 +394,12 @@ var friendlyDownloaderError = (platform, message) => {
   }
   if (/unsupported url/i.test(message)) return "This link is not supported by the current video extractor.";
   if (/no video formats|no formats|no downloadable/i.test(message)) return "No downloadable video stream was found for this link.";
-  return "Video extraction failed. Confirm the link is public and try again.";
+  if (/ffmpeg.*not found|ffprobe.*not found|--ffmpeg-location/i.test(message)) return "Video processing tools are not available. Reinstall the app.";
+  if (/permission denied|operation not permitted|errno 1/i.test(message)) return "Video tools permission error. Try reinstalling the DMG.";
+  if (/no such file|ENOENT|spawn/i.test(message)) return "Video engine failed to launch. Missing binary in app bundle.";
+  const short = message.split("\n")[0].slice(0, 150);
+  if (short.length > 10) return short;
+  return "Video download failed. Check ~/Downloads/youtube_CreativeAssets/Logs/ for details.";
 };
 var updateYtDlp = async (options) => {
   if (updatePromise) return updatePromise;
@@ -487,6 +504,12 @@ var inspectWithFallbacks = async (options, rawUrl, platform) => {
       lastError = error;
     }
   }
+  void writeLog(void 0, {
+    event: "inspect_failed",
+    platform,
+    url: rawUrl,
+    last_error: errorText(lastError)
+  });
   throw new Error(friendlyDownloaderError(platform, errorText(lastError)));
 };
 var bestThumbnail = (info) => {
@@ -513,7 +536,7 @@ var infoToCards = (info, sourceUrl, platform) => {
     if (seen.has(key)) continue;
     seen.add(key);
     const hasVideo = videoFormats.length > 0 || Boolean(entry?.url);
-    const fhdAvailable = maxHeight >= 1e3;
+    const fhdAvailable = hasVideo;
     const hdAvailable = hasVideo;
     const audioAvailable = audioFormats.length > 0 || String(entry?.acodec || "") !== "none";
     cards.push({
@@ -537,7 +560,7 @@ var infoToCards = (info, sourceUrl, platform) => {
       },
       audioAvailable,
       noAudio: !audioAvailable,
-      fallbackMessage: !fhdAvailable && hdAvailable ? "FHD is unavailable. HD or the best available quality will be used." : void 0
+      fallbackMessage: maxHeight > 0 && maxHeight < 1e3 ? `Best available quality is ${maxHeight}p. The FHD download will use the best available MP4.` : void 0
     });
   }
   return cards;
@@ -550,8 +573,12 @@ var specialPayloadToCards = (payload, sourceUrl, platform) => {
     const key = `${platform}:${id}`;
     if (seen.has(key)) return null;
     seen.add(key);
-    const fhdAvailable = Boolean(video?.qualityVariants?.fhd?.formatAvailable ?? video?.streams?.FHD?.ready ?? Number(video?.height || 0) >= 1e3);
-    const hdAvailable = Boolean(video?.qualityVariants?.hd?.formatAvailable ?? video?.streams?.HD?.ready ?? true);
+    const hasVideo = Boolean(
+      video?.qualityVariants?.fhd?.formatAvailable ?? video?.qualityVariants?.hd?.formatAvailable ?? video?.streams?.FHD?.ready ?? video?.streams?.HD?.ready ?? video?.url
+    );
+    const maxHeight = Number(video?.height || video?.maxHeight || 0) || 0;
+    const fhdAvailable = hasVideo;
+    const hdAvailable = hasVideo && Boolean(video?.qualityVariants?.hd?.formatAvailable ?? video?.streams?.HD?.ready ?? true);
     const audioAvailable = video?.audioAvailable !== false && video?.noAudio !== true;
     return {
       id,
@@ -561,7 +588,7 @@ var specialPayloadToCards = (payload, sourceUrl, platform) => {
       duration: Number(video?.duration || video?.durationSeconds || 0) || void 0,
       provider: platform,
       platform,
-      maxHeight: Number(video?.height || 0) || void 0,
+      maxHeight: maxHeight || void 0,
       defaultQualityKey: fhdAvailable ? "fhd" : "hd",
       displayQualityLabel: fhdAvailable ? "FHD" : "HD",
       qualityVariants: {
@@ -574,17 +601,36 @@ var specialPayloadToCards = (payload, sourceUrl, platform) => {
       },
       audioAvailable,
       noAudio: !audioAvailable,
-      fallbackMessage: video?.fallbackMessage || (!fhdAvailable ? "FHD is unavailable. HD or the best available quality will be used." : void 0)
+      fallbackMessage: video?.fallbackMessage || (maxHeight > 0 && maxHeight < 1e3 ? `Best available quality is ${maxHeight}p. The FHD download will use the best available MP4.` : void 0)
     };
   }).filter(Boolean);
 };
 var updateJob = (job, patch) => {
   Object.assign(job, patch, { updatedAt: now() });
 };
-var formatSelector = (platform, quality) => {
+var formatSelector = (platform, quality, fallback = false) => {
   if (quality === "audio") return "bestaudio/best";
   const height = quality === "fhd" ? 1080 : 720;
-  return `bv*[height<=${height}][ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b[height<=${height}][ext=mp4]/best`;
+  if (platform === "youtube") {
+    if (!fallback) {
+      return [
+        `bestvideo[height<=${height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]`,
+        `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio`,
+        `best[height<=${height}][ext=mp4][vcodec!=none][acodec!=none]`,
+        `best[height<=${height}][vcodec!=none][acodec!=none]`,
+        `bestvideo[height<=${height}]+bestaudio`,
+        "best"
+      ].join("/");
+    }
+    return `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
+  }
+  if (platform === "vimeo") {
+    return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
+  }
+  if (platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
+    return "best[ext=mp4]/best";
+  }
+  return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
 };
 var runToolJson = async (toolPath, args) => {
   const { stdout } = await execFileAsync(toolPath, args, { timeout: 12e4, maxBuffer: 20 * 1024 * 1024 });
@@ -609,13 +655,22 @@ var replaceFile = async (source, target) => {
   await fsp2.rm(target, { force: true }).catch(() => void 0);
   await fsp2.rename(source, target);
 };
-var ensureQuickTimeMp4 = async (options, inputPath) => {
+var ensureQuickTimeMp4 = async (options, inputPath, jobId) => {
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   if (!ffmpegPath2) throw new Error("ffmpeg is missing. Run npm install, then restart the app.");
+  const probeStart = Date.now();
+  const probe = await probeMedia(options, inputPath);
+  const probeMs = Date.now() - probeStart;
+  void writeLog(jobId, { event: "qt_probe", probe_ms: probeMs });
+  const quickTimeOk = isQuickTimeCompatible(probe);
+  if (quickTimeOk) {
+    void writeLog(jobId, { event: "qt_skip", reason: "already_compatible" });
+    return inputPath;
+  }
   const outputPath = /\.mp4$/i.test(inputPath) ? inputPath : inputPath.replace(/\.[^.]+$/, "") + ".mp4";
   const tempOutput = path2.join(path2.dirname(outputPath), `.${path2.basename(outputPath, path2.extname(outputPath))}.${crypto.randomUUID()}.mp4`);
-  const probe = await probeMedia(options, inputPath);
-  const args = isQuickTimeCompatible(probe) ? ["-y", "-i", inputPath, "-c", "copy", "-movflags", "+faststart", "-f", "mp4", tempOutput] : [
+  const encodeStart = Date.now();
+  await execFileAsync(ffmpegPath2, [
     "-y",
     "-i",
     inputPath,
@@ -634,47 +689,31 @@ var ensureQuickTimeMp4 = async (options, inputPath) => {
     "-movflags",
     "+faststart",
     tempOutput
-  ];
-  await execFileAsync(ffmpegPath2, args, { timeout: 20 * 60 * 1e3, maxBuffer: 20 * 1024 * 1024 });
+  ], { timeout: 20 * 60 * 1e3, maxBuffer: 20 * 1024 * 1024 });
+  void writeLog(jobId, { event: "qt_encode", encode_ms: Date.now() - encodeStart });
   await replaceFile(tempOutput, outputPath);
   if (path2.resolve(inputPath) !== path2.resolve(outputPath)) await fsp2.rm(inputPath, { force: true }).catch(() => void 0);
   return outputPath;
 };
-var parseProgressLine = (job, line) => {
-  if (line.startsWith("__VDX_PROGRESS__|")) {
-    const [, percentText, downloadedText, totalText, speed, eta] = line.split("|");
-    const progress = Number(String(percentText || "").replace("%", "").trim());
-    updateJob(job, {
-      progress: Number.isFinite(progress) ? Math.max(1, Math.min(progress, 99)) : job.progress,
-      downloadedBytes: Number(downloadedText || 0) || job.downloadedBytes,
-      totalBytes: Number(totalText || 0) || job.totalBytes,
-      speed: String(speed || "").trim() || job.speed,
-      eta: String(eta || "").trim() || job.eta,
-      message: "Downloading media..."
-    });
-  }
-};
-var applyYtDlpStageLine = (job, line) => {
-  if (/^\[(youtube|vimeo|instagram|facebook|twitter|x|TikTok|generic)\]/i.test(line)) {
-    updateJob(job, {
-      progress: Math.max(job.progress || 0, 8),
-      message: "Resolving video..."
-    });
-    return;
-  }
-  if (/^\[download\]\s+Destination:/i.test(line) || /^\[Merger\]/i.test(line)) {
-    updateJob(job, {
-      progress: Math.max(job.progress || 0, 12),
-      message: /^\[Merger\]/i.test(line) ? "Merging audio and video..." : "Starting transfer..."
-    });
-  }
-};
 var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
+  const attemptStart = Date.now();
   const ytdlp = await ensureRuntimeYtDlp(options);
   const platformDir = resolvePlatformVideoAssetsDir(job.platform);
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   await fsp2.mkdir(platformDir, { recursive: true });
   const outputTemplate = path2.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
+  const ffmpegPath2 = resolveTool(options, "ffmpeg");
+  const aria2Path2 = aria2cAvailable(options);
+  const hasAria2 = extraArgs.includes("--no-aria2") ? false : Boolean(aria2Path2);
+  void writeLog(job.id, {
+    event: "download_start",
+    ytdlp_path: ytdlp,
+    ffmpeg_path: ffmpegPath2 || "not found",
+    aria2c_path: aria2Path2 || "not found (disabled)",
+    platform: job.platform,
+    quality: job.quality,
+    url
+  });
   const args = [
     ...commonYtDlpArgs(options, job.platform),
     "--newline",
@@ -695,20 +734,23 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "--output",
     outputTemplate,
     "--format",
-    formatSelector(job.platform, job.quality),
-    ...ytDlpDownloadAccelerationArgs(options, job.quality),
-    ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-movflags +faststart"],
-    ...extraArgs,
+    formatSelector(job.platform, job.quality, Boolean(extraArgs.includes("--quality-fallback"))),
+    ...hasAria2 ? ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 16 -s 16 -k 1M"] : [],
+    "--concurrent-fragments",
+    "16",
+    "--buffer-size",
+    "64K",
+    ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
+    ...extraArgs.filter((a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback")),
     url
   ];
   return new Promise((resolve, reject) => {
     updateJob(job, {
-      progress: Math.max(job.progress || 0, 6),
-      message: job.platform === "youtube" ? "Resolving YouTube formats..." : "Resolving video..."
+      progress: 5,
+      message: "Starting download..."
     });
     const extraPath = toolPathEnv(options);
     const child = spawn(ytdlp, args, {
-      cwd: options.appRoot,
       env: { ...process.env, PATH: extraPath ? `${extraPath}${path2.delimiter}${process.env.PATH || ""}` : process.env.PATH },
       stdio: ["ignore", "pipe", "pipe"],
       shell: false
@@ -718,23 +760,58 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     let filePath = "";
     let resolvedTitle = "";
     let thumbnail = "";
-    let sawTransferProgress = false;
-    const resolvingTimer = setInterval(() => {
-      if (sawTransferProgress || job.status !== "running") return;
-      const nextProgress = Math.min(18, Math.max(6, job.progress || 0) + 1);
-      updateJob(job, {
-        progress: nextProgress,
-        message: nextProgress >= 14 ? "Preparing media transfer..." : job.message || "Resolving video..."
-      });
-    }, 2500);
+    let lastProgressTime = null;
+    const softProgressForElapsed = () => Math.min(35, Math.max(job.progress, 6 + Math.floor((Date.now() - attemptStart) / 4e3) * 2));
+    const watchdogInterval = setInterval(() => {
+      if (lastProgressTime === null) {
+        if (Date.now() - attemptStart > 4e3 && job.status === "running" && job.progress < 35) {
+          updateJob(job, {
+            progress: softProgressForElapsed(),
+            message: "Preparing video stream..."
+          });
+        }
+        return;
+      }
+      const elapsed = Date.now() - lastProgressTime;
+      if (elapsed > 12e4) {
+        child.kill();
+        clearInterval(watchdogInterval);
+        reject(new Error("Download took too long. The video may be unavailable or very large."));
+        return;
+      }
+      if (elapsed > 5e3 && job.status === "running" && job.progress < 85) {
+        updateJob(job, {
+          progress: softProgressForElapsed(),
+          message: elapsed > 3e4 ? "Still downloading..." : "Downloading..."
+        });
+      }
+    }, 5e3);
     const consume = (chunk, isError) => {
       const text = chunk.toString();
       if (isError) stderr += text;
       else stdout += text;
+      if (lastProgressTime === null) lastProgressTime = Date.now();
       for (const line of text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
-        parseProgressLine(job, line);
-        if (line.startsWith("__VDX_PROGRESS__|")) sawTransferProgress = true;
-        applyYtDlpStageLine(job, line);
+        const parsedProgress = parseYtDlpProgressLine(line);
+        if (parsedProgress) {
+          const ytProgress = parsedProgress.percent;
+          const mapped = Number.isFinite(ytProgress) ? 5 + ytProgress * 0.8 : job.progress;
+          lastProgressTime = Date.now();
+          updateJob(job, {
+            progress: Math.max(5, Math.min(mapped, 85)),
+            downloadedBytes: parsedProgress.downloadedBytes || job.downloadedBytes,
+            totalBytes: parsedProgress.totalBytes || job.totalBytes,
+            speed: parsedProgress.speed || job.speed,
+            eta: parsedProgress.eta || job.eta,
+            message: "Downloading video stream..."
+          });
+        }
+        if (/^\[Merger\]/i.test(line)) {
+          updateJob(job, {
+            progress: Math.max(job.progress, 85),
+            message: "Merging video + audio..."
+          });
+        }
         if (line.startsWith("__VDX_FILE__:")) filePath = line.slice("__VDX_FILE__:".length).trim();
         if (line.startsWith("__VDX_TITLE__:")) resolvedTitle = line.slice("__VDX_TITLE__:".length).trim();
         if (line.startsWith("__VDX_THUMB__:")) thumbnail = line.slice("__VDX_THUMB__:".length).trim();
@@ -743,11 +820,22 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     child.stdout.on("data", (chunk) => consume(chunk, false));
     child.stderr.on("data", (chunk) => consume(chunk, true));
     child.on("error", (error) => {
-      clearInterval(resolvingTimer);
+      clearInterval(watchdogInterval);
+      void writeLog(job.id, { event: "spawn_error", error: error.message });
       reject(error);
     });
     child.on("close", async (code) => {
-      clearInterval(resolvingTimer);
+      clearInterval(watchdogInterval);
+      void writeLog(job.id, {
+        event: "download_exit",
+        exit_code: code,
+        stdout: stdout.slice(0, 1e4),
+        stderr: stderr.slice(0, 1e4),
+        ytdlp_path: ytdlp,
+        ffmpeg_path: ffmpegPath2 || "not found",
+        aria2c_path: aria2Path2 || "not found",
+        command: `yt-dlp ${args.slice(0, 20).join(" ")} ...`
+      });
       if (code !== 0) {
         reject(Object.assign(new Error(stderr || stdout || `yt-dlp exited with ${code}`), { stderr, stdout }));
         return;
@@ -760,6 +848,8 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
         reject(new Error("Download finished but no output file was found."));
         return;
       }
+      const downloadMs = Date.now() - attemptStart;
+      void writeLog(job.id, { event: "download_ok", download_ms: downloadMs, file_path: filePath });
       resolve({ filePath, title: resolvedTitle, thumbnail });
     });
   });
@@ -768,11 +858,46 @@ var runDownloadWithFallbacks = async (options, job) => {
   const normalizedUrl = normalizeDownloaderUrl(job.url, job.platform);
   const urls = job.platform === "x" ? Array.from(/* @__PURE__ */ new Set([normalizedUrl, normalizedUrl.replace("twitter.com", "x.com")])) : [normalizedUrl];
   let lastError;
+  const aria2 = aria2cAvailable(options);
+  if (aria2) {
+    for (const url of urls) {
+      try {
+        return await runDownloadAttempt(options, job, url);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: "fallback_no_aria2", error: errorText(error) });
+      }
+    }
+  }
   for (const url of urls) {
     try {
-      return await runDownloadAttempt(options, job, url);
+      return await runDownloadAttempt(options, job, url, ["--no-aria2"]);
     } catch (error) {
       lastError = error;
+    }
+  }
+  if (isAuthLikeError(errorText(lastError))) {
+    updateJob(job, { message: "Trying with browser cookies..." });
+    for (const cookies of cookieAttempts(job.platform)) {
+      for (const url of urls) {
+        try {
+          return await runDownloadAttempt(options, job, url, [...cookies, "--no-aria2"]);
+        } catch (error) {
+          lastError = error;
+          void writeLog(job.id, { event: "fallback_cookies", error: errorText(error) });
+        }
+      }
+    }
+  }
+  if (job.quality === "fhd") {
+    updateJob(job, { message: "Retrying with best available quality..." });
+    for (const url of urls) {
+      try {
+        return await runDownloadAttempt(options, job, url, ["--no-aria2", "--quality-fallback"]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: "fallback_best_available_quality", error: errorText(error) });
+      }
     }
   }
   if (job.platform === "x" && isXGuestTokenError(errorText(lastError))) {
@@ -780,21 +905,9 @@ var runDownloadWithFallbacks = async (options, job) => {
     await updateYtDlp(options);
     for (const url of urls) {
       try {
-        return await runDownloadAttempt(options, job, url);
+        return await runDownloadAttempt(options, job, url, ["--no-aria2"]);
       } catch (error) {
         lastError = error;
-      }
-    }
-  }
-  if (isAuthLikeError(errorText(lastError))) {
-    updateJob(job, { message: "Trying an available browser session..." });
-    for (const cookies of cookieAttempts(job.platform)) {
-      for (const url of urls) {
-        try {
-          return await runDownloadAttempt(options, job, url, cookies);
-        } catch (error) {
-          lastError = error;
-        }
       }
     }
   }
@@ -804,13 +917,18 @@ var runDownloadWithFallbacks = async (options, job) => {
     if (fallbackUrl) {
       updateJob(job, { message: "Using X.com fallback route..." });
       try {
-        return await runDownloadAttempt(options, job, fallbackUrl);
+        return await runDownloadAttempt(options, job, fallbackUrl, ["--no-aria2"]);
       } catch (error) {
         lastError = error;
       }
     }
   }
-  throw new Error(friendlyDownloaderError(job.platform, errorText(lastError)));
+  const finalMessage = errorText(lastError);
+  void writeLog(job.id, {
+    event: "all_fallbacks_exhausted",
+    final_error: finalMessage
+  });
+  throw new Error(friendlyDownloaderError(job.platform, finalMessage));
 };
 var sidecarPathFor = (filePath) => `${filePath}.creative-assets.json`;
 var readSidecar = async (filePath) => {
@@ -825,26 +943,6 @@ var readSidecar = async (filePath) => {
 var writeSidecar = async (filePath, metadata) => {
   await fsp2.writeFile(sidecarPathFor(filePath), `${JSON.stringify(metadata, null, 2)}
 `, "utf8").catch(() => void 0);
-};
-var createZipForDownload = async (filePath, metadata) => {
-  const platform = String(metadata.platform || "video");
-  const title = sanitizeFilenamePart(String(metadata.title || path2.basename(filePath, path2.extname(filePath))), "video");
-  const platformRoot = path2.dirname(resolvePlatformVideoAssetsDir(platform));
-  await fsp2.mkdir(platformRoot, { recursive: true });
-  const zipPath = path2.join(platformRoot, `${title}.zip`);
-  await new Promise((resolve, reject) => {
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver("zip", { zlib: { level: 6 } });
-    output.on("close", () => resolve());
-    output.on("error", reject);
-    archive.on("error", reject);
-    archive.pipe(output);
-    archive.file(filePath, { name: path2.basename(filePath) });
-    archive.append(`${JSON.stringify(metadata, null, 2)}
-`, { name: "metadata.json" });
-    void archive.finalize();
-  });
-  return zipPath;
 };
 var openLocalPath = async (filePath) => {
   if (process.platform === "darwin") return execFileAsync("open", [filePath]);
@@ -869,6 +967,7 @@ var listFilesRecursive = async (root) => {
       }
       if (!entry.isFile()) continue;
       if (entry.name.endsWith(".creative-assets.json")) continue;
+      if (/\.zip$/i.test(entry.name)) continue;
       const stat = await fsp2.stat(fullPath).catch(() => null);
       if (!stat) continue;
       const relativePath = path2.relative(path2.join(os2.homedir(), "Downloads"), fullPath);
@@ -913,7 +1012,9 @@ var removeEmptyParents = async (directory, stopAt) => {
 };
 var completeJob = async (options, job, downloaded) => {
   const initialPath = String(downloaded?.filePath || downloaded?.downloadPath || downloaded?.localPath || "");
-  const filePath = job.quality === "audio" ? initialPath : await ensureQuickTimeMp4(options, initialPath);
+  updateJob(job, { progress: 95, message: "Optimizing for QuickTime..." });
+  const filePath = job.quality === "audio" ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id);
+  updateJob(job, { progress: 98, message: "Finalizing file..." });
   const stat = await fsp2.stat(filePath);
   const downloadsRoot = path2.join(os2.homedir(), "Downloads");
   const title = downloaded?.title || job.title || path2.basename(filePath, path2.extname(filePath));
@@ -930,14 +1031,6 @@ var completeJob = async (options, job, downloaded) => {
     completedAt: (/* @__PURE__ */ new Date()).toISOString(),
     sourceUrl: job.url
   };
-  const zipPath = job.quality === "audio" ? "" : await createZipForDownload(filePath, metadata);
-  const zipMetadata = zipPath ? {
-    ...metadata,
-    zipPath,
-    zipDisplayPath: toDisplayPath(zipPath),
-    zipRelativePath: path2.relative(downloadsRoot, zipPath)
-  } : metadata;
-  await writeSidecar(filePath, zipMetadata);
   updateJob(job, {
     status: "completed",
     progress: 100,
@@ -952,15 +1045,25 @@ var completeJob = async (options, job, downloaded) => {
       quality: job.quality,
       platform: job.platform,
       title,
-      thumbnail: downloaded?.thumbnail || "",
-      zipPath: zipMetadata.zipPath,
-      zipDisplayPath: zipMetadata.zipDisplayPath,
-      zipRelativePath: zipMetadata.zipRelativePath
+      thumbnail: downloaded?.thumbnail || ""
     }
   });
+  void (async () => {
+    try {
+      await writeSidecar(filePath, metadata);
+    } catch {
+    }
+  })();
 };
 var processJob = async (options, job) => {
+  const startTime = Date.now();
   updateJob(job, { status: "running", progress: 2, message: "Preparing downloader..." });
+  void writeLog(job.id, {
+    event: "process_start",
+    ytdlp_path: resolveTool(options, "yt-dlp"),
+    ffmpeg_path: resolveTool(options, "ffmpeg"),
+    aria2c_path: resolveTool(options, "aria2c")
+  });
   try {
     if (job.platform === "ispot" && options.specialDownload) {
       updateJob(job, { progress: 12, message: "Resolving iSpot.tv stream..." });
@@ -970,11 +1073,23 @@ var processJob = async (options, job) => {
     }
     const downloaded = await runDownloadWithFallbacks(options, job);
     await completeJob(options, job, downloaded);
+    const totalTime = Date.now() - startTime;
+    void writeLog(job.id, { event: "download_complete", total_ms: totalTime });
   } catch (error) {
+    const rawError = errorText(error);
+    const friendly = friendlyDownloaderError(job.platform, rawError);
+    const totalTime = Date.now() - startTime;
+    void writeLog(job.id, {
+      event: "download_failed",
+      raw_error: rawError,
+      friendly_error: friendly,
+      total_ms: totalTime
+    });
+    const shortError = rawError.split("\n")[0].slice(0, 200) || friendly;
     updateJob(job, {
       status: "error",
       progress: 0,
-      error: friendlyDownloaderError(job.platform, errorText(error)),
+      error: shortError,
       message: "Download failed"
     });
   }
@@ -991,9 +1106,18 @@ var pumpQueue = (options) => {
     });
   }
 };
+var runningJobKey = (platform, url, quality) => `${platform}:${url}:${quality}`;
 var createJob = (options, input) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality = input.quality === "audio" ? "audio" : input.quality === "hd" ? "hd" : "fhd";
+  const key = runningJobKey(validated.platform, validated.url, quality);
+  for (const existing of jobs.values()) {
+    if (existing.status === "queued" || existing.status === "running") {
+      if (runningJobKey(existing.platform, existing.url, existing.quality) === key) {
+        return existing;
+      }
+    }
+  }
   const job = {
     id: crypto.randomUUID(),
     url: validated.url,
@@ -1963,7 +2087,8 @@ var resolveDownloadSaveDir = (kind = "default", sourcePageUrl) => {
   }
   return resolveCreativeAssetsRoot(pageUrl, pathOptions);
 };
-var resolveDownloadsTargetDir = (sourcePageUrl) => resolveDownloadSaveDir("video", String(sourcePageUrl || lastExtractedSourceUrl || "").trim());
+var resolveVideoDownloadTargetDir = (sourcePageUrl, saveToWebsiteAssets = false) => saveToWebsiteAssets ? resolveCreativeAssetsDir(String(sourcePageUrl || lastExtractedSourceUrl || "").trim(), "Videos") : resolveDownloadSaveDir("video", String(sourcePageUrl || lastExtractedSourceUrl || "").trim());
+var resolveDownloadsTargetDir = (sourcePageUrl) => resolveVideoDownloadTargetDir(String(sourcePageUrl || lastExtractedSourceUrl || "").trim());
 var assertPathInsideDownloads = (filePath) => {
   const resolved = path3.resolve(filePath);
   const root = path3.resolve(downloadsDir);
@@ -7227,7 +7352,7 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
       videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
     }
   };
-  const deferVimeoHomepageStreamUpgrade = isPlatformMarketingHomepage(targetUrl);
+  const deferVimeoHomepageStreamUpgrade = !options.videosOnly && isPlatformMarketingHomepage(targetUrl);
   if (vimeoCandidateUrls.size > 0 && deferVimeoHomepageStreamUpgrade) {
     videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
   } else if (vimeoCandidateUrls.size > 0 && htmlVideoPlayers.length === 0) {
@@ -9460,8 +9585,8 @@ var downloadVimeoPlatformVideoToFile = async (targetUrl, quality, options = {}) 
   const sourcePageUrl = String(options.sourcePageUrl || normalizedUrl).trim();
   const requestedQuality = ["hd", "fhd", "4k"].includes(String(quality || "").toLowerCase()) ? String(quality).toLowerCase() : "fhd";
   const platform = "vimeo";
-  const targetDir = resolveDownloadSaveDir("video", sourcePageUrl);
-  await ensurePlatformVideoFolderOnly(platform);
+  const targetDir = resolveVideoDownloadTargetDir(sourcePageUrl, options.saveToWebsiteAssets);
+  await fsp3.mkdir(targetDir, { recursive: true });
   const vimeoAssets = await withTimeout(
     extractVimeoVideos([normalizedUrl], requestedQuality, sourcePageUrl),
     VIMEO_EXTRACT_TIMEOUT_MS,
@@ -9547,8 +9672,8 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   const isAudio = options.mode === "audio";
   const requestedQuality = ["hd", "fhd", "4k"].includes(String(quality || "").toLowerCase()) ? String(quality).toLowerCase() : "fhd";
   const platform = platformProviderFromUrl(options.sourcePageUrl || normalizedUrl) || "video";
-  const targetDir = resolveDownloadSaveDir(isAudio ? "audio" : "video", options.sourcePageUrl || normalizedUrl);
-  await ensurePlatformVideoFolderOnly(platform);
+  const targetDir = isAudio ? resolveDownloadSaveDir("audio", options.sourcePageUrl || normalizedUrl) : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
+  await fsp3.mkdir(targetDir, { recursive: true });
   const desiredFilename = isAudio ? toQuickTimeAudioFilename(title) : toQualityVideoFilename(requestedQuality, title);
   const desiredPath = path3.join(targetDir, desiredFilename);
   try {
@@ -9623,7 +9748,7 @@ var downloadDirectStreamVideoToFile = async (targetUrl, options = {}) => {
   lastExtractionSectionMode = false;
   const title = String(options.titleHint || pageTitleFromUrl(normalizedUrl) || "video").trim();
   const requestedQuality = ["hd", "fhd", "4k"].includes(String(options.quality || "").toLowerCase()) ? String(options.quality).toLowerCase() : "fhd";
-  const targetDir = resolveDownloadsTargetDir(sourcePageUrl);
+  const targetDir = resolveVideoDownloadTargetDir(sourcePageUrl, options.saveToWebsiteAssets);
   await fsp3.mkdir(targetDir, { recursive: true });
   const desiredFilename = toQualityVideoFilename(requestedQuality, title);
   const desiredPath = path3.join(targetDir, desiredFilename);
@@ -12862,6 +12987,7 @@ app.post("/api/platform-video-download", async (req, res) => {
   const titleHint = typeof req.body?.title === "string" ? req.body.title.trim() : "";
   const sourcePageUrl = typeof req.body?.sourcePageUrl === "string" ? req.body.sourcePageUrl.trim() : rawUrl;
   const mode = req.body?.mode === "audio" ? "audio" : "video";
+  const saveToWebsiteAssets = req.body?.saveToWebsiteAssets === true;
   if (!rawUrl) {
     return res.status(400).json({ ok: false, error: "URL is required" });
   }
@@ -12872,7 +12998,8 @@ app.post("/api/platform-video-download", async (req, res) => {
     const result = await downloadPlatformVideoToFile(rawUrl, quality, {
       titleHint,
       sourcePageUrl,
-      mode
+      mode,
+      saveToWebsiteAssets
     });
     return res.json(result);
   } catch (error) {
@@ -12885,6 +13012,7 @@ app.post("/api/direct-video-download", async (req, res) => {
   const quality = String(req.body?.quality || "fhd").toLowerCase();
   const titleHint = typeof req.body?.title === "string" ? req.body.title.trim() : "";
   const sourcePageUrl = typeof req.body?.sourcePageUrl === "string" ? req.body.sourcePageUrl.trim() : rawUrl;
+  const saveToWebsiteAssets = req.body?.saveToWebsiteAssets === true;
   if (!rawUrl) {
     return res.status(400).json({ ok: false, error: "URL is required" });
   }
@@ -12892,7 +13020,8 @@ app.post("/api/direct-video-download", async (req, res) => {
     const result = await downloadDirectStreamVideoToFile(rawUrl, {
       titleHint,
       sourcePageUrl,
-      quality
+      quality,
+      saveToWebsiteAssets
     });
     return res.json(result);
   } catch (error) {

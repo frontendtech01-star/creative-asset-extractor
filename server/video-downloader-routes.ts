@@ -1293,9 +1293,19 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     }
   });
 
-  app.delete('/api/downloader/downloads', async (_req, res) => {
+  app.delete('/api/downloader/downloads', async (req, res) => {
     try {
+      const deleteFiles = Boolean(req.body?.deleteFiles);
       const items = await listDownloaderFiles();
+      const completedIds = new Set(
+        Array.from(jobs.values())
+          .filter((job) => job.status === 'completed' || job.status === 'error')
+          .map((job) => job.id)
+      );
+      completedIds.forEach((id) => jobs.delete(id));
+      if (!deleteFiles) {
+        return res.json({ ok: true, mode: 'history', removed: completedIds.size });
+      }
       for (const item of items) {
         await fsp.unlink(item.path).catch(() => undefined);
         await fsp.unlink(sidecarPathFor(item.path)).catch(() => undefined);
@@ -1305,7 +1315,10 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         const root = resolvePlatformVideoAssetsDir(item.platform);
         await removeEmptyParents(path.dirname(item.path), root);
       }
-      return res.json({ ok: true, removed: items.length });
+      for (const platform of SUPPORTED_PLATFORMS) {
+        await fsp.mkdir(resolvePlatformVideoAssetsDir(platform), { recursive: true }).catch(() => undefined);
+      }
+      return res.json({ ok: true, mode: 'files', removed: items.length });
     } catch (error: any) {
       return res.status(500).json({ error: error?.message || 'Failed to clear downloads.' });
     }

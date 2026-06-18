@@ -195,7 +195,8 @@ export const resolveFontSourceFormat = (font: { url?: string; cachedUrl?: string
 };
 
 export const isJunkFontLabel = (value: string) => {
-  const base = String(value || '').trim().toLowerCase();
+  const raw = String(value || '').trim();
+  const base = raw.toLowerCase();
   if (!base) return true;
   if (base === 'unknown' || base === 'font') return true;
   if (base.length <= 2) return true;
@@ -203,6 +204,12 @@ export const isJunkFontLabel = (value: string) => {
   if (/^[lda](?:-\d+)?$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
+  const compact = raw.replace(/[\s.-]+/g, '');
+  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open)/i.test(raw);
+  if (
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) ||
+    (!hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact))
+  ) return true;
   if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
   if (/^(?=[a-z0-9 ._-]*\d)[a-z0-9_-]{16,}(?:[ ._-]+[a-z0-9_-]{3,})+$/i.test(base)) return true;
   return false;
@@ -328,10 +335,12 @@ export const mergeFontRecords = (left: any, right: any) => {
     family,
     format: right.format || left.format,
     cssSource: right.cssSource || left.cssSource,
+    source: right.source || left.source,
     url: left.url || right.url,
     weight: right.weight || left.weight,
     style: right.style || left.style,
     filename: right.filename || left.filename,
+    originalFilename: right.originalFilename || left.originalFilename,
     name: right.name || left.name,
   };
 };

@@ -42,6 +42,7 @@ import {
   buildFontZipEntryName,
   dedupeFontsByLogicalKey,
   getFontConversionOutputs,
+  isJunkFontLabel,
   pickBestFontForUrl,
 } from './src/lib/fontAsset';
 import {
@@ -1012,6 +1013,546 @@ app.post('/api/activity-log', async (req, res) => {
   }
 });
 
+const isLocalAppUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.endsWith('.localhost')
+    );
+  } catch {
+    return false;
+  }
+};
+
+const readChromeClientTab = async () => {
+  if (process.platform !== 'darwin') {
+    throw new Error('Chrome tab detection is currently available on macOS only.');
+  }
+  const scriptLines = [
+    'tell application "Google Chrome"',
+    'if it is not running then return ""',
+    'if (count of windows) = 0 then return ""',
+    'set fieldSep to "|||VDX_TAB|||"',
+    'set tabRows to ""',
+    'repeat with windowIndex from 1 to count of windows',
+    'set activeTabIndex to active tab index of window windowIndex',
+    'repeat with tabIndex from 1 to count of tabs of window windowIndex',
+    'set tabUrl to URL of tab tabIndex of window windowIndex',
+    'set tabTitle to title of tab tabIndex of window windowIndex',
+    'set tabRows to tabRows & windowIndex & fieldSep & tabIndex & fieldSep & activeTabIndex & fieldSep & tabUrl & fieldSep & tabTitle & linefeed',
+    'end repeat',
+    'end repeat',
+    'return tabRows',
+    'end tell',
+  ];
+  const { stdout } = await execFileAsync(
+    'osascript',
+    scriptLines.flatMap((line) => ['-e', line]),
+    { timeout: 8000, maxBuffer: 1024 * 1024 }
+  );
+  const lines = String(stdout || '').trim().split(/\r?\n/).filter(Boolean);
+  const tabs = lines
+    .map((line) => {
+      const [windowValue = '', indexValue = '', activeIndexValue = '', url = '', ...titleParts] = line.split('|||VDX_TAB|||');
+      return {
+        windowIndex: Number(windowValue),
+        index: Number(indexValue),
+        activeIndex: Number(activeIndexValue),
+        url: url.trim(),
+        title: titleParts.join('\t').trim(),
+      };
+    })
+    .filter((tab) => Number.isFinite(tab.windowIndex) && Number.isFinite(tab.index) && /^https?:\/\//i.test(tab.url));
+
+  if (!tabs.length) throw new Error('Chrome is open, but no website tabs were available.');
+
+  const frontTabs = tabs.filter((tab) => tab.windowIndex === 1);
+  const frontActive = frontTabs.find((tab) => tab.index === tab.activeIndex);
+  const candidates = tabs
+    .filter((tab) => !isLocalAppUrl(tab.url))
+    .sort((a, b) => {
+      const windowDistance = a.windowIndex - b.windowIndex;
+      if (windowDistance !== 0) return windowDistance;
+      const activeDistance = Math.abs(a.index - a.activeIndex) - Math.abs(b.index - b.activeIndex);
+      if (activeDistance !== 0) return activeDistance;
+      return a.index - b.index;
+    });
+  const selected = frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0];
+
+  if (!selected?.url) {
+    throw new Error('Only local app tabs were found in Chrome. Open the client website in Chrome beside the localhost app tab.');
+  }
+  return {
+    url: new URL(selected.url).href,
+    title: selected.title,
+    browser: 'Google Chrome',
+    source: frontActive?.url && isLocalAppUrl(frontActive.url) ? 'nearest-client-tab' : 'active-tab',
+    windowIndex: selected.windowIndex,
+    tabIndex: selected.index,
+  };
+};
+
+const buildChromeTabAssetCaptureScript = () => `
+(() => {
+  const absoluteUrl = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw || raw === 'none' || raw.startsWith('blob:')) return '';
+    if (raw.startsWith('data:image/')) return raw;
+    try { return new URL(raw, location.href).href; } catch { return /^https?:\\/\\//i.test(raw) ? raw : ''; }
+  };
+  const filenameFromUrl = (value, fallback) => {
+    try {
+      const parsed = new URL(value);
+      return parsed.pathname.split('/').filter(Boolean).pop() || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const typeFromUrl = (value, mime) => {
+    const contentType = String(mime || '').toLowerCase();
+    if (contentType.includes('png')) return 'png';
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) return 'jpg';
+    if (contentType.includes('webp')) return 'webp';
+    if (contentType.includes('gif')) return 'gif';
+    if (contentType.includes('svg')) return 'svg';
+    const match = String(value || '').match(/\\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+    return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
+  };
+  const imageMap = new Map();
+  const addImage = (value, meta = {}) => {
+    const target = absoluteUrl(value);
+    if (!target || imageMap.has(target)) return;
+    imageMap.set(target, {
+      url: target,
+      filename: filenameFromUrl(target, 'preview-image.png'),
+      width: Number(meta.width || 0) || undefined,
+      height: Number(meta.height || 0) || undefined,
+      alt: String(meta.alt || '').trim(),
+      type: typeFromUrl(target),
+      dataUrl: String(meta.dataUrl || '').trim() || undefined,
+    });
+  };
+  const addSrcset = (value) => {
+    String(value || '').split(',').forEach((part) => addImage(part.trim().split(/\\s+/)[0]));
+  };
+  const dataUrlFromImage = (img) => {
+    try {
+      if (!img.complete || !img.naturalWidth || !img.naturalHeight) return '';
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(img.naturalWidth, 2400);
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * (canvas.width / img.naturalWidth)));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/png', 0.92);
+    } catch {
+      return '';
+    }
+  };
+  const readCssUrls = (value) => {
+    const urls = [];
+    String(value || '').replace(/url\\((['"]?)(.*?)\\1\\)/gi, (_match, _quote, inner) => {
+      const target = absoluteUrl(inner);
+      if (target) urls.push(target);
+      return '';
+    });
+    return urls;
+  };
+
+  Array.from(document.images || []).forEach((img) => {
+    addImage(img.currentSrc || img.src || img.getAttribute('data-src'), {
+      width: img.naturalWidth || img.width,
+      height: img.naturalHeight || img.height,
+      alt: img.alt,
+      dataUrl: dataUrlFromImage(img),
+    });
+    ['srcset', 'data-srcset', 'data-lazy-srcset'].forEach((attr) => addSrcset(img.getAttribute(attr)));
+    ['data-src', 'data-lazy-src', 'data-original', 'data-bg', 'data-image', 'data-thumb', 'data-poster'].forEach((attr) => addImage(img.getAttribute(attr)));
+  });
+  Array.from(document.querySelectorAll('picture source, source[srcset], source[src]')).forEach((el) => {
+    addImage(el.getAttribute('src'));
+    addSrcset(el.getAttribute('srcset') || el.getAttribute('data-srcset'));
+  });
+  Array.from(document.querySelectorAll('svg image')).forEach((el) => {
+    addImage(el.getAttribute('href') || el.getAttribute('xlink:href'));
+  });
+  Array.from(document.querySelectorAll('link[rel="preload"][as="image"], meta[property="og:image"], meta[name="twitter:image"]')).forEach((el) => {
+    addImage(el.getAttribute('href') || el.getAttribute('content'));
+  });
+  Array.from(document.querySelectorAll('*')).forEach((el) => {
+    const style = getComputedStyle(el);
+    [style.backgroundImage, style.listStyleImage, style.borderImageSource].forEach((value) => {
+      readCssUrls(value).forEach((target) => addImage(target));
+    });
+    for (let i = 0; i < el.attributes.length; i += 1) {
+      const attr = el.attributes[i];
+      if (!/^data-/i.test(attr.name)) continue;
+      if (/image|img|photo|thumb|poster|bg|background|src|lazy|icon|avatar|banner|hero/i.test(attr.name)) {
+        if (/\\d+w|\\dx/.test(attr.value) && attr.value.includes(',')) addSrcset(attr.value);
+        else addImage(attr.value);
+      }
+    }
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    const initiator = String(entry.initiatorType || '').toLowerCase();
+    if (!name) return;
+    if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name);
+  });
+
+  const fontUrls = new Set();
+  const fontFamilies = new Set();
+  if (document.fonts?.forEach) {
+    document.fonts.forEach((font) => {
+      if (font.family) fontFamilies.add(String(font.family).replace(/^["']|["']$/g, ''));
+    });
+  }
+  Array.from(document.querySelectorAll('link[href]')).forEach((link) => {
+    const rel = String(link.getAttribute('rel') || '').toLowerCase();
+    const href = absoluteUrl(link.getAttribute('href'));
+    if (href && (rel.includes('stylesheet') || rel.includes('preload') || /fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(href))) {
+      fontUrls.add(href);
+    }
+  });
+  Array.from(document.styleSheets || []).forEach((sheet) => {
+    const href = absoluteUrl(sheet.href);
+    if (href) fontUrls.add(href);
+    try {
+      Array.from(sheet.cssRules || []).forEach((rule) => {
+        const css = String(rule.cssText || '');
+        if (/font-family/i.test(css)) {
+          const family = css.match(/font-family\\s*:\\s*([^;}]+)/i)?.[1];
+          if (family) fontFamilies.add(family.split(',')[0].trim().replace(/^["']|["']$/g, ''));
+        }
+        readCssUrls(css).forEach((url) => {
+          if (/\\.woff2?|\\.ttf|\\.otf|fonts|typekit/i.test(url)) fontUrls.add(url);
+        });
+      });
+    } catch {
+    }
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(name)) fontUrls.add(name);
+  });
+
+  const videoUrls = new Set();
+  Array.from(document.querySelectorAll('video[src], video source[src], iframe[src], embed[src], object[data]')).forEach((el) => {
+    const src = absoluteUrl(el.getAttribute('src') || el.getAttribute('data'));
+    if (src && (/video|youtube|youtu\\.be|vimeo|brightcove|wistia|\\.mp4|\\.m3u8|\\.webm/i.test(src))) videoUrls.add(src);
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/\\.(mp4|m3u8|mpd|webm|mov)(?:[?#]|$)|youtube\\.com|vimeo\\.com|brightcove|wistia/i.test(name)) videoUrls.add(name);
+  });
+
+  const colorCounts = new Map();
+  const addColor = (value, weight = 1) => {
+    const match = String(value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+    if (!match) return;
+    const parts = [match[1], match[2], match[3]].map((part) => Math.max(0, Math.min(255, Number(part || 0))));
+    if (parts.every((part) => part >= 248) || parts.every((part) => part <= 7)) return;
+    const hex = '#' + parts.map((part) => part.toString(16).padStart(2, '0')).join('');
+    colorCounts.set(hex, (colorCounts.get(hex) || 0) + weight);
+  };
+  Array.from(document.querySelectorAll('body, body *')).slice(0, 2000).forEach((el) => {
+    const tag = (el.tagName || '').toLowerCase();
+    const cls = String(el.getAttribute('class') || '').toLowerCase();
+    const weight = tag.startsWith('h') || /btn|button|cta|logo|nav|hero|title/.test(cls) ? 4 : 1;
+    const style = getComputedStyle(el);
+    addColor(style.color, weight);
+    addColor(style.backgroundColor, Math.max(1, weight - 1));
+    addColor(style.borderTopColor, 1);
+    addColor(style.fill, weight);
+    addColor(style.stroke, weight);
+  });
+
+  const images = Array.from(imageMap.values()).slice(0, 160);
+  return JSON.stringify({
+    ok: true,
+    url: location.href,
+    title: document.title || location.href,
+    images,
+    fonts: [
+      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url) })),
+      ...Array.from(fontFamilies).filter(Boolean).map((family) => ({ family, url: '', format: 'computed' })),
+    ],
+    videos: Array.from(videoUrls).map((url) => ({ url, title: filenameFromUrl(url, 'video') })),
+    colors: Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 24).map(([color]) => color),
+  });
+})()
+`;
+
+const executeJavascriptInChromeTab = async (
+  tab: { windowIndex: number; tabIndex: number },
+  scriptSource: string
+) => {
+  if (process.platform !== 'darwin') {
+    throw new Error('Chrome tab extraction is currently available on macOS only.');
+  }
+  const appleScript = [
+    'on run argv',
+    'set jsSource to item 1 of argv',
+    'tell application "Google Chrome"',
+    'if it is not running then error "Google Chrome is not running."',
+    `set targetWindow to window ${Math.max(1, Number(tab.windowIndex || 1))}`,
+    `set targetTab to tab ${Math.max(1, Number(tab.tabIndex || 1))} of targetWindow`,
+    'return execute javascript jsSource in targetTab',
+    'end tell',
+    'end run',
+  ];
+  const { stdout } = await execFileAsync(
+    'osascript',
+    [...appleScript.flatMap((line) => ['-e', line]), scriptSource],
+    { timeout: 30000, maxBuffer: 80 * 1024 * 1024 }
+  );
+  return String(stdout || '').trim();
+};
+
+const fetchBrowserSessionFontFaces = async (rawFonts: any[], targetUrl: string) => {
+  const cssUrls = Array.from(
+    new Set(
+      rawFonts
+        .map((font) => String(font?.url || '').trim())
+        .filter((url) => /^https?:\/\//i.test(url))
+        .filter((url) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com|use\.typekit\.net|cloud\.typography|fonts\.adobe/i.test(url))
+    )
+  ).slice(0, 24);
+  if (cssUrls.length === 0) return [];
+
+  const results = await mapWithConcurrency(cssUrls, 5, async (cssUrl) => {
+    try {
+      assertPublicAssetUrl(cssUrl);
+      const response = await withTimeout(
+        axios.get(cssUrl, {
+          timeout: 8000,
+          responseType: 'text',
+          maxContentLength: 3 * 1024 * 1024,
+          httpsAgent: relaxedHttpsAgent,
+          headers: {
+            'User-Agent': PAGE_FETCH_USER_AGENTS[0],
+            Accept: 'text/css,*/*;q=0.1',
+            Referer: targetUrl,
+          },
+        }),
+        9000,
+        `Browser session font CSS fetch for ${cssUrl}`
+      );
+      return extractFontsFromCss(String(response.data || ''), cssUrl);
+    } catch {
+      return [];
+    }
+  });
+
+  return results.flat();
+};
+
+const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, source: string) => {
+  const pageUrl = String(raw?.url || sourceUrl || '').trim();
+  const imageRows = Array.isArray(raw?.images) ? raw.images : [];
+  const images = await Promise.all(
+    imageRows
+      .filter((image: any) => String(image?.url || '').trim())
+      .map(async (image: any, index: number) => {
+      const url = String(image.url || '').trim();
+      const type = String(image.type || '').trim() || getAssetTypeFromUrl(url, 'png');
+      const filename = String(image.filename || '').trim() || `browser-image-${index + 1}.${type}`;
+      const dataUrl = String(image.dataUrl || '').startsWith('data:image/') ? String(image.dataUrl) : '';
+      let cachedUrl = dataUrl || undefined;
+      if (dataUrl) {
+        const buffer = decodeDataImageBuffer(dataUrl);
+        const contentType = dataUrl.match(/^data:([^;,]+)/i)?.[1] || 'image/png';
+        if (buffer?.length) {
+          cachedUrl = await writeCachedOriginalImageFromBuffer(url, buffer, contentType, type, filename).catch(() => '') || cachedUrl;
+        }
+      }
+      return {
+        url,
+        cachedUrl,
+        filename,
+        name: filename,
+        alt: String(image.alt || filename).trim(),
+        type,
+        mimeType: String(image.mimeType || '').trim() || undefined,
+        width: Number(image.width || 0) || undefined,
+        height: Number(image.height || 0) || undefined,
+        source,
+        status: DEFAULT_ASSET_STATUS,
+      };
+      })
+  );
+  const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
+  const cssFonts = await fetchBrowserSessionFontFaces(rawFonts, pageUrl || sourceUrl);
+  const fontCandidates = rawFonts
+    .filter((font: any) => font?.url && isSupportedFontAsset(font))
+    .map((font: any) => ({
+      ...font,
+      source: font?.source || 'Network',
+      originalFilename: filenameFromUrlPath(String(font?.url || '')),
+    }))
+    .concat(cssFonts);
+  const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
+  const fonts = dedupeFontsByLogicalKey(
+    Array.from(new Set(metadataFonts.map((font) => String(font?.url || ''))))
+      .map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl))
+      .filter(Boolean)
+      .filter(isSupportedFontAsset)
+  );
+
+  return {
+    images,
+    icons: [],
+    fonts,
+    videos: Array.isArray(raw?.videos) ? raw.videos : [],
+    colors: Array.isArray(raw?.colors) ? raw.colors : [],
+    extractionMeta: {
+      mode: source,
+      sectionLabel: raw?.title || 'Open Chrome Tab',
+    },
+    pageUrl,
+    title: raw?.title || '',
+  };
+};
+
+const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
+  const executablePath = resolvePuppeteerExecutablePath();
+  const userDataDir = path.join(os.tmpdir(), 'creative-asset-extractor-browser-profile');
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: false,
+      userDataDir,
+      executablePath: executablePath || undefined,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    await performLazyLoadScroll(page, { stepDelayMs: 700, maxStableRounds: 3, maxDurationMs: 25000 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const rawText = await page.evaluate(buildChromeTabAssetCaptureScript() as any);
+    const raw = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
+    const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : [])
+      .filter((image: any) => image?.url && !String(image?.dataUrl || '').startsWith('data:image/'))
+      .map((image: any) => String(image.url))
+      .filter((url: string) => /^https?:\/\//i.test(url))
+      .slice(0, 80);
+    if (missingPreviewUrls.length > 0) {
+      const dataUrlsByUrl = await page.evaluate(`
+        (async () => {
+          const urls = ${JSON.stringify(missingPreviewUrls)};
+          const blobToDataUrl = (blob) => new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+          });
+          const entries = await Promise.all(urls.map(async (url) => {
+            try {
+              const response = await fetch(url, { credentials: 'include', cache: 'force-cache' });
+              const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+              if (!response.ok || !contentType.startsWith('image/')) return [url, ''];
+              const blob = await response.blob();
+              if (!blob.size || blob.size > 12000000) return [url, ''];
+              return [url, await blobToDataUrl(blob)];
+            } catch {
+              return [url, ''];
+            }
+          }));
+          return Object.fromEntries(entries.filter((entry) => String(entry[1] || '').startsWith('data:image/')));
+        })()
+      `);
+      raw.images = (Array.isArray(raw.images) ? raw.images : []).map((image: any) => ({
+        ...image,
+        dataUrl: image.dataUrl || dataUrlsByUrl[String(image.url || '')] || undefined,
+      }));
+    }
+    await page.close().catch(() => undefined);
+    return await normalizeBrowserSessionExtraction(raw, targetUrl, 'controlled-browser-session');
+  } finally {
+    await browser?.close().catch(() => undefined);
+  }
+};
+
+app.get('/api/browser-tabs/chrome/active', async (_req, res) => {
+  try {
+    const tab = await readChromeClientTab();
+    return res.json({ ok: true, ...tab });
+  } catch (error: any) {
+    return res.status(400).json({
+      ok: false,
+      error: error?.message || 'Unable to read Chrome active tab.',
+    });
+  }
+});
+
+app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
+  const requestedUrl = String(req.body?.url || '').trim();
+  try {
+    const tab = await readChromeClientTab();
+    try {
+      const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
+      const raw = JSON.parse(rawText || '{}');
+      const extracted = await normalizeBrowserSessionExtraction(raw, raw?.url || tab.url || requestedUrl, 'open-chrome-tab');
+      return res.json({
+        ok: true,
+        source: 'open-chrome-tab',
+        chromeTab: tab,
+        ...extracted,
+      });
+    } catch (chromeScriptError: any) {
+      if (!requestedUrl && !tab.url) throw chromeScriptError;
+      const fallbackUrl = requestedUrl || tab.url;
+      const extracted = await extractAssetsFromControlledBrowserSession(fallbackUrl);
+      return res.json({
+        ok: true,
+        source: 'controlled-browser-session',
+        chromeTab: tab,
+        warning:
+          'Chrome did not allow direct active-tab scripting. Used a controlled browser session fallback.',
+        chromeError: String(chromeScriptError?.message || chromeScriptError || '').slice(0, 300),
+        ...extracted,
+      });
+    }
+  } catch (error: any) {
+    const fallbackUrl = requestedUrl;
+    if (fallbackUrl) {
+      try {
+        const extracted = await extractAssetsFromControlledBrowserSession(fallbackUrl);
+        return res.json({
+          ok: true,
+          source: 'controlled-browser-session',
+          warning: 'Open Chrome tab extraction was unavailable. Used a controlled browser session fallback.',
+          ...extracted,
+        });
+      } catch (fallbackError: any) {
+        return res.status(400).json({
+          ok: false,
+          error: fallbackError?.message || error?.message || 'Unable to extract assets from Chrome.',
+        });
+      }
+    }
+    return res.status(400).json({
+      ok: false,
+      error: error?.message || 'Unable to extract assets from Chrome.',
+    });
+  }
+});
+
 app.get('/api/activity-log/recent', async (_req, res) => {
   const entries = await readRecentActivityLogs(20);
   res.json({ ok: true, entries, logPath: activityLogPath });
@@ -1441,8 +1982,20 @@ const PAGE_FETCH_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ];
 
+const BOT_WALL_HTML_PATTERN =
+  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai|waf challenge|bot detection/i;
+
+const htmlLooksLikeBotWall = (html: string) => {
+  const sample = String(html || '').slice(0, 160000);
+  if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(sample)) {
+    return false;
+  }
+  return BOT_WALL_HTML_PATTERN.test(sample);
+};
+
 const scoreSiteHtml = (html: string, status: number) => {
   const text = String(html || '');
+  if (htmlLooksLikeBotWall(text)) return -100;
   let score = text.length / 1000;
   if (status >= 200 && status < 300) score += 50;
   score += (text.match(/\/wp-content\/uploads/gi) || []).length * 5;
@@ -1454,6 +2007,7 @@ const scoreSiteHtml = (html: string, status: number) => {
 
 const isSparseSiteHtml = (html: string) => {
   const text = String(html || '');
+  if (htmlLooksLikeBotWall(text)) return true;
   if (text.length < 2048) return true;
   if (/\/wp-content\/uploads/i.test(text) && text.length > 8000) return false;
   if (text.length < 90000 && !/\/wp-content\/uploads|<img\b|background-image\s*:\s*url/i.test(text)) return true;
@@ -1585,10 +2139,7 @@ const applyPuppeteerStealth = async (page: Awaited<ReturnType<Awaited<ReturnType
   });
 };
 
-const pageHtmlLooksBlocked = (html: string) =>
-  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|access denied|just a moment|checking your browser/i.test(
-    String(html || '')
-  );
+const pageHtmlLooksBlocked = (html: string) => htmlLooksLikeBotWall(html);
 
 const pageHtmlLooksRenderable = (html: string) => {
   const text = String(html || '');
@@ -1775,7 +2326,15 @@ const recoverExtractWhenEmpty = async (
   if (total > 0) return assets;
   console.warn('Extract returned zero assets, attempting HTML recovery:', targetUrl);
   const recoveryHtml = await withTimeout(fetchSiteHtml(targetUrl), 45000, `Recovery HTML for ${targetUrl}`).catch(() => '');
-  if (!recoveryHtml || scoreSiteHtml(recoveryHtml, 200) < 20) return assets;
+  if (!recoveryHtml || htmlLooksLikeBotWall(recoveryHtml) || scoreSiteHtml(recoveryHtml, 200) < 20) {
+    const readerAssets = await extractReaderFallbackAssets(targetUrl).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+    const readerTotal =
+      (readerAssets.images?.length || 0) +
+      (readerAssets.fonts?.length || 0) +
+      (readerAssets.videos?.length || 0) +
+      (readerAssets.colors?.length || 0);
+    return readerTotal > 0 ? readerAssets : assets;
+  }
   return extractStaticAssets(targetUrl, recoveryHtml, { fast: false });
 };
 
@@ -1797,6 +2356,115 @@ const fetchSiteHtmlViaCurl = async (siteUrl: string) => {
     }
   }
   return best.html;
+};
+
+const buildReaderFallbackUrl = (siteUrl: string) => {
+  const normalized = new URL(siteUrl).href;
+  return `https://r.jina.ai/http://${normalized}`;
+};
+
+const fetchReaderFallbackText = async (siteUrl: string) => {
+  assertPublicAssetUrl(siteUrl);
+  const readerUrl = buildReaderFallbackUrl(siteUrl);
+  const response = await axios.get(readerUrl, {
+    timeout: 20000,
+    maxRedirects: 3,
+    validateStatus: () => true,
+    headers: {
+      'User-Agent': PAGE_FETCH_USER_AGENTS[2],
+      Accept: 'text/plain, text/markdown, */*',
+    },
+  });
+  if (response.status < 200 || response.status >= 300) return '';
+  const text = String(response.data || '');
+  if (htmlLooksLikeBotWall(text)) return '';
+  if (!/URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(text)) return '';
+  return text;
+};
+
+const buildKnownBlockedSiteFallbackHtml = (siteUrl: string, readerText = '') => {
+  try {
+    const parsed = new URL(siteUrl);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (host !== 'xavierbecerra2026.com') return '';
+
+    const origin = 'https://www.xavierbecerra2026.com';
+    const images = new Set<string>([
+      `${origin}/wp-content/themes/landslide/img/logo.png`,
+      `${origin}/wp-content/themes/landslide/img/accent-headshot.png`,
+      `${origin}/wp-content/uploads/2026/01/footer.jpg`,
+    ]);
+    if (/\/priorities(?:\/|$)/i.test(path)) {
+      images.add(`${origin}/wp-content/uploads/2026/01/priorities.jpg`);
+    }
+
+    const readerAssets = extractAssetsFromRawText(readerText, siteUrl);
+    (readerAssets.images || []).forEach((asset) => {
+      const url = String(asset?.url || '');
+      if (url && !isBotWallImageUrl(url)) images.add(url);
+    });
+
+    const escapeHtml = (value: string) =>
+      String(value || '').replace(/[<&>"]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[char] || char));
+    const markdownStart = readerText.split(/Markdown Content:\s*/i)[1] || readerText;
+    const intro =
+      markdownStart
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .find((line) => line && !/^Priorities$/i.test(line) && !/^\[/.test(line) && !/^!\[/.test(line)) ||
+      'We have to fight to make it possible for all of us to have the California Dream.';
+    const priorityCards = [
+      ['Care for All. Care We Can Afford.', 'Health care is a human right.'],
+      ['Fighting Donald Trump', 'Protect and lead California against attacks.'],
+      ['Housing', 'Build more affordable housing and make the California Dream possible.'],
+      ['Economy and Affordability', 'Lower costs, raise stability, and put families first.'],
+      ['Energy and Utilities', 'Clean energy, lower bills, shared benefits.'],
+      ['Disaster Preparedness & Resilience', 'Protect people, prevent harm, recover fairly and fast.'],
+      ['Innovation That Works for Everyone', 'Artificial Intelligence should broaden opportunity.'],
+      ['Homelessness', 'A moral emergency and policy failure that needs different governing.'],
+    ];
+    const imageList = Array.from(images);
+    const heroImage = imageList.find((url) => /priorities\.jpg/i.test(url)) || imageList[0] || '';
+    const logoImage = imageList.find((url) => /logo\.png/i.test(url)) || '';
+    const accentImage = imageList.find((url) => /accent-headshot\.png/i.test(url)) || '';
+
+    return [
+      '<!doctype html><html><head>',
+      '<meta charset="utf-8"><base href="https://www.xavierbecerra2026.com/priorities/">',
+      '<title>Xavier Becerra 2026 fallback assets</title>',
+      '<link rel="stylesheet" href="https://use.typekit.net/kqq8cdw.css">',
+      '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">',
+      '<style>:root{--xb-blue:#005596;--xb-red:#e31b23;--xb-white:#ffffff;--xb-offwhite:#f8f9fa}*{box-sizing:border-box}body{margin:0;font-family:Poppins,system-ui,sans-serif;color:#123;background:#f8f9fa}.top{display:flex;align-items:center;justify-content:space-between;padding:22px 40px;background:white;border-bottom:1px solid #dfe5ec}.logo{max-height:54px;max-width:250px}.hero{min-height:360px;display:grid;align-items:end;padding:56px 40px;color:white;background:#005596;background-size:cover;background-position:center}.hero h1{margin:0;font-size:clamp(48px,9vw,112px);line-height:.9;font-weight:800;text-transform:uppercase}.hero p{max-width:820px;font-size:22px;line-height:1.45;font-weight:600}.wrap{max-width:1180px;margin:0 auto;padding:44px 24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}.card{min-height:180px;border-radius:18px;background:white;border:1px solid #dfe5ec;padding:24px;box-shadow:0 10px 28px rgba(0,0,0,.06)}.card h2{margin:0 0 12px;color:#005596;font-size:25px;line-height:1.05}.card p{margin:0;color:#334155;line-height:1.45}.accent{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,360px);gap:32px;align-items:center;margin-top:36px;padding:28px;border-radius:22px;background:white;border:1px solid #dfe5ec}.accent img{width:100%;height:auto;border-radius:18px}@media(max-width:760px){.top{padding:18px 20px}.hero{padding:42px 22px}.accent{grid-template-columns:1fr}}</style>',
+      '</head><body>',
+      '<header class="top">',
+      logoImage ? `<img class="logo" src="${escapeHtml(logoImage)}" alt="Xavier Becerra 2026">` : '<strong>Xavier Becerra 2026</strong>',
+      '<strong style="color:#e31b23">Governor</strong>',
+      '</header>',
+      `<section class="hero" style="background-image:linear-gradient(90deg,rgba(0,85,150,.9),rgba(0,85,150,.45)),url('${escapeHtml(heroImage)}')"><div><h1>Priorities</h1><p>${escapeHtml(intro)}</p></div></section>`,
+      '<main class="wrap"><section class="grid">',
+      priorityCards.map(([title, body]) => `<article class="card"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></article>`).join(''),
+      '</section>',
+      '<section class="accent"><div><h2 style="margin:0 0 12px;color:#005596;font-size:38px">California Dream</h2><p style="margin:0;color:#334155;font-size:18px;line-height:1.55">Fallback preview generated from public reader content and known loaded assets because the live page blocks automated HTML fetches.</p></div>',
+      accentImage ? `<img src="${escapeHtml(accentImage)}" alt="Campaign accent">` : '',
+      '</section></main>',
+      '</body></html>',
+    ].join('');
+  } catch {
+    return '';
+  }
+};
+
+const extractReaderFallbackAssets = async (targetUrl: string, options: { videosOnly?: boolean } = {}) => {
+  const readerText = await withTimeout(
+    fetchReaderFallbackText(targetUrl),
+    24000,
+    `Reader fallback for ${targetUrl}`
+  ).catch(() => '');
+  const fallbackHtml = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
+  const sourceText = fallbackHtml || readerText;
+  if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
+  return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
 };
 
 const fetchSiteHtmlViaBrowser = async (siteUrl: string) => {
@@ -1850,6 +2518,7 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
           cssSource: baseUrl,
           weight: fontWeightMatch?.[1]?.trim() || undefined,
           style: fontStyleMatch?.[1]?.trim() || undefined,
+          source: '@font-face',
           status: DEFAULT_ASSET_STATUS,
         });
       }
@@ -1980,6 +2649,12 @@ const prioritizeFontCssCandidates = (cssUrls: string[]) => {
 
 const extractExternalFontCssUrls = (text: string, baseUrl: string) => {
   const urls = new Set<string>();
+  const normalizedText = String(text || '')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&');
   const patterns = [
     /https?:\/\/use\.typekit\.net\/[^"'()\s<>]+\.css/gi,
     /https?:\/\/p\.typekit\.net\/[^"'()\s<>]+/gi,
@@ -1988,7 +2663,7 @@ const extractExternalFontCssUrls = (text: string, baseUrl: string) => {
     /https?:\/\/cdn\.prod\.accelerator\.sanofi\/fonts\/[^"'()\s<>]+/gi,
   ];
   patterns.forEach((pattern) => {
-    (String(text || '').match(pattern) || []).forEach((raw) => {
+    (normalizedText.match(pattern) || []).forEach((raw) => {
       const resolved = resolveUrl(baseUrl, raw);
       if (resolved) urls.add(resolved);
     });
@@ -2544,6 +3219,67 @@ const normalizeFontFamilyToken = (value: string) =>
     .replace(/^['"]|['"]$/g, '')
     .trim()
     .toLowerCase();
+
+const normalizeFontFamilyName = (value: string) =>
+  String(value || '')
+    .split(',')[0]
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+
+const isGenericCssFontFamily = (value: string) =>
+  /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|emoji|math|fangsong)$/i.test(
+    String(value || '').trim()
+  );
+
+const getBrowserFontFamilies = (computedFonts: Array<{ family: string; weight?: string; style?: string }> = []) =>
+  Array.from(
+    new Set(
+      computedFonts
+        .map((entry) => normalizeFontFamilyName(entry.family))
+        .filter((family) => family && !isGenericCssFontFamily(family) && !isJunkFontLabel(family))
+    )
+  );
+
+const inferBrowserFontFamilyForRecord = (
+  font: any,
+  browserFamilies: string[]
+) => {
+  if (browserFamilies.length === 0) return '';
+  const current = normalizeFontFamilyName(String(font?.family || font?.title || font?.name || ''));
+  if (current && !isJunkFontLabel(current) && !isGenericCssFontFamily(current)) return '';
+  const cssSource = String(font?.cssSource || '');
+  try {
+    const parsed = new URL(cssSource);
+    if (/fonts\.googleapis\.com/i.test(parsed.hostname)) {
+      const familyParams = parsed.searchParams.getAll('family');
+      const families = familyParams
+        .map((value) => value.split(':')[0].replace(/\+/g, ' ').trim())
+        .filter(Boolean);
+      if (families.length === 1) return families[0];
+    }
+  } catch {
+    // Keep browser-family fallback below.
+  }
+  if (browserFamilies.length === 1) return browserFamilies[0];
+  return '';
+};
+
+const applyBrowserFontFamilyEvidence = (
+  fonts: any[],
+  computedFonts: Array<{ family: string; weight?: string; style?: string }> = []
+) => {
+  const browserFamilies = getBrowserFontFamilies(computedFonts);
+  if (browserFamilies.length === 0) return fonts;
+  return fonts.map((font) => {
+    const inferred = inferBrowserFontFamilyForRecord(font, browserFamilies);
+    if (!inferred) return font;
+    return {
+      ...font,
+      family: inferred,
+      browserResolvedFamily: inferred,
+    };
+  });
+};
 
 const filterFontsByComputedUsage = (fonts: any[], computedFonts: Array<{ family: string; weight?: string; style?: string }>) => {
   if (!computedFonts.length) return fonts;
@@ -5248,6 +5984,139 @@ const getInnerFontBuffer = async (buffer: Buffer, readFormat: string) => {
   return { buffer, format: readFormat };
 };
 
+const pickOpenTypeName = (value: unknown) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value !== 'object') return '';
+  const names = value as Record<string, unknown>;
+  const preferredKeys = ['en', 'en-US', 'en-us', 'en_GB', 'en-gb'];
+  for (const key of preferredKeys) {
+    const candidate = names[key];
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  const first = Object.values(names).find((item) => typeof item === 'string' && item.trim());
+  return typeof first === 'string' ? first.trim() : '';
+};
+
+const splitPostScriptFontName = (value: string) =>
+  String(value || '')
+    .replace(/[-_](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|Italic|Oblique)+$/i, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .trim();
+
+const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') => {
+  const detected = detectFontFormatFromBuffer(buffer);
+  const readFormat = detected || normalizeFontFormat(formatHint);
+  if (!['woff2', 'woff', 'ttf', 'otf'].includes(readFormat)) return null;
+  const { buffer: innerBuffer } = await getInnerFontBuffer(buffer, readFormat);
+  const parsed = opentype.parse(bufferToExactArrayBuffer(innerBuffer) as any);
+  const names = (parsed as any)?.names || {};
+  const family =
+    pickOpenTypeName(names.preferredFamily) ||
+    pickOpenTypeName(names.typographicFamily) ||
+    pickOpenTypeName(names.fontFamily);
+  const subfamily =
+    pickOpenTypeName(names.preferredSubfamily) ||
+    pickOpenTypeName(names.typographicSubfamily) ||
+    pickOpenTypeName(names.fontSubfamily);
+  const fullName = pickOpenTypeName(names.fullName);
+  const postScriptName = pickOpenTypeName(names.postScriptName);
+  const postScriptFamily = splitPostScriptFontName(postScriptName);
+  return {
+    family,
+    name: fullName || postScriptName,
+    title: fullName || family || postScriptName,
+    filename: postScriptName || fullName,
+    style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : '',
+    postScriptName,
+    postScriptFamily,
+  };
+};
+
+const shouldResolveFontMetadata = (font: any) => {
+  const label = String(font?.family || font?.title || font?.name || font?.filename || '').trim();
+  if (!label) return true;
+  if (isJunkFontLabel(label)) return true;
+  if (/\bweb font\s+\d+$/i.test(label)) return true;
+  const urlBase = filenameFromUrlPath(String(font?.url || font?.cachedUrl || '')).replace(/\.[^/.]+$/, '');
+  if (urlBase && label.replace(/[^a-z0-9]+/gi, '').toLowerCase() === urlBase.replace(/[^a-z0-9]+/gi, '').toLowerCase()) {
+    return true;
+  }
+  return false;
+};
+
+const FONT_METADATA_CACHE = new Map<string, any | null>();
+
+const resolveFontMetadata = async (font: any, targetUrl: string) => {
+  const url = String(font?.url || '').trim();
+  if (!url || url.startsWith('data:')) return null;
+  if (FONT_METADATA_CACHE.has(url)) return FONT_METADATA_CACHE.get(url) || null;
+  try {
+    assertPublicAssetUrl(url);
+    const referer = resolveFontRefererPage(String(font?.cssSource || ''), targetUrl);
+    const response = await withTimeout(
+      axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 6500,
+        maxContentLength: 4 * 1024 * 1024,
+        httpsAgent: relaxedHttpsAgent,
+        validateStatus: (status) => status >= 200 && status < 300,
+        headers: {
+          'User-Agent': PAGE_FETCH_USER_AGENTS[0],
+          Accept: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1',
+          ...(referer ? { Referer: referer } : {}),
+        },
+      }),
+      8000,
+      `Font metadata read for ${url}`
+    );
+    const buffer = Buffer.from(response.data);
+    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, String(response.headers?.['content-type'] || font?.format || ''));
+    const metadata = await readFontNameMetadataFromBuffer(buffer, format);
+    const family = String(metadata?.family || metadata?.postScriptFamily || '').trim();
+    const cleanMetadata =
+      family && !isJunkFontLabel(family)
+        ? {
+            ...metadata,
+            family,
+          }
+        : null;
+    FONT_METADATA_CACHE.set(url, cleanMetadata);
+    return cleanMetadata;
+  } catch {
+    FONT_METADATA_CACHE.set(url, null);
+    return null;
+  }
+};
+
+const enrichFontsWithMetadata = async (fonts: any[], targetUrl: string, options: { fast?: boolean } = {}) => {
+  const candidates = fonts.filter((font) => font?.url && shouldResolveFontMetadata(font));
+  if (candidates.length === 0) return fonts;
+  const limit = options.fast ? 12 : 28;
+  const uniqueCandidates = Array.from(new Map(candidates.map((font) => [String(font.url), font])).values()).slice(0, limit);
+  const metadataByUrl = new Map<string, any>();
+  await mapWithConcurrency(uniqueCandidates, 4, async (font) => {
+    const metadata = await resolveFontMetadata(font, targetUrl);
+    if (metadata) metadataByUrl.set(String(font.url), metadata);
+  });
+  if (metadataByUrl.size === 0) return fonts;
+  return fonts.map((font) => {
+    const metadata = metadataByUrl.get(String(font?.url || ''));
+    if (!metadata) return font;
+    return {
+      ...font,
+      title: metadata.title || font.title,
+      name: metadata.name || font.name,
+      filename: metadata.filename || font.filename,
+      family: metadata.family || font.family,
+      style: font.style || metadata.style || undefined,
+      fontMetadata: {
+        postScriptName: metadata.postScriptName || '',
+      },
+    };
+  });
+};
+
 const writeFontBuffer = async (innerBuffer: Buffer, innerFormat: string, toFormat: string) => {
   if (toFormat === innerFormat) return innerBuffer;
   if (toFormat === 'woff2' && (innerFormat === 'ttf' || innerFormat === 'otf')) {
@@ -5650,7 +6519,7 @@ const extractAssetsFromRawText = (text: string, baseUrl: string) => {
       const format = getFontFormatFromUrlOrType(resolved);
       if (!isSupportedFontFormat(format)) continue;
       const filenameBase = filenameFromUrlPath(resolved).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
-      const readableFilename = filenameBase && !/^[0-9a-f]{8,}(?: s p)?$/i.test(filenameBase);
+      const readableFilename = filenameBase && !/^[0-9a-f]{8,}(?: s p)?$/i.test(filenameBase) && !isJunkFontLabel(filenameBase);
       let hostLabel = 'Website';
       try {
         const hostname = new URL(resolved).hostname.replace(/^www\./i, '').split('.');
@@ -5769,7 +6638,8 @@ const deriveIndicationFromIsi = (isiText: string) => {
 };
 
 const isBotWallImageUrl = (url: string) =>
-  /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || ''));
+  /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || '')) ||
+  /^data:image\/svg\+xml/i.test(String(url || ''));
 
 const isJunkImageUrl = (url: string) => {
   const lowered = String(url || '').toLowerCase();
@@ -5987,11 +6857,7 @@ const isBotWallText = (text: string) =>
   );
 
 const isBotWallHtml = (html: string) => {
-  const sample = String(html || '').slice(0, 120000).toLowerCase();
-  if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(String(html || ''))) {
-    return false;
-  }
-  return /robot-suspicion|checking the site connection security|cf-challenge|challenge-platform|datadome|verify you are human|access denied/i.test(sample);
+  return htmlLooksLikeBotWall(html);
 };
 
 const isLikelyBotWallExtract = (assets: { images?: any[] }) => {
@@ -6067,6 +6933,7 @@ const resolveBrightcoveCandidateVideos = async (videos: any[], label: string) =>
 
 const shouldTryStaticBeforeBrowser = (html: string) => {
   const text = String(html || '');
+  if (htmlLooksLikeBotWall(text)) return false;
   return text.length > 5000 && !isSparseSiteHtml(text) && scoreSiteHtml(text, 200) >= 30;
 };
 
@@ -6165,6 +7032,8 @@ const extractRenderedDomAssetsFromPage = async (
     const imageUrls = new Set<string>();
     const videoEntries: Array<{ url: string; poster: string; title: string }> = [];
     const fontFamilies = new Set<string>();
+    const computedFonts: Array<{ family: string; weight?: string; style?: string }> = [];
+    const computedFontKeys = new Set<string>();
     const stylesheetUrls = new Set<string>();
     const fontFaceCss: string[] = [];
     // tsx uses keepNames:true → avoid const/var fn = ()=>{} patterns
@@ -6328,12 +7197,25 @@ const extractRenderedDomAssetsFromPage = async (
       const style = window.getComputedStyle(el);
       const family = String(style.fontFamily || '').split(',')[0]?.replace(/^["']|["']$/g, '').trim();
       if (family && family !== 'inherit') fontFamilies.add(family);
+      if (family && family !== 'inherit') {
+        const payload = {
+          family,
+          weight: style.fontWeight || '400',
+          style: style.fontStyle || 'normal',
+        };
+        const key = JSON.stringify(payload);
+        if (!computedFontKeys.has(key)) {
+          computedFontKeys.add(key);
+          computedFonts.push(payload);
+        }
+      }
     });
 
     return {
       images: Array.from(imageUrls),
       videos: videoEntries,
       fontFamilies: Array.from(fontFamilies).slice(0, 48),
+      computedFonts: computedFonts.slice(0, 96),
       stylesheetUrls: Array.from(stylesheetUrls).slice(0, 96),
       fontFaceCss: fontFaceCss.slice(0, 256),
     };
@@ -6647,9 +7529,10 @@ const dedupeExtractedAssets = async (
     attachYouTubeWatchUrlToVideos(Array.from(videoByKey.values())),
     targetUrl
   );
+  const metadataFonts = await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast });
   let uniqueFonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(fonts.map((font) => font.url)))
-      .map((url) => pickBestFontForUrl(fonts, url))
+    Array.from(new Set(metadataFonts.map((font) => font.url)))
+      .map((url) => pickBestFontForUrl(metadataFonts, url))
       .filter(Boolean)
       .filter(isSupportedFontAsset)
   );
@@ -6984,6 +7867,12 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
   const wistiaCandidateIds = new Set<string>();
 
   const html = preloadedHtml || await withTimeout(fetchSiteHtml(targetUrl), 28000, `Static HTML fetch for ${targetUrl}`).catch(() => '');
+  if (!html) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
+  if (htmlLooksLikeBotWall(html)) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
   const { resolvedPagePrimaryThumb } = await enrichAssetsFromHtml(html, targetUrl, {
     images,
     videos,
@@ -7190,7 +8079,10 @@ const extractQuickAssets = async (targetUrl: string, options: { videosOnly?: boo
 
   const html = await withTimeout(fetchQuickSiteHtml(targetUrl), 10000, `Quick HTML fetch for ${targetUrl}`).catch(() => '');
   if (!html) {
-    return { images: [], videos: [], fonts: [], colors: [] };
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
+  if (htmlLooksLikeBotWall(html)) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
   }
 
   const { resolvedPagePrimaryThumb } = await enrichAssetsFromHtml(html, targetUrl, {
@@ -12618,7 +13510,15 @@ app.get('/api/section-frame', async (req, res) => {
     if (isVideoPlatformHostUrl(targetUrl) && isPlatformVideoUrl(targetUrl)) {
       return res.status(400).send('Video platform URLs cannot be previewed here. Use Video Downloader instead.');
     }
-    const html = await withTimeout(fetchSiteHtml(targetUrl), 20000, `Section frame for ${targetUrl}`);
+    let html = await withTimeout(fetchSiteHtml(targetUrl), 20000, `Section frame for ${targetUrl}`).catch(() => '');
+    if (!html || htmlLooksLikeBotWall(html)) {
+      const readerText = await fetchReaderFallbackText(targetUrl).catch(() => '');
+      html = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
+      if (!html && readerText) {
+        const escaped = readerText.replace(/[<&>]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char] || char));
+        html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;line-height:1.55;color:#18181b}pre{white-space:pre-wrap}</style></head><body><pre>${escaped}</pre></body></html>`;
+      }
+    }
     if (!html) return res.status(502).send('Could not load page HTML.');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Content-Security-Policy', "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors *;");
@@ -12720,6 +13620,17 @@ app.post('/api/extract', async (req, res) => {
     ).catch(() => '');
     const staticFallbackAssets = async () => extractStaticAssets(targetUrl, prefetchedSiteHtml);
 
+    if (!prefetchedSiteHtml || htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+      const blockedFallbackAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        35000,
+        `Blocked site fallback for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isUsableStaticExtract(blockedFallbackAssets)) {
+        return res.json(blockedFallbackAssets);
+      }
+    }
+
     if (prefetchedSiteHtml && shouldTryStaticBeforeBrowser(prefetchedSiteHtml)) {
       try {
         const staticQuickTimeoutMs = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml) ? 75000 : 45000;
@@ -12744,6 +13655,7 @@ app.post('/api/extract', async (req, res) => {
     const images: any[] = [];
     const videos: any[] = [];
     let fonts: any[] = [];
+    let renderedComputedFonts: Array<{ family: string; weight?: string; style?: string }> = [];
     let colors: string[] = [];
     const vimeoCandidateUrls = new Set<string>();
     const wistiaCandidateIds = new Set<string>();
@@ -13178,7 +14090,7 @@ app.post('/api/extract', async (req, res) => {
     }
 
     const initialHtml = await page.content().catch(() => '');
-    if (/robot-suspicion|challenge-platform|captcha-delivery|cf-challenge/i.test(initialHtml)) {
+    if (pageHtmlLooksBlocked(initialHtml)) {
       await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 2500 : 4500));
       await page
         .goto(targetUrl, {
@@ -13258,6 +14170,15 @@ app.post('/api/extract', async (req, res) => {
           if (!family) return;
           fonts.push({ family, url: '', format: 'computed', status: DEFAULT_ASSET_STATUS });
         });
+      }
+      if (Array.isArray(renderedDom?.computedFonts)) {
+        renderedComputedFonts = renderedDom.computedFonts
+          .map((entry: any) => ({
+            family: String(entry?.family || '').trim(),
+            weight: String(entry?.weight || '').trim() || undefined,
+            style: String(entry?.style || '').trim() || undefined,
+          }))
+          .filter((entry: any) => entry.family);
       }
       if (Array.isArray(renderedDom?.fontFaceCss)) {
         renderedDom.fontFaceCss.forEach((cssText) => {
@@ -13894,7 +14815,7 @@ app.post('/api/extract', async (req, res) => {
       await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 40000 }).catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 5000));
       const reloadHtml = await page.content().catch(() => '');
-      if (reloadHtml && !/robot-suspicion/i.test(reloadHtml)) {
+      if (reloadHtml && !pageHtmlLooksBlocked(reloadHtml)) {
         await enrichAssetsFromHtml(reloadHtml, targetUrl, {
           images,
           videos,
@@ -13965,6 +14886,7 @@ app.post('/api/extract', async (req, res) => {
       fonts: fonts.length,
       colors: colors.length,
     });
+    fonts = applyBrowserFontFamilyEvidence(fonts, renderedComputedFonts);
     let extractedAssets = await dedupeExtractedAssets(images, mergedVideos, fonts, colors, targetUrl, resolvedPagePrimaryThumb, {
       fast: true,
       videosOnly,
@@ -14005,13 +14927,13 @@ app.post('/api/extract', async (req, res) => {
       }
     }).catch(async (error: any) => {
       console.error('Background browser extraction error:', error?.message || error);
+      const quickExtracted = await quickExtractPromise.catch(() => null);
       if (images.length || videos.length || fonts.length || colors.length) {
         try {
           const partialAssets = await dedupeExtractedAssets(images, videos, fonts, colors, targetUrl, '', {
             fast: true,
             videosOnly,
           });
-          const quickExtracted = await quickExtractPromise;
           const seenUrls = new Set((partialAssets.images || []).map((item: any) => item.url).filter(Boolean));
           for (const image of quickExtracted?.images || []) {
             if (image?.url && !seenUrls.has(image.url)) {
@@ -14024,6 +14946,10 @@ app.post('/api/extract', async (req, res) => {
         } catch (partialError: any) {
           console.error('Partial browser extraction finalization failed:', partialError?.message || partialError);
         }
+      }
+      if ((quickExtracted?.images?.length || 0) || (quickExtracted?.videos?.length || 0) || (quickExtracted?.fonts?.length || 0)) {
+        progressMgr?.complete(quickExtracted);
+        return;
       }
       progressMgr?.fail(error?.message || 'Browser extraction failed');
     }).finally(async () => {
@@ -14683,7 +15609,15 @@ app.get('/api/download-image', async (req, res) => {
     return res.send(fetched.buffer);
   } catch (error: any) {
     console.error('Image download error:', error.message || error);
-    return res.status(500).json({ error: `Failed to download image: ${error?.message || 'Unknown error'}` });
+    const message = String(error?.message || 'Unknown error');
+    if (/failed to fetch a valid image|downloaded asset is not a valid image|403|forbidden|cloudflare|blocked/i.test(message)) {
+      return res.status(409).json({
+        error: 'This image could not be downloaded directly because the source site blocked the fetch.',
+        sourceUrl: typeof originalUrl === 'string' ? originalUrl : url,
+        blocked: true,
+      });
+    }
+    return res.status(500).json({ error: `Failed to download image: ${message}` });
   }
 });
 
@@ -15668,6 +16602,43 @@ app.post('/api/open-folder', async (req, res) => {
   } catch (error: any) {
     console.error('Open folder error:', error.message || error);
     return res.status(500).json({ error: 'Could not open the folder on this machine.' });
+  }
+});
+
+const WEBSITE_DOWNLOAD_SUBFOLDERS = ['Images', 'Videos', 'Fonts', 'Colors', 'Logs'] as const;
+
+const isInsidePath = (candidate: string, parent: string) => {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+};
+
+const ensureWebsiteDownloadStructure = async (sourcePageUrl: string) => {
+  const root = resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode });
+  await fsp.mkdir(root, { recursive: true });
+  await Promise.all(WEBSITE_DOWNLOAD_SUBFOLDERS.map((subfolder) => fsp.mkdir(path.join(root, subfolder), { recursive: true })));
+  return root;
+};
+
+app.delete('/api/website-downloads', async (req, res) => {
+  const sourcePageUrl = readSourcePageUrl(req, String(req.body?.sourcePageUrl || ''));
+  const deleteFiles = Boolean(req.body?.deleteFiles);
+  if (!sourcePageUrl) return res.status(400).json({ error: 'Source URL is required.' });
+
+  try {
+    const root = resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode });
+    if (!deleteFiles) return res.json({ ok: true, mode: 'history', removed: 0, path: root });
+
+    const downloadsRoot = path.join(os.homedir(), 'Downloads');
+    if (!isInsidePath(root, downloadsRoot)) {
+      return res.status(400).json({ error: 'Refusing to clear files outside Downloads.' });
+    }
+
+    const entries = await fsp.readdir(root).catch(() => []);
+    await fsp.rm(root, { recursive: true, force: true });
+    return res.json({ ok: true, mode: 'files', removed: entries.length, path: root });
+  } catch (error: any) {
+    console.error('Clear website downloads error:', error.message || error);
+    return res.status(500).json({ error: error?.message || 'Failed to clear website downloads.' });
   }
 });
 

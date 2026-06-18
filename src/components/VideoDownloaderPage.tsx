@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Download, FolderOpen, Loader2, Play, RefreshCw, Trash2 } from 'lucide-react';
-import { readVideoDownloaderSession, writeVideoDownloaderSession } from '../lib/appSessions';
+import { CheckCircle2, Download, FolderOpen, Loader2, Play, Trash2 } from 'lucide-react';
+import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
   VIDEO_PLATFORMS,
   describeDirectVideoPlatformUrlIssue,
@@ -9,14 +9,15 @@ import {
   isPlaceholderVideoPlatformUrl,
 } from '../lib/videoPlatform';
 import {
-  clearDownloaderFiles,
-  listDownloaderFiles,
+  listDownloaderJobs,
+  downloaderFileUrl,
   openDownloaderFile,
+  readDownloaderJob,
   revealDownloaderFile,
+  clearDownloaderFiles,
   startBulkDownloaderJobs,
   startDownloaderJob,
   waitForDownloaderJob,
-  type DownloaderFile,
   type DownloaderJob,
 } from '../lib/videoDownloader';
 import { formatBytes } from '../lib/download';
@@ -24,13 +25,6 @@ import { logActivity, reportOperationFailure } from '../lib/activityLog';
 import { requestOpenFeedback } from '../lib/feedbackContext';
 import { FriendlyError } from './ProgressExperience';
 import ValidatedVideoThumb from './ValidatedVideoThumb';
-
-type DownloaderTab = 'single' | 'bulk' | 'downloads';
-
-const restored = readVideoDownloaderSession();
-const restoredTab = ['single', 'bulk', 'downloads'].includes(String(restored?.activeTab || ''))
-  ? (restored?.activeTab as DownloaderTab)
-  : 'single';
 
 const isHttpUrl = (value: string) => {
   try {
@@ -40,388 +34,399 @@ const isHttpUrl = (value: string) => {
   }
 };
 
-const formatDate = (value: number) =>
-  new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+const parseInputUrls = (value: string) =>
+  Array.from(new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)));
+
+const mergeJobs = (current: DownloaderJob[], updates: DownloaderJob[]) => {
+  const byId = new Map(current.map((job) => [job.id, job]));
+  updates.forEach((job) => byId.set(job.id, job));
+  return Array.from(byId.values()).sort((a, b) => a.createdAt - b.createdAt);
+};
+
+const jobStatusLabel = (job: DownloaderJob) => {
+  if (job.status === 'completed') return 'Complete';
+  if (job.status === 'error') return 'Failed';
+  if (job.status === 'queued') return 'Queued';
+  return `${Math.round(job.progress || 0)}%`;
+};
+
+const jobProgressWidth = (job: DownloaderJob) => {
+  if (job.status === 'completed') return 100;
+  if (job.status === 'error') return 100;
+  if (job.status === 'queued') return 5;
+  return Math.max(8, Math.min(99, Math.round(job.progress || 0)));
+};
+
+const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
+
+function DownloadJobCard({ job, compact = false }: { job: DownloaderJob; compact?: boolean }) {
+  const isComplete = job.status === 'completed';
+  const isError = job.status === 'error';
+  const title = job.title || job.result?.title || job.url;
+  return (
+    <div className={`rounded-xl border p-4 ${isError ? 'border-amber-200 bg-amber-50' : isComplete ? 'border-emerald-200 bg-emerald-50' : 'border-blue-100 bg-blue-50'}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-zinc-950" title={title}>{title}</p>
+          <p className="mt-1 text-xs uppercase tracking-wide text-zinc-600">
+            {platformLabel(job.platform)} · {job.quality === 'fhd' ? 'FHD / HD fallback' : job.quality.toUpperCase()}
+          </p>
+        </div>
+        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${isError ? 'bg-amber-100 text-amber-800' : isComplete ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+          {isComplete ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+          {jobStatusLabel(job)}
+        </span>
+      </div>
+
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/70">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${isError ? 'bg-amber-500' : isComplete ? 'bg-emerald-600' : 'bg-blue-600'}`}
+          style={{ width: `${jobProgressWidth(job)}%` }}
+        />
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-700">
+        <span>{job.error || job.message}</span>
+        {job.downloadedBytes ? <span>{formatBytes(job.downloadedBytes)}</span> : null}
+        {job.totalBytes ? <span>of {formatBytes(job.totalBytes)}</span> : null}
+        {job.speed ? <span>{job.speed}</span> : null}
+        {job.eta && !isComplete ? <span>ETA {job.eta}</span> : null}
+      </div>
+
+      {isComplete && job.result && !compact ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void openDownloaderFile(job.result!)}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+          >
+            <Play className="h-3.5 w-3.5" />
+            Open File
+          </button>
+          <button
+            type="button"
+            onClick={() => void revealDownloaderFile(job.result!)}
+            className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Open Folder
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CompletedDownloadGrid({ jobs, onClearDownloads }: { jobs: DownloaderJob[]; onClearDownloads: () => void }) {
+  if (jobs.length === 0) return null;
+  return (
+    <div className="mt-5">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-zinc-900">Completed Video{jobs.length === 1 ? '' : 's'}</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-zinc-500">{jobs.length} ready</span>
+          <button
+            type="button"
+            onClick={onClearDownloads}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Clear Downloads
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {jobs.map((job) => {
+          const result = job.result!;
+          const title = result.title || job.title || result.filename || job.url;
+          return (
+            <div key={`${job.id}-result`} className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
+              <ValidatedVideoThumb
+                thumbnail={result.thumbnail}
+                title={title}
+                provider={result.platform || job.platform}
+                className="h-36 w-full"
+              />
+              <div className="p-4">
+                <p className="truncate text-sm font-semibold text-zinc-900" title={title}>
+                  {title}
+                </p>
+                <a
+                  href={downloaderFileUrl(result)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 block truncate text-xs font-medium text-blue-700 hover:text-blue-800 hover:underline"
+                  title={result.displayPath}
+                >
+                  {result.displayPath}
+                </a>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
+                  <span className="rounded bg-zinc-100 px-2 py-1 uppercase">{result.platform}</span>
+                  <span className="rounded bg-blue-50 px-2 py-1 font-semibold text-blue-700">{result.quality}</span>
+                  <span className="rounded bg-green-50 px-2 py-1 font-semibold text-green-700">completed</span>
+                  <span className="rounded bg-zinc-100 px-2 py-1">{formatBytes(result.size)}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void openDownloaderFile(result)}
+                    className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    Open File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void revealDownloaderFile(result)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    Open Folder
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function VideoDownloaderPage() {
-  const [activeTab, setActiveTab] = useState<DownloaderTab>(restoredTab);
-  const [singleUrl, setSingleUrl] = useState(restored?.singleUrl || restored?.url || '');
-  const [bulkUrls, setBulkUrls] = useState(restored?.bulkUrls || '');
-  const [singleJob, setSingleJob] = useState<DownloaderJob | null>(null);
-  const [singleBusy, setSingleBusy] = useState(false);
-  const [singleError, setSingleError] = useState<string | null>(null);
-  const [bulkJobs, setBulkJobs] = useState<DownloaderJob[]>([]);
-  const [bulkErrors, setBulkErrors] = useState<Array<{ url: string; error: string }>>([]);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [downloads, setDownloads] = useState<DownloaderFile[]>([]);
-  const [downloadsBusy, setDownloadsBusy] = useState(false);
-  const [downloadsError, setDownloadsError] = useState<string | null>(null);
-  const detectedPlatform = useMemo(() => detectVideoPlatform(singleUrl.trim()), [singleUrl]);
+  const [urlInput, setUrlInput] = useState('');
+  const [jobs, setJobs] = useState<DownloaderJob[]>([]);
+  const [jobErrors, setJobErrors] = useState<Array<{ url: string; error: string }>>([]);
+  const [busy, setBusy] = useState(false);
+
+  const inputUrls = useMemo(() => parseInputUrls(urlInput), [urlInput]);
+  const detectedPlatform = useMemo(
+    () => (inputUrls.length === 1 ? detectVideoPlatform(inputUrls[0]) : null),
+    [inputUrls]
+  );
+  const runningCount = jobs.filter((job) => job.status === 'queued' || job.status === 'running').length;
+  const completeCount = jobs.filter((job) => job.status === 'completed').length;
+  const failedCount = jobs.filter((job) => job.status === 'error').length;
+  const completedJobs = jobs.filter((job) => job.status === 'completed' && job.result);
 
   useEffect(() => {
     writeVideoDownloaderSession({
-      url: singleUrl,
-      singleUrl,
-      bulkUrls,
-      activeTab,
+      url: '',
+      singleUrl: '',
+      bulkUrls: '',
+      activeTab: 'download',
       video: null,
       videos: [],
       savedAt: Date.now(),
     });
-  }, [activeTab, bulkUrls, singleUrl]);
-
-  const refreshDownloads = async () => {
-    setDownloadsBusy(true);
-    setDownloadsError(null);
-    try {
-      setDownloads(await listDownloaderFiles());
-    } catch (error: any) {
-      setDownloadsError(error?.message || 'Could not load downloads.');
-    } finally {
-      setDownloadsBusy(false);
-    }
-  };
+  }, []);
 
   useEffect(() => {
-    if (activeTab === 'downloads') void refreshDownloads();
-  }, [activeTab]);
+    void listDownloaderJobs()
+      .then((items) => {
+        const recent = items
+          .filter((job) => job.status === 'queued' || job.status === 'running' || Date.now() - job.updatedAt < 30 * 60 * 1000)
+          .slice(0, 12)
+          .reverse();
+        setJobs(recent);
+      })
+      .catch(() => undefined);
+  }, []);
 
-  const downloadSingle = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const url = singleUrl.trim();
-    if (!url || !isHttpUrl(url)) {
-      setSingleError('Paste a valid public video URL.');
-      return;
-    }
-    if (isPlaceholderVideoPlatformUrl(url)) {
-      setSingleError('That is a sample placeholder URL, not a real public video. Paste the actual Facebook/X/Instagram video link.');
-      return;
-    }
-    if (detectedPlatform && !isDirectVideoPlatformUrl(url)) {
-      setSingleError(describeDirectVideoPlatformUrlIssue(url));
-      return;
-    }
-
-    setSingleBusy(true);
-    setSingleError(null);
-    setSingleJob(null);
-    void logActivity({
-      kind: 'url_entered',
-      url,
-      platform: detectedPlatform || undefined,
-      message: 'Video download started',
-    });
-    try {
-      const started = await startDownloaderJob({ url, quality: 'fhd' });
-      const completed = await waitForDownloaderJob(started, setSingleJob);
-      if (completed.status === 'error') throw new Error(completed.error || 'Download failed.');
-      await refreshDownloads();
-      setActiveTab('downloads');
-    } catch (error: any) {
-      const message = error?.message || 'Download failed.';
-      setSingleError(message);
-      void reportOperationFailure({
-        operation: 'video_download_failure',
-        error: message,
-        videoUrl: url,
-        platform: detectedPlatform || undefined,
-        openFeedback: false,
+  useEffect(() => {
+    const activeJobs = jobs.filter((job) => job.status === 'queued' || job.status === 'running');
+    if (activeJobs.length === 0) return undefined;
+    const timer = window.setInterval(() => {
+      void Promise.all(
+        activeJobs.map((job) =>
+          readDownloaderJob(job.id).catch(() => job)
+        )
+      ).then((updated) => {
+        setJobs((current) => mergeJobs(current, updated));
       });
-    } finally {
-      setSingleBusy(false);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [jobs]);
+
+  const validateUrls = (urls: string[]) => {
+    const errors: Array<{ url: string; error: string }> = [];
+    urls.forEach((url) => {
+      if (!isHttpUrl(url)) {
+        errors.push({ url, error: 'Paste a valid public video URL.' });
+        return;
+      }
+      if (isPlaceholderVideoPlatformUrl(url)) {
+        errors.push({ url, error: 'That is a sample placeholder URL, not a real public video.' });
+        return;
+      }
+      const platform = detectVideoPlatform(url);
+      if (platform && !isDirectVideoPlatformUrl(url)) {
+        errors.push({ url, error: describeDirectVideoPlatformUrlIssue(url) });
+      }
+    });
+    return errors;
+  };
+
+  const handleClearDownloads = async () => {
+    try {
+      await clearDownloaderFiles(true);
+      setJobs((current) => current.filter((job) => job.status !== 'completed' && job.status !== 'error'));
+    } catch (error: any) {
+      alert(error?.message || 'Could not clear video downloads.');
     }
   };
 
-  const runBulk = async () => {
-    const urls = Array.from(new Set(bulkUrls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)));
+  const downloadQueue = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const urls = inputUrls;
     if (!urls.length) {
-      setBulkErrors([{ url: '', error: 'Enter at least one video URL.' }]);
+      setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
       return;
     }
-    setBulkBusy(true);
-    setBulkJobs([]);
-    setBulkErrors([]);
+    const validationErrors = validateUrls(urls);
+    if (validationErrors.length) {
+      setJobErrors(validationErrors);
+      return;
+    }
+
+    setBusy(true);
+    setJobErrors([]);
+    setJobs([]);
+    void logActivity({
+      kind: 'url_entered',
+      url: urls[0],
+      platform: urls.length === 1 ? detectedPlatform || undefined : undefined,
+      message: urls.length === 1 ? 'Video download started' : `${urls.length} video downloads started`,
+    });
+
     try {
-      const result = await startBulkDownloaderJobs(urls);
-      setBulkErrors(result.errors || []);
-      setBulkJobs(result.jobs || []);
-      await Promise.all(
-        (result.jobs || []).map((initial) =>
+      const started =
+        urls.length === 1
+          ? { jobs: [await startDownloaderJob({ url: urls[0], quality: 'fhd' })], errors: [] as Array<{ url: string; error: string }> }
+          : await startBulkDownloaderJobs(urls);
+      const createdJobs = started.jobs || [];
+      setJobErrors(started.errors || []);
+      setJobs(createdJobs);
+
+      if (!createdJobs.length) {
+        setJobErrors(started.errors?.length ? started.errors : [{ url: '', error: 'No downloads could be started.' }]);
+        return;
+      }
+
+      const completed = await Promise.all(
+        createdJobs.map((initial) =>
           waitForDownloaderJob(initial, (updated) => {
-            setBulkJobs((current) => {
-              const next = current.filter((job) => job.id !== updated.id);
-              return [...next, updated].sort((a, b) => a.createdAt - b.createdAt);
-            });
+            setJobs((current) => mergeJobs(current, [updated]));
           })
         )
       );
-      setBulkUrls('');
+      setJobs((current) => mergeJobs(current, completed));
+      const failed = completed.find((job) => job.status === 'error');
+      if (failed && urls.length === 1) throw new Error(failed.error || 'Download failed.');
+      if (!failed) setUrlInput('');
     } catch (error: any) {
-      setBulkErrors([{ url: '', error: error?.message || 'Bulk download failed.' }]);
+      const message = error?.message || 'Download failed.';
+      setJobErrors([{ url: urls.length === 1 ? urls[0] : '', error: message }]);
+      void reportOperationFailure({
+        operation: 'video_download_failure',
+        error: message,
+        videoUrl: urls[0],
+        platform: urls.length === 1 ? detectedPlatform || undefined : undefined,
+        openFeedback: false,
+      });
     } finally {
-      setBulkBusy(false);
+      setBusy(false);
     }
   };
-
-  const clearDownloads = async () => {
-    if (!window.confirm('Clear all files created by Video Downloader?')) return;
-    setDownloadsBusy(true);
-    setDownloadsError(null);
-    try {
-      await clearDownloaderFiles();
-      await refreshDownloads();
-    } catch (error: any) {
-      setDownloadsError(error?.message || 'Could not clear downloads.');
-      setDownloadsBusy(false);
-    }
-  };
-
-  const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
 
   return (
     <div className="mx-auto max-w-5xl">
-      <p className="mb-5 text-center text-sm text-zinc-600">
-        Download public videos from YouTube, Vimeo, Instagram, Facebook, X.com, and iSpot.tv. FHD is preferred with HD fallback.
-      </p>
-
-      <div className="mb-5 flex flex-wrap justify-center gap-2">
-        {VIDEO_PLATFORMS.map((platform) => {
-          const selected = detectedPlatform === platform.id;
-          return (
-            <button
-              key={platform.id}
-              type="button"
-              onClick={() => {
-                setActiveTab('single');
-                setSingleUrl(platform.exampleUrl || '');
-                setSingleJob(null);
-                setSingleError(platform.exampleUrl ? null : `Paste a public ${platform.label} video URL.`);
-              }}
-              className={
-                selected
-                  ? 'rounded-full border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm'
-                  : 'rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm hover:border-blue-200 hover:text-blue-700'
-              }
-            >
-              {platform.label}
-            </button>
-          );
-        })}
+      <div className="mb-4 flex flex-wrap justify-center gap-2">
+        {VIDEO_PLATFORMS.map((platform) => (
+          <span
+            key={platform.id}
+            className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm"
+          >
+            {platform.label}
+          </span>
+        ))}
       </div>
 
       <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
-        <div className="grid grid-cols-3 border-b border-zinc-200 bg-zinc-50 p-2">
-          {(['single', 'bulk', 'downloads'] as DownloaderTab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={
-                activeTab === tab
-                  ? 'rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm'
-                  : 'rounded-xl px-4 py-2.5 text-sm font-semibold capitalize text-zinc-600 hover:bg-white hover:text-blue-700'
-              }
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
+        <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
+          <h2 className="text-sm font-semibold text-zinc-900">Single/Bulk Download</h2>
         </div>
 
-        {activeTab === 'single' ? (
-          <div className="p-5 sm:p-6">
-            <form onSubmit={downloadSingle} className="space-y-4">
-              <label className="block text-sm font-medium text-zinc-800">Paste URL</label>
-              <input
-                type="url"
-                value={singleUrl}
+        <div className="p-5 sm:p-6">
+            <form onSubmit={downloadQueue} className="space-y-4">
+              <textarea
+                aria-label="Video URL"
+                value={urlInput}
                 onChange={(event) => {
-                  setSingleUrl(event.target.value);
-                  setSingleJob(null);
-                  setSingleError(null);
+                  setUrlInput(event.target.value);
+                  setJobErrors([]);
                 }}
-                placeholder="https://www.instagram.com/reel/..."
-                className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                rows={5}
+                placeholder="Paste one or more public video URLs, one per line"
+                className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               />
-              {detectedPlatform ? (
-                <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
-                  Detected: <span className="font-semibold">{platformLabel(detectedPlatform)}</span>
-                </p>
-              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
+                {detectedPlatform ? (
+                  <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                    Detected: <span className="font-semibold">{platformLabel(detectedPlatform)}</span>
+                  </p>
+                ) : inputUrls.length > 1 ? (
+                  <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                    {inputUrls.length} URLs ready
+                  </p>
+                ) : null}
+                {runningCount || completeCount || failedCount ? (
+                  <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
+                    {runningCount ? `${runningCount} active` : 'No active downloads'}
+                    {completeCount ? ` · ${completeCount} complete` : ''}
+                    {failedCount ? ` · ${failedCount} failed` : ''}
+                  </p>
+                ) : null}
+              </div>
+
               <button
                 type="submit"
-                disabled={singleBusy || !singleUrl.trim()}
+                disabled={busy || inputUrls.length === 0}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {singleBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                {singleBusy ? 'Downloading...' : 'Download'}
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                {busy ? 'Downloading...' : inputUrls.length > 1 ? `Download ${inputUrls.length} Videos` : 'Download'}
               </button>
             </form>
 
-            {singleJob ? (
-              <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
-                <div className="flex items-center justify-between gap-3 text-sm font-semibold text-blue-900">
-                  <span>{singleJob.message}</span>
-                  <span>{singleJob.status === 'completed' ? '100%' : `${Math.round(singleJob.progress || 0)}%`}</span>
-                </div>
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
-                  <div
-                    className="h-full rounded-full bg-blue-600 transition-all duration-500"
-                    style={{ width: `${Math.max(2, singleJob.status === 'completed' ? 100 : singleJob.progress || 0)}%` }}
-                  />
-                </div>
-                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-blue-700">
-                  <span>{singleJob.quality === 'fhd' ? 'FHD with HD fallback' : singleJob.quality.toUpperCase()}</span>
-                  {singleJob.downloadedBytes ? <span>{formatBytes(singleJob.downloadedBytes)}</span> : null}
-                  {singleJob.speed ? <span>{singleJob.speed}</span> : null}
-                  {singleJob.eta ? <span>ETA {singleJob.eta}</span> : null}
-                </div>
-              </div>
-            ) : null}
-
-            {singleError ? (
-              <div className="mt-5">
-                <FriendlyError message={singleError} onReportIssue={() => requestOpenFeedback()} />
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {activeTab === 'bulk' ? (
-          <div className="p-5 sm:p-6">
-            <label className="block text-sm font-medium text-zinc-800">Multiple URLs, one per line</label>
-            <textarea
-              value={bulkUrls}
-              onChange={(event) => setBulkUrls(event.target.value)}
-              rows={7}
-              placeholder={'https://www.youtube.com/watch?v=...\nhttps://www.instagram.com/reel/...\nhttps://x.com/user/status/...'}
-              className="mt-3 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            />
-            <button
-              type="button"
-              disabled={bulkBusy || !bulkUrls.trim()}
-              onClick={() => void runBulk()}
-              className="mt-4 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {bulkBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {bulkBusy ? 'Downloading queue...' : 'Download All (FHD / HD fallback)'}
-            </button>
-
-            {bulkErrors.map((item, index) => (
-              <p key={`${item.url}-${index}`} className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                {item.url ? `${item.url}: ` : ''}{item.error}
-              </p>
-            ))}
-
-            {bulkJobs.length ? (
+            {jobErrors.length ? (
               <div className="mt-5 space-y-3">
-                {bulkJobs.map((job) => (
-                  <div key={job.id} className="rounded-xl border border-zinc-200 bg-white p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="max-w-2xl truncate text-sm font-semibold text-zinc-900">{job.title || job.url}</p>
-                        <p className="mt-1 text-xs uppercase tracking-wide text-zinc-500">{job.platform} · {job.quality}</p>
-                      </div>
-                      <span className={job.status === 'error' ? 'text-sm font-semibold text-amber-700' : 'text-sm font-semibold text-blue-700'}>
-                        {job.status === 'completed' ? 'Complete' : job.status === 'error' ? 'Failed' : `${Math.round(job.progress)}%`}
-                      </span>
-                    </div>
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
-                      <div
-                        className={job.status === 'error' ? 'h-full bg-amber-500' : 'h-full bg-blue-600 transition-all duration-500'}
-                        style={{ width: `${Math.max(job.status === 'error' ? 100 : 2, job.progress || 0)}%` }}
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-zinc-600">{job.error || job.message}</p>
-                  </div>
+                {jobErrors.map((item, index) => (
+                  <FriendlyError
+                    key={`${item.url}-${index}`}
+                    message={item.url ? `${item.url}: ${item.error}` : item.error}
+                    onReportIssue={() => requestOpenFeedback()}
+                  />
                 ))}
               </div>
             ) : null}
-          </div>
-        ) : null}
 
-        {activeTab === 'downloads' ? (
-          <div className="p-5 sm:p-6">
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={downloadsBusy}
-                onClick={() => void refreshDownloads()}
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-              >
-                <RefreshCw className={downloadsBusy ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-                Refresh
-              </button>
-              <button
-                type="button"
-                disabled={downloadsBusy || downloads.length === 0}
-                onClick={() => void clearDownloads()}
-                className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-                Clear All
-              </button>
-            </div>
-
-            {downloadsError ? <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{downloadsError}</p> : null}
-
-            {!downloadsBusy && downloads.length === 0 ? (
-              <div className="mt-6 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-8 text-center text-sm text-zinc-500">
-                No downloads yet. Use Single or Bulk to download a video.
+            {jobs.length ? (
+              <div className="mt-5 space-y-3">
+                {jobs.map((job) => (
+                  <DownloadJobCard key={job.id} job={job} compact />
+                ))}
               </div>
-            ) : null}
+            ) : (
+              <div className="mt-6 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-8 text-center text-sm text-zinc-500">
+                Progress and completion will appear here.
+              </div>
+            )}
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              {downloads.map((file) => (
-                <div key={file.path} className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
-                  <ValidatedVideoThumb
-                    thumbnail={file.thumbnail}
-                    title={file.title || file.name}
-                    provider={file.platform}
-                    className="h-36 w-full"
-                  />
-                  <div className="p-4">
-                    <p className="truncate text-sm font-semibold text-zinc-900" title={file.title || file.name}>
-                      {file.title || file.name}
-                    </p>
-                    <p className="mt-1 truncate text-xs text-zinc-500" title={file.displayPath}>{file.displayPath}</p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
-                      <span className="rounded bg-zinc-100 px-2 py-1 uppercase">{file.platform}</span>
-                      <span className="rounded bg-blue-50 px-2 py-1 font-semibold text-blue-700">{file.quality}</span>
-                      <span className="rounded bg-green-50 px-2 py-1 font-semibold text-green-700">{file.status || 'completed'}</span>
-                      <span className="rounded bg-zinc-100 px-2 py-1">{formatBytes(file.size)}</span>
-                    </div>
-                    <p className="mt-2 text-xs text-zinc-500">{formatDate(file.modifiedAt)}</p>
-                    {file.zipDisplayPath ? (
-                      <p className="mt-1 truncate text-xs text-zinc-500" title={file.zipDisplayPath}>
-                        ZIP: {file.zipDisplayPath}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void openDownloaderFile(file)}
-                        className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-                      >
-                        <Play className="h-3.5 w-3.5" />
-                        Open File
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void revealDownloaderFile(file)}
-                        className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" />
-                        Open Folder
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+            <CompletedDownloadGrid jobs={completedJobs} onClearDownloads={handleClearDownloads} />
+        </div>
       </section>
-
     </div>
   );
 }

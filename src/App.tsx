@@ -6,7 +6,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { apiFetch } from './lib/api';
 import { type DownloadProgress } from './lib/download';
-import { FriendlyError, SmartProgressPanel, downloadMessages } from './components/ProgressExperience';
+import { CompletionCard, FriendlyError, SmartProgressPanel, downloadMessages } from './components/ProgressExperience';
 import {
   WebsiteExtractProgressPanel,
   type WebsiteCrawlMode,
@@ -23,10 +23,9 @@ import { buildCreativeAssetsFolderName, creativeAssetsFolderLabel } from './lib/
 import {
   clearPersistedClipboardUrl,
   parseClipboardUrl,
-  readPersistedClipboardUrl,
-  writePersistedClipboardUrl,
 } from './lib/clipboardUrl';
 import { getDesktopBridge } from './lib/desktopBridge';
+import { resolveWebsitePreviewUrl } from './lib/websitePreview';
 import { fetchAppMeta } from './lib/appVersion';
 import {
   fetchLatestGithubRelease,
@@ -132,13 +131,7 @@ const clearExtractSession = () => {
   }
 };
 
-const restoredExtractSession = readExtractSession();
-const restoredClipboardUrl = readPersistedClipboardUrl();
-const initialUrl =
-  restoredExtractSession?.url ||
-  restoredExtractSession?.extractedUrl ||
-  restoredClipboardUrl ||
-  '';
+const initialUrl = '';
 const preloadExtractorChunks = () => {
   void import('./components/ImageExtractor');
   void import('./components/FontExtractor');
@@ -175,6 +168,196 @@ const hasExtractedAssets = (data: any) => {
 
 const normalizeExtractColors = (colors: unknown) =>
   Array.from(new Set(Array.isArray(colors) ? colors.map((color) => String(color || '').trim()).filter(Boolean) : [])).slice(0, 6);
+
+type PreviewCapturedAsset = {
+  url: string;
+  dataUrl?: string;
+  filename?: string;
+  width?: number;
+  height?: number;
+  type?: string;
+  mimeType?: string;
+  alt?: string;
+};
+
+type PreviewCaptureResult = {
+  ok?: boolean;
+  url?: string;
+  title?: string;
+  images?: PreviewCapturedAsset[];
+  fonts?: any[];
+  videos?: any[];
+  colors?: string[];
+  error?: string;
+};
+
+const buildPreviewCaptureScript = () => `
+(async () => {
+  const absoluteUrl = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw || raw === 'none') return '';
+    try { return new URL(raw, location.href).href; } catch { return ''; }
+  };
+  const filenameFromUrl = (value, fallback) => {
+    try {
+      const parsed = new URL(value);
+      const leaf = parsed.pathname.split('/').filter(Boolean).pop();
+      return leaf || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const typeFromUrl = (value, mime) => {
+    const contentType = String(mime || '').toLowerCase();
+    if (contentType.includes('png')) return 'png';
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) return 'jpg';
+    if (contentType.includes('webp')) return 'webp';
+    if (contentType.includes('gif')) return 'gif';
+    if (contentType.includes('svg')) return 'svg';
+    const match = String(value || '').match(/\\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+    return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
+  };
+  const blobToDataUrl = (blob) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(blob);
+  });
+  const fetchDataUrl = async (value) => {
+    const target = absoluteUrl(value);
+    if (!target || target.startsWith('data:')) return target;
+    try {
+      const response = await fetch(target, { credentials: 'include', cache: 'force-cache' });
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      if (!response.ok || !contentType.startsWith('image/')) return '';
+      const blob = await response.blob();
+      if (!blob.size || blob.size > 12000000) return '';
+      return await blobToDataUrl(blob);
+    } catch {
+      return '';
+    }
+  };
+  const imageMap = new Map();
+  const addImage = (value, meta = {}) => {
+    const target = absoluteUrl(value);
+    if (!target || imageMap.has(target)) return;
+    imageMap.set(target, {
+      url: target,
+      filename: filenameFromUrl(target, 'preview-image.png'),
+      width: Number(meta.width || 0) || undefined,
+      height: Number(meta.height || 0) || undefined,
+      alt: String(meta.alt || '').trim(),
+      type: typeFromUrl(target),
+    });
+  };
+  const readCssUrls = (value) => {
+    const urls = [];
+    String(value || '').replace(/url\\((['"]?)(.*?)\\1\\)/gi, (_match, _quote, inner) => {
+      const target = absoluteUrl(inner);
+      if (target) urls.push(target);
+      return '';
+    });
+    return urls;
+  };
+
+  Array.from(document.images || []).forEach((img) => {
+    addImage(img.currentSrc || img.src, {
+      width: img.naturalWidth || img.width,
+      height: img.naturalHeight || img.height,
+      alt: img.alt,
+    });
+  });
+
+  Array.from(document.querySelectorAll('source[srcset], img[srcset]')).forEach((el) => {
+    String(el.getAttribute('srcset') || '').split(',').forEach((part) => {
+      addImage(part.trim().split(/\\s+/)[0]);
+    });
+  });
+
+  Array.from(document.querySelectorAll('*')).forEach((el) => {
+    const style = getComputedStyle(el);
+    [style.backgroundImage, style.listStyleImage, style.borderImageSource].forEach((value) => {
+      readCssUrls(value).forEach((target) => addImage(target));
+    });
+  });
+
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    const initiator = String(entry.initiatorType || '').toLowerCase();
+    if (!name) return;
+    if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) {
+      addImage(name);
+    }
+  });
+
+  const images = await Promise.all(
+    Array.from(imageMap.values()).slice(0, 120).map(async (item) => {
+      const dataUrl = await fetchDataUrl(item.url);
+      const mimeType = dataUrl.match(/^data:([^;]+);/)?.[1] || '';
+      return {
+        ...item,
+        dataUrl: dataUrl || undefined,
+        mimeType,
+        type: typeFromUrl(item.url, mimeType),
+      };
+    })
+  );
+
+  const fontUrls = new Set();
+  Array.from(document.querySelectorAll('link[href]')).forEach((link) => {
+    const rel = String(link.getAttribute('rel') || '').toLowerCase();
+    const href = absoluteUrl(link.getAttribute('href'));
+    if (!href) return;
+    if (rel.includes('stylesheet') || rel.includes('preload') || /fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(href)) {
+      fontUrls.add(href);
+    }
+  });
+  Array.from(document.styleSheets || []).forEach((sheet) => {
+    const href = absoluteUrl(sheet.href);
+    if (href && /fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(href)) fontUrls.add(href);
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(name)) fontUrls.add(name);
+  });
+
+  const videoUrls = new Set();
+  Array.from(document.querySelectorAll('video[src], video source[src], iframe[src]')).forEach((el) => {
+    const src = absoluteUrl(el.getAttribute('src'));
+    if (src) videoUrls.add(src);
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/\\.(mp4|m3u8|webm|mov)(?:[?#]|$)|youtube\\.com|vimeo\\.com/i.test(name)) videoUrls.add(name);
+  });
+
+  const colorCounts = new Map();
+  const addColor = (value) => {
+    const match = String(value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+    if (!match) return;
+    const parts = [match[1], match[2], match[3]].map((part) => Math.max(0, Math.min(255, Number(part || 0))));
+    if (parts.every((part) => part >= 248) || parts.every((part) => part <= 7)) return;
+    const hex = '#' + parts.map((part) => part.toString(16).padStart(2, '0')).join('');
+    colorCounts.set(hex, (colorCounts.get(hex) || 0) + 1);
+  };
+  Array.from(document.querySelectorAll('*')).slice(0, 1500).forEach((el) => {
+    const style = getComputedStyle(el);
+    addColor(style.color);
+    addColor(style.backgroundColor);
+    addColor(style.borderTopColor);
+  });
+
+  return {
+    ok: true,
+    url: location.href,
+    title: document.title || location.href,
+    images,
+    fonts: Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), type: typeFromUrl(url) })),
+    videos: Array.from(videoUrls).map((url) => ({ url, title: filenameFromUrl(url, 'video') })),
+    colors: Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 24).map(([color]) => color),
+  };
+})()
+`;
 
 const mergeExtractPayload = (base: any, incoming: any) => {
   const mergeListByUrl = (left: any[] = [], right: any[] = [], key = 'url') => {
@@ -221,15 +404,13 @@ const htmlNeedsRenderedRetry = (rawUrl: string, data: any, imageCount: number) =
 export default function App() {
   const [mainSection, setMainSection] = useState<MainSection>(readMainSection());
   const [url, setUrl] = useState(initialUrl);
-  const [extractedUrl, setExtractedUrl] = useState(restoredExtractSession?.extractedUrl || '');
-  const [activeTab, setActiveTab] = useState<'fonts' | 'images' | 'videos' | 'colors' | 'insights'>(() => {
-    const tab = restoredExtractSession?.activeTab;
-    if (tab === 'insights' && !SHOW_CREATIVE_BRIEF) return 'images';
-    return normalizeExtracterTab(tab);
-  });
+  const [extractedUrl, setExtractedUrl] = useState('');
+  const [activeTab, setActiveTab] = useState<'fonts' | 'images' | 'videos' | 'colors' | 'insights'>('images');
   const [loading, setLoading] = useState(false);
+  const [previewCapturing, setPreviewCapturing] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadAllProgress, setDownloadAllProgress] = useState<DownloadProgress | null>(null);
+  const [assetStateVersion, setAssetStateVersion] = useState(0);
   const [retryingExtract, setRetryingExtract] = useState(false);
   const [extractPartial, setExtractPartial] = useState(false);
   const [extractPhase, setExtractPhase] = useState<WebsiteExtractPhase>('loading');
@@ -240,9 +421,7 @@ export default function App() {
   const wsProgress = useExtractionProgress(loading);
   const wsProgressRef = React.useRef(wsProgress);
   wsProgressRef.current = wsProgress;
-  const [completion, setCompletion] = useState<{ title: string; detail?: string; size?: number; folderTarget?: string } | null>(
-    restoredExtractSession?.completion || null
-  );
+  const [completion, setCompletion] = useState<{ title: string; detail?: string; size?: number; folderTarget?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assets, setAssets] = useState<{
     fonts: any[];
@@ -251,19 +430,7 @@ export default function App() {
     videos: any[];
     colors: string[];
     extractionMeta?: { mode?: string; sectionLabel?: string; sectionSelector?: string };
-  } | null>(
-    restoredExtractSession?.assets
-      ? {
-          ...restoredExtractSession.assets,
-          images: mergeImageAssets(
-            restoredExtractSession.assets.images,
-            restoredExtractSession.assets.icons || []
-          ),
-          icons: [],
-          colors: normalizeExtractColors(restoredExtractSession.assets.colors),
-        }
-      : null
-  );
+  } | null>(null);
   const [validImageCount, setValidImageCount] = useState(0);
   const [insightsData, setInsightsData] = useState<any | null>(null);
   const [insightsUrl, setInsightsUrl] = useState('');
@@ -299,8 +466,6 @@ export default function App() {
   const applyDetectedClipboardUrl = React.useCallback((raw: string) => {
     const parsed = parseClipboardUrl(raw);
     if (!parsed) return;
-
-    writePersistedClipboardUrl(parsed);
 
     setUrl((current) => {
       const trimmed = String(current || '').trim();
@@ -344,7 +509,6 @@ export default function App() {
     setUrl(pendingClipboardUrl);
     lastAutoFilledUrlRef.current = pendingClipboardUrl;
     userEditedUrlRef.current = false;
-    writePersistedClipboardUrl(pendingClipboardUrl);
     setPendingClipboardUrl(null);
     showClipboardDetectedNotice();
   };
@@ -355,6 +519,46 @@ export default function App() {
     if (trimmed !== lastAutoFilledUrlRef.current) {
       userEditedUrlRef.current = true;
       setPendingClipboardUrl(null);
+    }
+  };
+
+  const handleExtractFromOpenWebsite = async () => {
+    const target = resolveWebsitePreviewUrl(url);
+    if (!target) {
+      setError('Enter a public website URL to extract.');
+      return;
+    }
+    setUrl(target);
+    lastAutoFilledUrlRef.current = target;
+    userEditedUrlRef.current = false;
+    setPendingClipboardUrl(null);
+
+    setPreviewCapturing(true);
+    setLoading(true);
+    setError(null);
+    setCompletion(null);
+    setExtractPartial(false);
+    setExtractPhase('finalizing');
+    try {
+      const response = await apiFetch('/api/browser-tabs/chrome/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: target }),
+      });
+      const data = await parseApiBody(response);
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || 'Unable to fetch assets from the open Chrome tab.');
+      }
+      const sourceUrl = String(data.pageUrl || data.url || target).trim() || target;
+      applyExtractResult(data, sourceUrl, {
+        detail: `${mergeImageAssets(data.images, data.icons).length + (data.fonts?.length || 0) + (data.videos?.length || 0) + (data.colors?.length || 0)} assets captured from ${data.source === 'open-chrome-tab' ? 'the open Chrome tab' : 'a controlled browser session'}.`,
+      });
+    } catch (chromeError: any) {
+      console.warn('Open Chrome tab extraction failed:', chromeError?.message || chromeError);
+      setError(chromeError?.message || 'Open Chrome tab extraction failed. Try Extract as a fallback.');
+    } finally {
+      setLoading(false);
+      setPreviewCapturing(false);
     }
   };
 
@@ -381,9 +585,7 @@ export default function App() {
     } catch {
       setResponsibleUseOpen(true);
     }
-    if (restoredExtractSession?.assets) {
-      preloadExtractorChunks();
-    }
+    clearExtractSession();
     void refreshClipboardUrl();
     void fetchAppMeta().then((meta) => {
       setAppVersion(meta.version);
@@ -430,6 +632,7 @@ export default function App() {
     const handleWindowFocus = () => {
       void refreshClipboardUrl();
     };
+    void refreshClipboardUrl();
     window.addEventListener('focus', handleWindowFocus);
     return () => window.removeEventListener('focus', handleWindowFocus);
   }, [refreshClipboardUrl]);
@@ -541,6 +744,7 @@ export default function App() {
     setExtractPartial(false);
     setExtractPhase('loading');
     setCrawlMode('fast');
+    setPreviewCapturing(false);
     finishNowRef.current = false;
     partialExtractRef.current = null;
     if (extractPhaseTimerRef.current) {
@@ -558,6 +762,29 @@ export default function App() {
     clearExtractSession();
     clearPersistedClipboardUrl();
     void refreshClipboardUrl();
+  };
+
+  const handleClearWebsiteDownloads = async () => {
+    const sourcePageUrl = extractedUrl || url;
+    try {
+      if (sourcePageUrl.trim()) {
+        const response = await apiFetch('/api/website-downloads', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourcePageUrl,
+            deleteFiles: true,
+          }),
+        });
+        const data = await parseApiBody(response);
+        if (!response.ok) throw new Error(data?.error || 'Could not clear downloaded files.');
+      }
+    } catch (error: any) {
+      alert(error?.message || 'Could not clear downloaded files.');
+    } finally {
+      handleNewExtraction();
+      window.setTimeout(() => window.location.reload(), 50);
+    }
   };
 
   const friendlyExtractionError = (message: string, isYouTube = false) => {
@@ -620,11 +847,12 @@ export default function App() {
 
   const runExtractRequest = async (
     signal?: AbortSignal,
-    options?: { mode?: 'quick' | 'static'; crawlMode?: WebsiteCrawlMode }
+    options?: { mode?: 'quick' | 'static'; crawlMode?: WebsiteCrawlMode; targetUrl?: string }
   ) => {
     const requestController = new AbortController();
     const abortRequest = () => requestController.abort();
-    const isYouTube = isYouTubeExtractUrl(url);
+    const requestUrl = options?.targetUrl || url;
+    const isYouTube = isYouTubeExtractUrl(requestUrl);
     const timeoutMs = isYouTube
       ? 240000
       : options?.mode === 'quick'
@@ -640,10 +868,10 @@ export default function App() {
     try {
       const payload =
         options?.mode === 'quick'
-          ? { url, mode: 'quick', extractionMode: 'full' }
+          ? { url: requestUrl, mode: 'quick', extractionMode: 'full' }
           : options?.mode === 'static'
-            ? { url, mode: 'static', extractionMode: 'full' }
-            : { url, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode };
+            ? { url: requestUrl, mode: 'static', extractionMode: 'full' }
+            : { url: requestUrl, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode };
       const response = await apiFetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -750,13 +978,14 @@ export default function App() {
     void handleWebsiteExtract(undefined, 'deep');
   };
 
-  const handleWebsiteExtract = async (event?: React.FormEvent, forcedCrawlMode?: WebsiteCrawlMode) => {
+  const handleWebsiteExtract = async (event?: React.FormEvent, forcedCrawlMode?: WebsiteCrawlMode, overrideUrl?: string) => {
     event?.preventDefault();
-    if (!url.trim()) return;
+    const targetUrl = String(overrideUrl || url || '').trim();
+    if (!targetUrl) return;
 
     void logActivity({
       kind: 'extraction_start',
-      url: url.trim(),
+      url: targetUrl,
       extractionType: 'full_website',
       message: 'Full website extract started',
     });
@@ -782,7 +1011,7 @@ export default function App() {
     const jobId = extractJobSeq.current + 1;
     extractJobSeq.current = jobId;
     const isCurrentJob = () => extractJobSeq.current === jobId;
-    const isYouTube = isYouTubeExtractUrl(url);
+    const isYouTube = isYouTubeExtractUrl(targetUrl);
 
     const noAssetsYet = () => !partialExtractRef.current || !hasExtractedAssets(partialExtractRef.current);
     const fallbackTimer = !isYouTube
@@ -792,12 +1021,12 @@ export default function App() {
           void (async () => {
             try {
               setExtractPhase('dom');
-              const fallback = await runExtractRequest(controller.signal, { mode: 'quick' });
+              const fallback = await runExtractRequest(controller.signal, { mode: 'quick', targetUrl });
               if (!isCurrentJob() || !hasExtractedAssets(fallback)) return;
               const merged = partialExtractRef.current
                 ? mergeExtractPayload(partialExtractRef.current, fallback)
                 : fallback;
-              applyExtractResult(merged, url, { partial: true });
+              applyExtractResult(merged, targetUrl, { partial: true });
             } catch {
               // Best-effort quick fallback.
             }
@@ -810,23 +1039,23 @@ export default function App() {
       let quickData: any = null;
       if (isYouTube) {
         try {
-          data = await runExtractRequest(controller.signal);
+          data = await runExtractRequest(controller.signal, { targetUrl });
         } catch (firstError: any) {
           if (controller.signal.aborted) throw firstError;
           setRetryingExtract(true);
           setExtractPhase('network');
-          data = await runExtractRequest(controller.signal);
+          data = await runExtractRequest(controller.signal, { targetUrl });
         }
       } else {
         setExtractPhase('loading');
         try {
-          quickData = await runExtractRequest(controller.signal, { mode: 'quick' });
+          quickData = await runExtractRequest(controller.signal, { mode: 'quick', targetUrl });
         } catch (firstError: any) {
           if (controller.signal.aborted) throw firstError;
           quickData = null;
         }
         if (quickData && hasExtractedAssets(quickData)) {
-          applyExtractResult(quickData, url, { partial: true });
+          applyExtractResult(quickData, targetUrl, { partial: true });
         }
 
         setExtractPhase('dom');
@@ -835,7 +1064,7 @@ export default function App() {
         const needsStaticAssetPass = activeCrawlMode === 'deep' || quickFontCount === 0;
         if (!finishNowRef.current && needsStaticAssetPass) {
           try {
-            staticData = await runExtractRequest(controller.signal, { mode: 'static' });
+            staticData = await runExtractRequest(controller.signal, { mode: 'static', targetUrl });
           } catch {
             staticData = null;
           }
@@ -843,7 +1072,7 @@ export default function App() {
             const mergedStatic = quickData
               ? mergeExtractPayload(quickData, staticData)
               : staticData;
-            applyExtractResult(mergedStatic, url, { partial: true });
+            applyExtractResult(mergedStatic, targetUrl, { partial: true });
             quickData = mergedStatic;
           }
         }
@@ -854,7 +1083,7 @@ export default function App() {
           activeCrawlMode === 'deep' ||
           !baseData ||
           !hasExtractedAssets(baseData) ||
-          htmlNeedsRenderedRetry(url, baseData, baseImageCount);
+          htmlNeedsRenderedRetry(targetUrl, baseData, baseImageCount);
         if (needsBrowserExtract && !finishNowRef.current) {
           setRetryingExtract(true);
           setExtractPhase('network');
@@ -862,6 +1091,7 @@ export default function App() {
           try {
             const browserData = await runExtractRequest(controller.signal, {
               crawlMode: activeCrawlMode,
+              targetUrl,
             });
             if (browserData?.async) {
               // Server returned immediately — browser extraction runs in background.
@@ -900,9 +1130,8 @@ export default function App() {
         if (finishNowRef.current) return;
         throw new Error('No assets found on this page.');
       }
-      const normalizedExtractUrl = parseClipboardUrl(url) || url.trim();
+      const normalizedExtractUrl = parseClipboardUrl(targetUrl) || targetUrl;
       if (normalizedExtractUrl) {
-        writePersistedClipboardUrl(normalizedExtractUrl);
         lastAutoFilledUrlRef.current = normalizedExtractUrl;
       }
       setExtractPhase('finalizing');
@@ -910,27 +1139,27 @@ export default function App() {
       const partialDetail = finishedEarly
         ? 'Extraction completed with available assets. Some lazy assets may require scrolling manually.'
         : undefined;
-      applyExtractResult(data, url, partialDetail ? { detail: partialDetail } : undefined);
+      applyExtractResult(data, targetUrl, partialDetail ? { detail: partialDetail } : undefined);
       void logActivity({
         kind: 'extraction_success',
-        url: url.trim(),
+        url: targetUrl,
         extractionType: 'full_website',
         message: finishedEarly ? 'Full website extract finished early' : 'Full website extract completed',
       });
     } catch (err: any) {
       if (fallbackTimer) window.clearTimeout(fallbackTimer);
       if (finishNowRef.current && partialExtractRef.current) {
-        applyExtractResult(partialExtractRef.current, url, {
+        applyExtractResult(partialExtractRef.current, targetUrl, {
           detail:
             'Extraction completed with available assets. Some lazy assets may require scrolling manually.',
         });
       } else if (err?.name !== 'AbortError') {
-        const message = friendlyExtractionError(err.message, isYouTubeExtractUrl(url));
+        const message = friendlyExtractionError(err.message, isYouTubeExtractUrl(targetUrl));
         setError(message);
         void reportOperationFailure({
           operation: 'extraction_failure',
           error: message,
-          websiteUrl: url.trim(),
+          websiteUrl: targetUrl,
           extractionType: 'full_website',
           openFeedback: false,
         });
@@ -1029,17 +1258,6 @@ export default function App() {
             <nav className="flex flex-wrap items-center justify-end gap-1">
               <button
                 type="button"
-                onClick={() => setMainNav('video-downloader')}
-                className={cn(
-                  'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
-                  mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
-                )}
-              >
-                <Download className="h-3.5 w-3.5" />
-                Video Downloader
-              </button>
-              <button
-                type="button"
                 onClick={() => setMainNav('website-extraction')}
                 className={cn(
                   'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
@@ -1048,6 +1266,17 @@ export default function App() {
               >
                 <Globe className="h-3.5 w-3.5" />
                 Website Extractor
+              </button>
+              <button
+                type="button"
+                onClick={() => setMainNav('video-downloader')}
+                className={cn(
+                  'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
+                  mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                )}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Video Downloader
               </button>
               <button
                 type="button"
@@ -1079,10 +1308,10 @@ export default function App() {
           <WebsiteExtracterToolbar
             url={url}
             onUrlChange={handleUrlChange}
-            onExtract={() => void handleWebsiteExtract()}
-            onRefresh={handleNewExtraction}
-            onOpenFolder={() => void openFolder('downloads', extractedUrl || url)}
+            onClearDownloads={handleClearWebsiteDownloads}
+            onExtractFromOpenWebsite={handleExtractFromOpenWebsite}
             loading={loading}
+            extractFromOpenWebsiteLoading={previewCapturing}
           />
 
           {(clipboardDetected || pendingClipboardUrl) ? (
@@ -1136,6 +1365,14 @@ export default function App() {
               speedBps={downloadAllProgress?.speedBps}
               etaSeconds={downloadAllProgress?.etaSeconds}
             />
+            {completion && completion.title !== 'Extract complete' ? (
+              <CompletionCard
+                title={completion.title}
+                detail={completion.detail}
+                size={completion.size}
+                onOpenFolder={() => void openFolder(completion.folderTarget || 'downloads', extractedUrl || url)}
+              />
+            ) : null}
           </div>
 
           {error && (
@@ -1207,6 +1444,7 @@ export default function App() {
               <div className="min-h-[400px]">
                 <div className={activeTab === 'images' ? '' : 'hidden'}>
                   <ImageExtractor
+                    key={`images-${assetStateVersion}`}
                     images={assets.images}
                     sourcePageUrl={extractedUrl}
                     title="Images"
@@ -1214,13 +1452,13 @@ export default function App() {
                   />
                 </div>
                 <div className={activeTab === 'fonts' ? '' : 'hidden'}>
-                  <FontExtractor fonts={assets.fonts} sourcePageUrl={extractedUrl} />
+                  <FontExtractor key={`fonts-${assetStateVersion}`} fonts={assets.fonts} sourcePageUrl={extractedUrl} />
                 </div>
                 <div className={activeTab === 'videos' ? '' : 'hidden'}>
-                  <VideoExtractor videos={assets.videos} seedUrl={extractedUrl} hideManualSearch />
+                  <VideoExtractor key={`videos-${assetStateVersion}`} videos={assets.videos} seedUrl={extractedUrl} hideManualSearch />
                 </div>
                 <div className={activeTab === 'colors' ? '' : 'hidden'}>
-                  <ColorExtractor colors={assets.colors} sourcePageUrl={extractedUrl} />
+                  <ColorExtractor key={`colors-${assetStateVersion}`} colors={assets.colors} sourcePageUrl={extractedUrl} />
                 </div>
                 {SHOW_CREATIVE_BRIEF ? (
                   <div className={activeTab === 'insights' ? '' : 'hidden'}>

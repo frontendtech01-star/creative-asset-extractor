@@ -12,6 +12,8 @@ type LazyCachedImageThumbProps = {
   fallbackLabel?: string;
   className?: string;
   onDimensions?: (width: number, height: number) => void;
+  onReady?: () => void;
+  onFailed?: () => void;
 };
 
 const buildThumbCandidates = (
@@ -22,6 +24,9 @@ const buildThumbCandidates = (
   const cached = String(img?.cachedUrl || '').trim();
   const originalUrl = getImageAssetKey(img);
 
+  if (cached.startsWith('data:image/')) {
+    candidates.push(cached);
+  }
   if (cached.startsWith('/cached-images-original/')) {
     candidates.push(apiUrl(cached));
   }
@@ -46,6 +51,8 @@ export default function LazyCachedImageThumb({
   fallbackLabel = '',
   className = '',
   onDimensions,
+  onReady,
+  onFailed,
 }: LazyCachedImageThumbProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
@@ -107,6 +114,7 @@ export default function LazyCachedImageThumb({
           referrerPolicy="no-referrer"
           onLoad={(event) => {
             setPhase('ready');
+            onReady?.();
             const el = event.currentTarget;
             if (el.naturalWidth > 0 && el.naturalHeight > 0) {
               onDimensions?.(el.naturalWidth, el.naturalHeight);
@@ -119,6 +127,7 @@ export default function LazyCachedImageThumb({
               return;
             }
             setPhase('failed');
+            onFailed?.();
           }}
         />
       ) : null}

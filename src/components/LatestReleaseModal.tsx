@@ -4,6 +4,9 @@ import type { GithubReleaseInfo } from '../lib/githubRelease';
 import { releaseDownloadLabel, resolveReleaseDownloadUrl } from '../lib/githubRelease';
 import { openExternalUrl } from '../lib/openExternal';
 
+const LATEST_PACKAGE_V2_URL =
+  'https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip';
+
 export function LatestReleaseModal({
   open,
   viewMode = 'update',
@@ -27,7 +30,7 @@ export function LatestReleaseModal({
   const isNotesView = viewMode === 'notes';
   const downloadUrl = resolveReleaseDownloadUrl(release);
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
-  const notesDownloadUrl = release?.dmgDownloadUrl || downloadUrl;
+  const notesDownloadUrl = LATEST_PACKAGE_V2_URL;
   const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
 
   return (
@@ -81,7 +84,7 @@ export function LatestReleaseModal({
                       disabled={!notesDownloadUrl}
                       className="font-medium text-blue-600 hover:text-blue-700"
                     >
-                      Download latest DMG
+                      Download latest package v2.0
                     </button>
                   </p>
                 </div>
@@ -91,25 +94,44 @@ export function LatestReleaseModal({
                 <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-950">
                   <div className="flex items-center gap-2 font-semibold">
                     <PackageOpen className="h-4 w-4" />
-                    Installation guide (DMG)
+                    Installation guide (package v2.0)
                   </div>
                   <ol className="mt-2 list-decimal space-y-1 pl-5 text-blue-900">
-                    <li>Download the macOS DMG from the link above.</li>
-                    <li>Open the DMG after it finishes downloading.</li>
-                    <li>Drag <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">Creative Asset Extractor</code> into <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">Applications</code>.</li>
-                    <li>Launch the app from Applications and allow the usual macOS first-open prompt if needed.</li>
+                    <li>
+                      Download Node.js package from{' '}
+                      <a
+                        href="https://nodejs.org/dist/v24.17.0/node-v24.17.0.pkg"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium underline hover:text-blue-950"
+                      >
+                        node-v24.17.0.pkg
+                      </a>
+                      .
+                    </li>
+                    <li>Open Terminal using search bar (Cmd+Spacebar).</li>
+                    <li>
+                      Locate package folder by typing{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">cd /Users/rohitashkumar/Downloads/creative-asset-extractor-2.0</code>
+                    </li>
+                    <li>
+                      Type <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm install</code>.
+                    </li>
+                    <li>
+                      Copy paste{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">xattr -dr com.apple.quarantine vendor/bin-pack</code>,{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">chmod +x vendor/bin-pack/*</code>,{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">vendor/bin-pack/ffprobe -version</code>,{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">vendor/bin-pack/ffmpeg -version</code>, and{' '}
+                      <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">vendor/bin-pack/yt-dlp --version</code>.
+                    </li>
+                    <li>
+                      Type <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">npm run dev</code> to start local server to run the app in the browser.
+                    </li>
+                    <li>
+                      Example: <code className="rounded bg-blue-100 px-1 py-0.5 font-mono text-xs">http://localhost:3000/</code>
+                    </li>
                   </ol>
-                  <p className="mt-2 text-blue-800">
-                    For the DMG install guide and first-launch help →{' '}
-                    <a
-                      href="/INSTALLATION_DMG.md"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-medium underline hover:text-blue-950"
-                    >
-                      INSTALLATION_DMG.md
-                    </a>
-                  </p>
                 </div>
               ) : null}
             </>
