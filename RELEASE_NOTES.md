@@ -2,7 +2,7 @@
 
 ## Latest Release
 
-**Latest git package:** [creative-asset-extractor v2.0 zip](https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip)
+**Latest git package:** [creative-asset-extractor v2.0 zip](https://codeload.github.com/frontendtech01-star/creative-asset-extractor/zip/refs/heads/v2.0)
 
 ### Package Installation
 

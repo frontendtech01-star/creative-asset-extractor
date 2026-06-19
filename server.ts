@@ -1833,6 +1833,8 @@ const buildGithubReleaseLinks = (
     htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
     releasesUrl: `${repoUrl}/releases`,
     repoUrl,
+    packageDownloadUrl: `https://codeload.github.com/${githubOwner}/${githubRepo}/zip/refs/heads/v2.0`,
+    packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
     dmgAssetName: dmgName,
   };
@@ -1945,10 +1947,10 @@ app.get('/api/release-notes', async (_req, res) => {
     htmlUrl: links.htmlUrl,
     repoUrl: links.repoUrl,
     releasesUrl: links.releasesUrl,
-    packageDownloadUrl: links.dmgDownloadUrl,
-    packageAssetName: links.dmgAssetName,
-    dmgDownloadUrl: links.dmgDownloadUrl,
-    dmgAssetName: links.dmgAssetName,
+    packageDownloadUrl: links.packageDownloadUrl,
+    packageAssetName: links.packageAssetName,
+    dmgDownloadUrl: '',
+    dmgAssetName: '',
     exeDownloadUrl: '',
     source: 'local' as 'local' | 'github',
   };
@@ -1964,13 +1966,13 @@ app.get('/api/release-notes', async (_req, res) => {
     const githubRelease = parseGithubReleasePayload(response.data || {});
     release = {
       ...release,
-      ...githubRelease,
-      body: githubRelease.body || localNotes,
-      htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
-      packageDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl || githubRelease.packageDownloadUrl || githubRelease.htmlUrl || links.releasesUrl,
-      packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName || githubRelease.packageAssetName || 'Latest Release',
-      dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
-      dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
+      body: localNotes || githubRelease.body || '',
+      htmlUrl: links.htmlUrl || githubRelease.htmlUrl,
+      packageDownloadUrl: links.packageDownloadUrl,
+      packageAssetName: links.packageAssetName,
+      dmgDownloadUrl: '',
+      dmgAssetName: '',
+      exeDownloadUrl: githubRelease.exeDownloadUrl || '',
       source: 'github',
     };
   } catch (error: any) {

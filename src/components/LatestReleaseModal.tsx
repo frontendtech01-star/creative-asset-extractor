@@ -5,7 +5,7 @@ import { releaseDownloadLabel, resolveReleaseDownloadUrl } from '../lib/githubRe
 import { openExternalUrl } from '../lib/openExternal';
 
 const LATEST_PACKAGE_V2_URL =
-  'https://github.com/frontendtech01-star/creative-asset-extractor/archive/refs/heads/v2.0.zip';
+  'https://codeload.github.com/frontendtech01-star/creative-asset-extractor/zip/refs/heads/v2.0';
 
 export function LatestReleaseModal({
   open,
