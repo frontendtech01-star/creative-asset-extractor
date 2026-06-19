@@ -142,7 +142,7 @@ export default function ImageExtractor({
   };
 
   const handleDownloadAll = async () => {
-    const selectedImages = visibleImages.filter((img) => selected.has(getImageAssetKey(img)));
+    const selectedImages = filteredImages.filter((img) => selected.has(getImageAssetKey(img)));
     if (selectedImages.length === 0) return;
     setDownloadingZip(true);
     setZipResult(null);
@@ -188,11 +188,9 @@ export default function ImageExtractor({
     const matchesFilter = filterType === 'all' || img.type.toLowerCase() === filterType.toLowerCase();
     return matchesSearch && matchesFilter;
   });
-  const visibleImages = filteredImages.filter((img) => previewState[getImageAssetKey(img)] === 'ready');
-  const loadingPreviewCount = filteredImages.filter((img) => previewState[getImageAssetKey(img)] !== 'failed').length - visibleImages.length;
 
   const uniqueTypes = Array.from(new Set(images.map(img => img.type.toLowerCase()))).filter(Boolean);
-  const selectedCount = visibleImages.filter((img) => selected.has(getImageAssetKey(img))).length;
+  const selectedCount = filteredImages.filter((img) => selected.has(getImageAssetKey(img))).length;
 
   if (images.length === 0) {
     return (
@@ -309,41 +307,18 @@ export default function ImageExtractor({
         </div>
       ) : null}
 
-      {visibleImages.length === 0 ? (
+      {filteredImages.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-200 bg-white py-16 text-center text-zinc-500">
           <ImageIcon className="mb-3 h-10 w-10 text-zinc-300" />
-          <p className="text-sm font-semibold text-zinc-900">
-            {loadingPreviewCount > 0 ? 'Loading image previews…' : 'No image previews could be loaded'}
-          </p>
+          <p className="text-sm font-semibold text-zinc-900">No images match your filters</p>
           <p className="mt-1 max-w-lg text-xs text-zinc-500">
-            Open the website in Chrome, clear any captcha or blocker, then use Extract From Open Website to capture browser-session previews.
+            Clear the search or type filter to show extracted images.
           </p>
         </div>
       ) : null}
 
-      <div className="fixed left-0 top-0 h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
-        {filteredImages
-          .filter((img) => !previewState[getImageAssetKey(img)])
-          .map((img, idx) => {
-            const key = getImageAssetKey(img);
-            const filename = getImageDisplayName(img, idx);
-            return (
-              <div key={`preload-${key || idx}`} className="h-1 w-1 overflow-hidden">
-                <LazyCachedImageThumb
-                  img={img}
-                  sourcePageUrl={sourcePageUrl}
-                  alt=""
-                  fallbackLabel={filename}
-                  onReady={() => setPreviewState((current) => ({ ...current, [key]: 'ready' }))}
-                  onFailed={() => setPreviewState((current) => ({ ...current, [key]: 'failed' }))}
-                />
-              </div>
-            );
-          })}
-      </div>
-
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {visibleImages.map((img, idx) => {
+        {filteredImages.map((img, idx) => {
           const key = getImageAssetKey(img);
           const filename = getImageDisplayName(img, idx);
           const isSelected = selected.has(key);

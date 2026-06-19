@@ -71,12 +71,21 @@ console.log(`Target URL: ${TARGET}\n`);
 
 // 1. Extract
 console.log('--- Extract ---');
-const extractRes = await api('/api/extract', {
+const defaultExtractRes = await api('/api/extract', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ url: TARGET, mode: 'static' }),
+  body: JSON.stringify({ url: TARGET }),
 });
-const extract = await extractRes.json().catch(() => ({}));
+const defaultExtract = await defaultExtractRes.json().catch(() => ({}));
+log(
+  'Default UI extraction returns assets immediately',
+  defaultExtractRes.ok && Array.isArray(defaultExtract.images) && defaultExtract.images.length > 0 && !defaultExtract.async,
+  defaultExtract.async
+    ? `async extractId=${defaultExtract.extractId || 'n/a'}`
+    : `${defaultExtract.images?.length || 0} images`
+);
+
+const extract = defaultExtract;
 const images = Array.isArray(extract.images) ? extract.images : [];
 
 log('Images extracted', images.length > 0, `${images.length} images`);
@@ -92,6 +101,14 @@ log('Path-only assets listed', pathOnly.length >= 0, `${pathOnly.length} path-on
 
 const hero = images.find((i) => String(i.url || '').includes('About-PHYRAGO-Hero-Image'));
 log('Hero image found in extraction', !!hero, hero ? `${hero.type}, status=${hero.status || 'n/a'}` : 'missing');
+const banner = images.find((i) => String(i.url || '').includes('banner-background'));
+log('Banner background found in extraction', !!banner, banner ? `${banner.type}, status=${banner.status || 'n/a'}` : 'missing');
+
+const fonts = Array.isArray(extract.fonts) ? extract.fonts : [];
+const hasGreycliff = fonts.some((font) => /greycliff-cf/i.test(String(font.family || '')));
+const hasLumios = fonts.some((font) => /lumios-marker/i.test(String(font.family || '')));
+const hasUncodeIcon = fonts.some((font) => /uncodeicon/i.test(String(font.family || font.url || '')));
+log('Key font files found', hasGreycliff && hasLumios && hasUncodeIcon, `${fonts.length} fonts`);
 
 // 2. Individual download
 console.log('\n--- Individual download ---');

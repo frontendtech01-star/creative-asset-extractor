@@ -1134,6 +1134,7 @@ const buildChromeTabAssetCaptureScript = () => `
       height: Number(meta.height || 0) || undefined,
       alt: String(meta.alt || '').trim(),
       type: typeFromUrl(target),
+      source: String(meta.source || '').trim() || undefined,
       dataUrl: String(meta.dataUrl || '').trim() || undefined,
     });
   };
@@ -1169,6 +1170,7 @@ const buildChromeTabAssetCaptureScript = () => `
       width: img.naturalWidth || img.width,
       height: img.naturalHeight || img.height,
       alt: img.alt,
+      source: 'img',
       dataUrl: dataUrlFromImage(img),
     });
     ['srcset', 'data-srcset', 'data-lazy-srcset'].forEach((attr) => addSrcset(img.getAttribute(attr)));
@@ -1187,7 +1189,7 @@ const buildChromeTabAssetCaptureScript = () => `
   Array.from(document.querySelectorAll('*')).forEach((el) => {
     const style = getComputedStyle(el);
     [style.backgroundImage, style.listStyleImage, style.borderImageSource].forEach((value) => {
-      readCssUrls(value).forEach((target) => addImage(target));
+      readCssUrls(value).forEach((target) => addImage(target, { source: 'computed-style' }));
     });
     for (let i = 0; i < el.attributes.length; i += 1) {
       const attr = el.attributes[i];
@@ -1202,15 +1204,22 @@ const buildChromeTabAssetCaptureScript = () => `
     const name = absoluteUrl(entry.name);
     const initiator = String(entry.initiatorType || '').toLowerCase();
     if (!name) return;
-    if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name);
+    if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name, { source: initiator || 'performance' });
   });
 
   const fontUrls = new Set();
-  const fontFamilies = new Set();
+  const fontUsage = new Map();
+  const rememberFont = (font) => {
+    const family = String(font?.family || '').replace(/^["']|["']$/g, '').trim();
+    if (!family) return;
+    const weight = String(font?.weight || 'normal').trim() || 'normal';
+    const style = String(font?.style || 'normal').trim() || 'normal';
+    const status = String(font?.status || '').trim() || undefined;
+    const key = [family, weight, style].join('::');
+    fontUsage.set(key, { family, weight, style, status });
+  };
   if (document.fonts?.forEach) {
-    document.fonts.forEach((font) => {
-      if (font.family) fontFamilies.add(String(font.family).replace(/^["']|["']$/g, ''));
-    });
+    document.fonts.forEach(rememberFont);
   }
   Array.from(document.querySelectorAll('link[href]')).forEach((link) => {
     const rel = String(link.getAttribute('rel') || '').toLowerCase();
@@ -1227,7 +1236,7 @@ const buildChromeTabAssetCaptureScript = () => `
         const css = String(rule.cssText || '');
         if (/font-family/i.test(css)) {
           const family = css.match(/font-family\\s*:\\s*([^;}]+)/i)?.[1];
-          if (family) fontFamilies.add(family.split(',')[0].trim().replace(/^["']|["']$/g, ''));
+          if (family) rememberFont({ family: family.split(',')[0], status: 'referenced' });
         }
         readCssUrls(css).forEach((url) => {
           if (/\\.woff2?|\\.ttf|\\.otf|fonts|typekit/i.test(url)) fontUrls.add(url);
@@ -1278,10 +1287,10 @@ const buildChromeTabAssetCaptureScript = () => `
     url: location.href,
     title: document.title || location.href,
     images,
-    fonts: [
-      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url) })),
-      ...Array.from(fontFamilies).filter(Boolean).map((family) => ({ family, url: '', format: 'computed' })),
-    ],
+	    fonts: [
+	      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url), source: 'stylesheet-or-network' })),
+	      ...Array.from(fontUsage.values()).map((font) => ({ ...font, url: '', format: 'computed', source: 'FontFaceSet' })),
+	    ],
     videos: Array.from(videoUrls).map((url) => ({ url, title: filenameFromUrl(url, 'video') })),
     colors: Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 24).map(([color]) => color),
   });
@@ -1381,12 +1390,26 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
         mimeType: String(image.mimeType || '').trim() || undefined,
         width: Number(image.width || 0) || undefined,
         height: Number(image.height || 0) || undefined,
-        source,
+        source: String(image.source || '').trim() || source,
         status: DEFAULT_ASSET_STATUS,
       };
       })
   );
   const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
+  const fontUsage = rawFonts
+    .filter((font: any) => !String(font?.url || '').trim() && String(font?.family || '').trim())
+    .map((font: any) => ({
+      family: String(font.family || '').replace(/^["']|["']$/g, '').trim(),
+      weight: String(font.weight || '').trim() || undefined,
+      style: String(font.style || '').trim() || undefined,
+      status: String(font.status || '').trim() || undefined,
+      source: String(font.source || '').trim() || 'FontFaceSet',
+    }));
+  const fontUsageByKey = new Map<string, any>();
+  fontUsage.forEach((font: any) => {
+    const key = `${font.family}|${font.weight || ''}|${font.style || ''}|${font.status || ''}`;
+    if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
+  });
   const cssFonts = await fetchBrowserSessionFontFaces(rawFonts, pageUrl || sourceUrl);
   const fontCandidates = rawFonts
     .filter((font: any) => font?.url && isSupportedFontAsset(font))
@@ -1408,6 +1431,7 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
     images,
     icons: [],
     fonts,
+    fontUsage: Array.from(fontUsageByKey.values()),
     videos: Array.isArray(raw?.videos) ? raw.videos : [],
     colors: Array.isArray(raw?.colors) ? raw.colors : [],
     extractionMeta: {
@@ -1500,6 +1524,33 @@ app.get('/api/browser-tabs/chrome/active', async (_req, res) => {
   }
 });
 
+async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl: string) {
+  const hasAssets =
+    (extracted?.images?.length || 0) ||
+    (extracted?.icons?.length || 0) ||
+    (extracted?.fonts?.length || 0) ||
+    (extracted?.videos?.length || 0);
+  if (hasAssets || !fallbackUrl) return extracted;
+
+  const staticAssets = await withTimeout(
+    extractStaticAssets(fallbackUrl, '', { fast: true }),
+    35000,
+    `Browser-tab static fallback for ${fallbackUrl}`
+  ).catch(() => null) as any;
+  if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
+
+  return {
+    ...staticAssets,
+    extractionMeta: {
+      ...(staticAssets as any).extractionMeta,
+      mode: 'browser-static-fallback',
+      sectionLabel: extracted?.title || 'Static fallback',
+    },
+    pageUrl: extracted?.pageUrl || fallbackUrl,
+    title: extracted?.title || '',
+  };
+}
+
 app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
   const requestedUrl = String(req.body?.url || '').trim();
   try {
@@ -1507,7 +1558,11 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     try {
       const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
       const raw = JSON.parse(rawText || '{}');
-      const extracted = await normalizeBrowserSessionExtraction(raw, raw?.url || tab.url || requestedUrl, 'open-chrome-tab');
+      const fallbackUrl = raw?.url || tab.url || requestedUrl;
+      const extracted = await fillEmptyBrowserExtractionFromStatic(
+        await normalizeBrowserSessionExtraction(raw, fallbackUrl, 'open-chrome-tab'),
+        fallbackUrl
+      );
       return res.json({
         ok: true,
         source: 'open-chrome-tab',
@@ -1517,7 +1572,10 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     } catch (chromeScriptError: any) {
       if (!requestedUrl && !tab.url) throw chromeScriptError;
       const fallbackUrl = requestedUrl || tab.url;
-      const extracted = await extractAssetsFromControlledBrowserSession(fallbackUrl);
+      const extracted = await fillEmptyBrowserExtractionFromStatic(
+        await extractAssetsFromControlledBrowserSession(fallbackUrl),
+        fallbackUrl
+      );
       return res.json({
         ok: true,
         source: 'controlled-browser-session',
@@ -1532,7 +1590,10 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     const fallbackUrl = requestedUrl;
     if (fallbackUrl) {
       try {
-        const extracted = await extractAssetsFromControlledBrowserSession(fallbackUrl);
+        const extracted = await fillEmptyBrowserExtractionFromStatic(
+          await extractAssetsFromControlledBrowserSession(fallbackUrl),
+          fallbackUrl
+        );
         return res.json({
           ok: true,
           source: 'controlled-browser-session',
@@ -2487,6 +2548,19 @@ const DEFAULT_ASSET_STATUS = 'path-only';
 const withAssetStatus = (asset: any, status = DEFAULT_ASSET_STATUS) =>
   asset?.url ? { ...asset, status: asset.status || status } : asset;
 
+const normalizeCssFontFamilyName = (family: string) => {
+  const raw = String(family || '').trim().replace(/^["']+|["']+$/g, '');
+  const nextFont = raw.match(/^__([A-Za-z0-9_]+?)_[a-f0-9]+$/i);
+  if (nextFont?.[1]) {
+    return nextFont[1].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  const nextFallback = raw.match(/^__([A-Za-z0-9_]+?)_Fallback_[a-f0-9]+$/i);
+  if (nextFallback?.[1]) {
+    return nextFallback[1].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return raw;
+};
+
 const extractFontsFromCss = (cssText: string, baseUrl: string) => {
   const fonts: any[] = [];
   const fontFaceRegex = /@font-face\s*\{([^}]+)\}/gi;
@@ -2498,7 +2572,7 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
     const srcMatch = block.match(/src\s*:\s*([^;]+)/i);
 
     if (fontFamilyMatch && srcMatch) {
-      const fontFamily = fontFamilyMatch[1].trim();
+      const fontFamily = normalizeCssFontFamilyName(fontFamilyMatch[1]);
       const fontWeightMatch = block.match(/font-weight\s*:\s*([^;]+)/i);
       const fontStyleMatch = block.match(/font-style\s*:\s*([^;]+)/i);
       const candidates: any[] = [];
@@ -2640,6 +2714,7 @@ const prioritizeFontCssCandidates = (cssUrls: string[]) => {
     const lowered = String(url || '').toLowerCase();
     if (/use\.typekit\.net|p\.typekit\.net|fonts\.googleapis\.com|fonts\.gstatic\.com/.test(lowered)) return 100;
     if (/\/themes\/custom\//.test(lowered)) return 80;
+    if (/\/_next\/static\/css\//.test(lowered)) return 70;
     if (/en-main|main\.css|typography|\/font/.test(lowered)) return 60;
     if (/\/themes\//.test(lowered)) return 40;
     return 0;
@@ -2789,9 +2864,12 @@ const fetchImportedFontProviderFonts = async (siteUrl: string, html: string) => 
   const stylesheetUrls = new Set<string>();
   const providerUrls = new Set<string>(extractExternalFontCssUrls(html, siteUrl));
 
-  $('link[rel="stylesheet"]').each((_, el) => {
+  $('link[href]').each((_, el) => {
+    const rel = String($(el).attr('rel') || '').toLowerCase();
     const href = $(el).attr('href');
     const absoluteUrl = href ? resolveUrl(siteUrl, href) : null;
+    if (!absoluteUrl) return;
+    if (!rel.includes('stylesheet') && !/\/_next\/static\/css\/|\.css(?:[?#]|$)/i.test(absoluteUrl)) return;
     if (absoluteUrl) stylesheetUrls.add(absoluteUrl);
   });
 
@@ -2826,11 +2904,15 @@ const fetchImportedFontProviderFonts = async (siteUrl: string, html: string) => 
     extractExternalFontCssUrls(cssText, source).forEach((fontCssUrl) => providerUrls.add(fontCssUrl));
   });
 
+  const linkedFonts = linkedCss.flatMap((cssText, index) =>
+    cssText ? extractFontsFromCss(cssText, likelyFontStylesheets[index] || siteUrl) : []
+  );
+
   const providerCssUrls = Array.from(providerUrls).slice(0, 16);
   const providerCss = await mapWithConcurrency(providerCssUrls, 8, fetchCss);
-  return providerCss.flatMap((cssText, index) =>
+  return linkedFonts.concat(providerCss.flatMap((cssText, index) =>
     cssText ? extractFontsFromCss(cssText, providerCssUrls[index] || siteUrl) : []
-  );
+  ));
 };
 
 // Helper to extract colors from CSS
@@ -3494,6 +3576,30 @@ const parseBrightcovePlayerUrl = (rawUrl: string) => {
   } catch {
     return null;
   }
+};
+
+const isUnsupportedVideoResourceUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim().toLowerCase();
+  if (!value) return true;
+  if (value.startsWith('data:') || value.startsWith('blob:')) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if ((host === 'youtube.com' || host.endsWith('.youtube.com')) && (
+      path === '/iframe_api' ||
+      path.includes('/www-widgetapi') ||
+      path.startsWith('/s/player/') ||
+      path.startsWith('/youtubei/') ||
+      path.startsWith('/api/')
+    )) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 };
 
 const isPlaylistUrl = (rawUrl: string) => {
@@ -7249,6 +7355,24 @@ const isUsableStaticExtract = (assets: {
   return imageCount >= 4;
 };
 
+const isStrongStaticExtractForImmediateReturn = (
+  assets: {
+    images?: any[];
+    fonts?: any[];
+    videos?: any[];
+    colors?: string[];
+  },
+  options: { videosOnly?: boolean } = {}
+) => {
+  if (options.videosOnly) return false;
+  const imageCount = assets?.images?.length || 0;
+  const fontCount = assets?.fonts?.length || 0;
+  const videoCount = assets?.videos?.length || 0;
+  if (videoCount > 0) return true;
+  if (imageCount >= 12) return true;
+  return imageCount >= 8 && fontCount >= 2;
+};
+
 const warmExtractedAssetList = async (
   images: any[],
   fonts: any[],
@@ -7515,8 +7639,10 @@ const dedupeExtractedAssets = async (
   const videoByKey = new Map<string, any>();
   collapseVimeoVideosForClient(videos).forEach((video) => {
     if (!video?.url) return;
+    if (isUnsupportedVideoResourceUrl(String(video.url || video.sourceStreamUrl || video.sourceUrl || ''))) return;
     const sanitized = sanitizeVideoForClient(video, targetUrl);
     if (!sanitized?.url) return;
+    if (isUnsupportedVideoResourceUrl(String(sanitized.url || sanitized.sourceStreamUrl || sanitized.sourceUrl || ''))) return;
     const key = videoKey(sanitized);
     const normalizedVideo = !sanitized.thumbnail && fallbackThumb ? { ...sanitized, thumbnail: fallbackThumb } : sanitized;
     const current = videoByKey.get(key);
@@ -7881,6 +8007,9 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
     vimeoCandidateUrls,
     wistiaCandidateIds,
   }, { fast: options.fast, videosOnly: options.videosOnly });
+  if (!options.videosOnly) {
+    fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
+  }
 
   if (!options.videosOnly && html) {
     const providerFonts = await withTimeout(
@@ -8093,6 +8222,9 @@ const extractQuickAssets = async (targetUrl: string, options: { videosOnly?: boo
     vimeoCandidateUrls,
     wistiaCandidateIds,
   }, { fast: true, videosOnly: options.videosOnly });
+  if (!options.videosOnly) {
+    fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
+  }
 
   if (vimeoCandidateUrls.size > 0) {
     videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
@@ -8115,6 +8247,34 @@ const extractQuickAssets = async (targetUrl: string, options: { videosOnly?: boo
     resolvedPagePrimaryThumb,
     { fast: true, videosOnly: options.videosOnly }
   );
+};
+
+const recoverKnownThemeFontCandidates = (html: string, targetUrl: string) => {
+  const text = String(html || '');
+  const fonts: any[] = [];
+  const addFont = (rawUrl: string, family: string, format: string, cssSource = targetUrl) => {
+    const url = resolveUrl(targetUrl, rawUrl);
+    if (!url) return;
+    fonts.push({
+      family,
+      url,
+      format,
+      cssSource,
+      weight: 'normal',
+      style: 'normal',
+      source: 'theme-font-recovery',
+      status: DEFAULT_ASSET_STATUS,
+    });
+  };
+
+  if (/uncode-icons\.css|uncodeicon|uncode-icon|fa[bcirs]?\s+fa-|fa-(?:solid|regular|brands)/i.test(text)) {
+    addFont('/fonts/uncode-icons.woff2', 'uncodeicon', 'woff2');
+    addFont('/fonts/uncode-icons.woff', 'uncodeicon', 'woff');
+    addFont('/fonts/uncode-icons.ttf', 'uncodeicon', 'ttf');
+    addFont('/wp-content/themes/uncode/library/fonts/uncode-icons.woff2', 'uncodeicon', 'woff2');
+  }
+
+  return fonts;
 };
 
 const needsMp4Transcode = (rawUrl: string, contentType: string) => {
@@ -11055,12 +11215,18 @@ const downloadPlatformVideoToFile = async (
   } = {}
 ) => {
   const rawUrl = String(targetUrl || '').trim();
+  if (isUnsupportedVideoResourceUrl(rawUrl)) {
+    throw new Error('This URL is a player script/API resource, not a downloadable video.');
+  }
   const normalizedUrl = isYouTubeUrl(rawUrl)
     ? normalizeYouTubeWatchUrl(rawUrl)
     : isVimeoUrl(rawUrl)
       ? (isDirectProgressiveVideoUrl(rawUrl) ? rawUrl : normalizeVimeoUrl(rawUrl) || rawUrl)
       : rawUrl;
   assertPublicAssetUrl(normalizedUrl);
+  if (!isPlatformVideoUrl(normalizedUrl) && !isLikelyDirectVideoStreamUrl(normalizedUrl) && !isLikelyVideoAssetUrl(normalizedUrl)) {
+    throw new Error('This URL is not a downloadable video.');
+  }
 
   if (isVimeoUrl(normalizedUrl) && parseVimeoIdFromUrl(normalizedUrl) && options.mode !== 'audio') {
     return downloadVimeoPlatformVideoToFile(normalizedUrl, quality, options);
@@ -11870,6 +12036,7 @@ const describeUnsupportedPlatformVideoUrl = (rawUrl: string) => {
 
 const isPlatformVideoUrl = (rawUrl: string) => {
   try {
+    if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
     const path = parsed.pathname.toLowerCase();
@@ -11949,6 +12116,7 @@ const isLikelyVideoStoryPage = (rawUrl: string, html = '') => {
 const isLikelyVideoAssetUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').toLowerCase();
   if (!value) return false;
+  if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
   if (value.startsWith('data:')) return false;
   if (/(\.mp4|\.webm|\.mov|\.mkv|\.m4v|\.m3u8|\.mpd)(\?|$)/i.test(value)) return true;
   if (value.includes('wistia.com/deliveries/') || value.includes('wistia.net/deliveries/')) return true;
@@ -12111,6 +12279,7 @@ const buildDirectProgressiveVideoPayload = async (
 const isLikelyDirectVideoStreamUrl = (rawUrl: string) => {
   if (!rawUrl) return false;
   const lowered = String(rawUrl).toLowerCase();
+  if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif)(\?|$)/i.test(lowered)) return false;
   if (/i\.ytimg\.com|yt3\.ggpht\.com|twimg\.com\/media|fbcdn\.net\/.*\.(jpg|jpeg|png|webp)/i.test(lowered)) return false;
   if (/(\.mp4|\.webm|\.mov|\.mkv)(\?|$)/i.test(lowered)) return true;
@@ -12239,6 +12408,7 @@ const isTechnicalOrUnsupportedStream = (candidate: any) => {
   const type = String(candidate?.type || candidate?.ext || '').toLowerCase();
   const note = String(candidate?.formatNote || candidate?.format_note || candidate?.format || candidate?.resolution || '').toLowerCase();
   if (!raw) return true;
+  if (isUnsupportedVideoResourceUrl(raw)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(raw)) return true;
   if (/storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd/i.test(note)) return true;
   if (type === 'm3u8' || type === 'mpd') return true;
@@ -13626,14 +13796,30 @@ app.post('/api/extract', async (req, res) => {
         35000,
         `Blocked site fallback for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isStrongStaticExtractForImmediateReturn(blockedFallbackAssets, { videosOnly })) {
+        return res.json(blockedFallbackAssets);
+      }
+      const staticRecoveryAssets = await withTimeout(
+        extractStaticAssets(targetUrl, '', { fast: true, videosOnly }),
+        35000,
+        `Static recovery before browser for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isStrongStaticExtractForImmediateReturn(staticRecoveryAssets, { videosOnly })) {
+        return res.json(staticRecoveryAssets);
+      }
       if (isUsableStaticExtract(blockedFallbackAssets)) {
         return res.json(blockedFallbackAssets);
       }
     }
 
-    if (prefetchedSiteHtml && shouldTryStaticBeforeBrowser(prefetchedSiteHtml)) {
+    if (prefetchedSiteHtml && !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
       try {
-        const staticQuickTimeoutMs = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml) ? 75000 : 45000;
+        const hasVimeoHints = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml);
+        const staticQuickTimeoutMs = hasVimeoHints
+          ? 75000
+          : shouldTryStaticBeforeBrowser(prefetchedSiteHtml)
+            ? 45000
+            : 18000;
         const staticQuick = await withTimeout(
           extractStaticAssets(targetUrl, prefetchedSiteHtml, { fast: true, videosOnly }),
           staticQuickTimeoutMs,
@@ -13641,9 +13827,10 @@ app.post('/api/extract', async (req, res) => {
         );
         if (
           isUsableStaticExtract(staticQuick) &&
+          (isStrongStaticExtractForImmediateReturn(staticQuick, { videosOnly }) ||
           !htmlNeedsRenderedExtraction(prefetchedSiteHtml) &&
           !staticExtractNeedsBrowser(prefetchedSiteHtml, staticQuick, { videosOnly }) &&
-          !staticExtractHasUnresolvedEmbeds(prefetchedSiteHtml, staticQuick, { videosOnly })
+          !staticExtractHasUnresolvedEmbeds(prefetchedSiteHtml, staticQuick, { videosOnly }))
         ) {
           return res.json(staticQuick);
         }
@@ -15104,6 +15291,9 @@ app.post('/api/platform-video-download', async (req, res) => {
   }
 
   try {
+    if (isUnsupportedVideoResourceUrl(rawUrl) || (!isPlatformVideoUrl(rawUrl) && !isLikelyDirectVideoStreamUrl(rawUrl) && !isLikelyVideoAssetUrl(rawUrl))) {
+      return res.status(400).json({ ok: false, error: 'This URL is a player script/API resource, not a downloadable video.' });
+    }
     assertPublicAssetUrl(rawUrl);
     lastExtractedSourceUrl = sourcePageUrl || rawUrl;
     lastExtractionSectionMode = false;

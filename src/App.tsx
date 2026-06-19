@@ -151,6 +151,40 @@ const mergeImageAssets = (images: any[] = [], icons: any[] = []) => {
   return merged;
 };
 
+const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim().toLowerCase();
+  if (!value) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    return (host === 'youtube.com' || host.endsWith('.youtube.com')) && (
+      path === '/iframe_api' ||
+      path.includes('/www-widgetapi') ||
+      path.startsWith('/s/player/') ||
+      path.startsWith('/youtubei/') ||
+      path.startsWith('/api/')
+    );
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeVideoAssets = (videos: any[] = []) =>
+  videos.filter((video) => {
+    const candidates = [
+      video?.url,
+      video?.embedUrl,
+      video?.sourceStreamUrl,
+      video?.downloadUrl,
+      video?.originalUrl,
+      video?.sourceUrl,
+      video?.pageUrl,
+    ];
+    return !candidates.some((candidate) => typeof candidate === 'string' && isTechnicalPlayerResourceUrl(candidate));
+  });
+
 const normalizeExtracterTab = (tab?: string): 'fonts' | 'images' | 'videos' | 'colors' => {
   if (tab === 'fonts' || tab === 'videos' || tab === 'colors') return tab;
   return 'images';
@@ -375,7 +409,7 @@ const mergeExtractPayload = (base: any, incoming: any) => {
 
   return {
     images: mergeListByUrl(baseImages, incomingImages),
-    videos: mergeListByUrl(base?.videos, incoming?.videos),
+    videos: sanitizeVideoAssets(mergeListByUrl(base?.videos, incoming?.videos)),
     fonts: mergeListByUrl(base?.fonts, incoming?.fonts),
     colors: normalizeExtractColors(
       Array.isArray(incoming?.colors) && incoming.colors.length > 0 ? incoming.colors : base?.colors
@@ -448,6 +482,14 @@ export default function App() {
   const extractAbortRef = React.useRef<AbortController | null>(null);
   const userEditedUrlRef = React.useRef(false);
   const lastAutoFilledUrlRef = React.useRef(initialUrl.trim());
+
+  React.useEffect(() => {
+    if (!assets?.videos?.length) return;
+    const cleanVideos = sanitizeVideoAssets(assets.videos);
+    if (cleanVideos.length === assets.videos.length) return;
+    setAssets({ ...assets, videos: cleanVideos });
+    setAssetStateVersion((version) => version + 1);
+  }, [assets]);
   const [pendingClipboardUrl, setPendingClipboardUrl] = useState<string | null>(null);
   const [clipboardDetected, setClipboardDetected] = useState(false);
   const clipboardNoticeTimerRef = React.useRef<number | null>(null);
@@ -906,7 +948,7 @@ export default function App() {
       ...data,
       images: mergedImages,
       icons: [],
-      videos: Array.isArray(data?.videos) ? data.videos : [],
+      videos: sanitizeVideoAssets(Array.isArray(data?.videos) ? data.videos : []),
       fonts: Array.isArray(data?.fonts) ? data.fonts : [],
       colors: normalizeExtractColors(data?.colors),
       extractionMeta: data?.extractionMeta,

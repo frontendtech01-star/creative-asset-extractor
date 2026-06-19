@@ -15,6 +15,7 @@ type WebsiteBulkDownloadJob = {
 };
 
 const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
+  if (isTechnicalPlayerResourceUrl(rawUrl)) return false;
   if (isDirectVideoAssetUrl(rawUrl)) return true;
   try {
     const host = new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
@@ -35,6 +36,39 @@ const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
   }
 };
 
+const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim().toLowerCase();
+  if (!value) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    return (host === 'youtube.com' || host.endsWith('.youtube.com')) && (
+      path === '/iframe_api' ||
+      path.includes('/www-widgetapi') ||
+      path.startsWith('/s/player/') ||
+      path.startsWith('/youtubei/') ||
+      path.startsWith('/api/')
+    );
+  } catch {
+    return false;
+  }
+};
+
+const isTechnicalVideoItem = (video: any) => {
+  const candidates = [
+    video?.url,
+    video?.embedUrl,
+    video?.sourceStreamUrl,
+    video?.downloadUrl,
+    video?.originalUrl,
+    video?.sourceUrl,
+    video?.pageUrl,
+  ];
+  return candidates.some((candidate) => typeof candidate === 'string' && isTechnicalPlayerResourceUrl(candidate));
+};
+
 const resolvePlatformVideoUrl = (video: any) => {
   const candidates = [
     video?.embedUrl,
@@ -45,7 +79,7 @@ const resolvePlatformVideoUrl = (video: any) => {
     video?.pageUrl,
   ];
   const platformUrl = candidates.find(
-    (candidate) => typeof candidate === 'string' && isPlatformHostedUrl(candidate)
+    (candidate) => typeof candidate === 'string' && !isTechnicalPlayerResourceUrl(candidate) && isPlatformHostedUrl(candidate)
   );
   if (platformUrl) return String(platformUrl);
   if (video?.vimeoId) return `https://vimeo.com/${video.vimeoId}`;
@@ -61,7 +95,7 @@ const resolveVideoDownloadRequest = (video: any, seedUrl: string) => {
     video?.url,
   ];
   const directUrl = directCandidates.find(
-    (candidate) => typeof candidate === 'string' && isDirectVideoAssetUrl(candidate)
+    (candidate) => typeof candidate === 'string' && !isTechnicalPlayerResourceUrl(candidate) && isDirectVideoAssetUrl(candidate)
   );
   if (directUrl) {
     const isManifest = /\.(?:m3u8|mpd)(?:\?|$)/i.test(String(directUrl));
@@ -89,7 +123,7 @@ const resolveVideoDownloadRequest = (video: any, seedUrl: string) => {
 };
 
 const resolveEmbeddedVideoLink = (video: any) => {
-  return resolvePlatformVideoUrl(video) || String([video?.embedUrl, video?.url, video?.sourceUrl, video?.pageUrl].find((candidate) => typeof candidate === 'string' && /^https?:\/\//i.test(candidate)) || '');
+  return resolvePlatformVideoUrl(video) || String([video?.embedUrl, video?.url, video?.sourceUrl, video?.pageUrl].find((candidate) => typeof candidate === 'string' && /^https?:\/\//i.test(candidate) && !isTechnicalPlayerResourceUrl(candidate)) || '');
 };
 
 const resolveBulkDownloadUrls = (videos: any[], seedUrl: string) =>
@@ -224,12 +258,20 @@ export default function VideoExtractor({
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
+  const visibleVideos = videos.filter((video) => !isTechnicalVideoItem(video));
 
   useEffect(() => {
     if (!seedUrl && manualUrl && !activeManualUrl) {
       setActiveManualUrl(manualUrl);
     }
   }, []);
+
+  useEffect(() => {
+    if (visibleVideos.length > 0) return;
+    setBulkDownloading(false);
+    setBulkJobs([]);
+    setBulkMessage(null);
+  }, [visibleVideos.length]);
 
   const handleDownload = async (video: any, title: string) => {
     const cardUrl = String(video?.url || '');
@@ -274,10 +316,10 @@ export default function VideoExtractor({
 
   const handleBulkDownload = async () => {
     const seen = new Set<string>();
-    const items = videos
+    const items = visibleVideos
       .map((video, idx) => {
         const request = resolveVideoDownloadRequest(video, seedUrl);
-        const title = videoCardTitle(video, idx, videos);
+        const title = videoCardTitle(video, idx, visibleVideos);
         return {
           id: `${idx}:${request.url}`,
           title,
@@ -439,7 +481,7 @@ export default function VideoExtractor({
     </div>
   );
 
-  const bulkDownloadUrls = resolveBulkDownloadUrls(videos, seedUrl);
+  const bulkDownloadUrls = resolveBulkDownloadUrls(visibleVideos, seedUrl);
 
   return (
     <div className="space-y-8">
@@ -514,7 +556,7 @@ export default function VideoExtractor({
         )}
       </div>
 
-      {videos.length === 0 ? (
+      {visibleVideos.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-zinc-500 bg-white border border-zinc-200 rounded-2xl border-dashed">
           <VideoIcon className="w-12 h-12 mb-4 text-zinc-300" />
           <p className="text-lg font-medium text-zinc-900">No videos extracted from page</p>
@@ -567,7 +609,7 @@ export default function VideoExtractor({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {videos.map((video, idx) => {
+            {visibleVideos.map((video, idx) => {
             if (video.isYouTube && !video.isYouTubeDirect) {
               return (
                 <div key={idx} className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col col-span-1 md:col-span-2 lg:col-span-3">
@@ -593,7 +635,7 @@ export default function VideoExtractor({
             const isYouTubeDirect = video.isYouTubeDirect;
             const displayTitle = isYouTubeDirect
               ? `YouTube Video Stream (${video.resolution || 'Unknown'})`
-              : videoCardTitle(video, idx, videos);
+              : videoCardTitle(video, idx, visibleVideos);
             const embedded = isEmbeddedVideo(video);
             const embeddedLink = resolveEmbeddedVideoLink(video);
             const embedPreviewUrl = embedded ? resolveEmbedPreviewUrl(video) : '';

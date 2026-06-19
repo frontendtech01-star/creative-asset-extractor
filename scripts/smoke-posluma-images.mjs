@@ -77,6 +77,11 @@ const typeFromImage = (img) => {
   return path.extname(filename).slice(1).toLowerCase().replace('jpeg', 'jpg');
 };
 
+const isSvgFontAsset = (img) => {
+  const value = `${img?.url || ''} ${img?.filename || ''} ${img?.name || ''}`.toLowerCase();
+  return typeFromImage(img) === 'svg' && /(icomoon|font|glyph|symbol)/i.test(value);
+};
+
 const requestUrlForImage = (img) => {
   const cached = String(img?.cachedUrl || '').trim();
   if (cached) return cached;
@@ -224,11 +229,21 @@ await fs.mkdir(OUT_DIR, { recursive: true });
 
 const extracted = await postJson('/api/extract', { url: SITE, mode: 'static' }, 120000);
 const images = Array.isArray(extracted.images) ? extracted.images : [];
+const fonts = Array.isArray(extracted.fonts) ? extracted.fonts : [];
 if (!images.length) throw new Error('No images extracted from Posluma');
+
+const hasFontFamily = (family) =>
+  fonts.some((font) => String(font?.family || font?.title || font?.name || '').toLowerCase() === family.toLowerCase());
+const missingFonts = ['Roboto', 'Roboto Condensed', 'Martel Sans'].filter((family) => !hasFontFamily(family));
+if (missingFonts.length) {
+  throw new Error(`Missing Posluma font families: ${missingFonts.join(', ')}. Found: ${fonts.map((font) => font.family || font.name || font.url).join(', ')}`);
+}
 
 const report = {
   site: SITE,
   totalImages: images.length,
+  totalFonts: fonts.length,
+  fontFamilies: Array.from(new Set(fonts.map((font) => font.family).filter(Boolean))).sort(),
   typeCounts: {},
   individual: {},
   conversions: {},
@@ -245,7 +260,7 @@ for (const img of images) {
 }
 
 for (const wanted of ['jpg', 'png', 'webp', 'avif', 'svg', 'gif']) {
-  const index = images.findIndex((img) => typeFromImage(img) === wanted);
+  const index = images.findIndex((img) => typeFromImage(img) === wanted && !isSvgFontAsset(img));
   if (index === -1) {
     report.individual[wanted] = 'not-present';
     continue;
