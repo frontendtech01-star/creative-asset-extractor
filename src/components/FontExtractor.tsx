@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Download, FolderOpen, Search, Type, Filter } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, apiUrl } from '../lib/api';
 import {
   buildFontDisplayName,
   buildFontZipItem,
@@ -69,10 +69,26 @@ const getFontVariantKey = (font: any) => {
   ].join('|').toLowerCase();
 };
 
-function FontPreview({ font, text }: { font: any; text: string }) {
+function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; sourcePageUrl?: string }) {
   const sourceUrl = String(font?.url || '').trim();
   const fallbackUrl = resolveFontAssetUrl(font);
-  const urls = useMemo(() => Array.from(new Set([sourceUrl, fallbackUrl].filter(Boolean))), [sourceUrl, fallbackUrl]);
+  const sourceFormat = resolveFontSourceFormat(font);
+  const proxyUrl = useMemo(() => {
+    if (!fallbackUrl) return '';
+    const params = new URLSearchParams({
+      url: fallbackUrl,
+      originalUrl: sourceUrl || fallbackUrl,
+      toFormat: sourceFormat,
+      originalFormat: sourceFormat,
+      filenameBase: getFontFilenameBase(font),
+    });
+    if (sourcePageUrl) params.set('sourcePageUrl', sourcePageUrl);
+    return apiUrl(`/api/convert-font?${params.toString()}`);
+  }, [fallbackUrl, font, sourceFormat, sourcePageUrl, sourceUrl]);
+  const urls = useMemo(
+    () => Array.from(new Set([proxyUrl, fallbackUrl, sourceUrl].filter(Boolean))),
+    [proxyUrl, fallbackUrl, sourceUrl]
+  );
   const family = useMemo(() => previewFamily(getFontSelectionKey(font) || getFontFilenameBase(font)), [font]);
   const [loaded, setLoaded] = useState(false);
 
@@ -388,7 +404,7 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
 
               <div className="mt-4 flex flex-col gap-2">
                 <div className="block w-full overflow-hidden rounded-xl text-left">
-                  <FontPreview font={font} text={previewText} />
+                  <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
                 </div>
                 <div className="flex gap-2 w-full">
                   <select

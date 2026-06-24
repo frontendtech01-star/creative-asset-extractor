@@ -9,6 +9,8 @@
     "dev": "node scripts/dev.mjs",
     "server": "tsx server.ts",
     "start": "node scripts/start.mjs",
+    "localhost": "node scripts/start-localhost.mjs",
+    "package:localhost": "npm run build && node scripts/build-portable-localhost.mjs",
     "build": "vite build",
     "build:server": "tsc --noEmit",
     "build:desktop:server": "node scripts/build-server-bundle.mjs",
@@ -77,7 +79,7 @@
         ]
       },
       {
-        "from": "bin/mac",
+        "from": "vendor/bin-pack",
         "to": "bin",
         "filter": [
           "**/*"

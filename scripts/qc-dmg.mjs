@@ -40,6 +40,7 @@ const appPath = process.env.QC_APP_PATH || findPackagedApp();
 const resourcesPath = path.join(appPath, 'Contents', 'Resources');
 const asarPath = path.join(resourcesPath, 'app.asar');
 const serverBundle = path.join(appPath, 'Contents', 'Resources', 'app.asar', 'desktop', 'server.mjs');
+const appExecutable = path.join(appPath, 'Contents', 'MacOS', 'Creative Asset Extractor');
 
 console.log(`\nDMG QC → ${appPath}\n`);
 
@@ -48,6 +49,49 @@ if (!fs.existsSync(asarPath)) {
   process.exit(1);
 }
 pass('app.asar present');
+
+const chromiumApps = [];
+const collectChromiumApps = (dir) => {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (!entry.isDirectory()) continue;
+    if (entry.name === 'Google Chrome for Testing.app') chromiumApps.push(fullPath);
+    else collectChromiumApps(fullPath);
+  }
+};
+collectChromiumApps(path.join(resourcesPath, 'chromium'));
+if (chromiumApps.length === 0) {
+  fail('bundled Chromium app is missing');
+} else {
+  for (const chromiumApp of chromiumApps) {
+    try {
+      execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', chromiumApp], {
+        stdio: 'pipe',
+      });
+      pass('bundled Chromium signature');
+    } catch (error) {
+      fail(`bundled Chromium signature failed: ${String(error.stderr || error.message).trim()}`);
+    }
+  }
+}
+
+try {
+  const nodeVersion = execFileSync(appExecutable, ['-e', 'process.stdout.write(process.versions.node)'], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8',
+  }).trim();
+  if (nodeVersion) pass(`embedded Node.js ${nodeVersion}`);
+  else fail('embedded Node.js version was empty');
+} catch (error) {
+  fail(`embedded Node.js runtime failed: ${error.message}`);
+}
+
+for (const binary of ['ffmpeg', 'ffprobe', 'yt-dlp', 'aria2c']) {
+  const binaryPath = path.join(resourcesPath, 'bin', binary);
+  if (fs.existsSync(binaryPath) && (fs.statSync(binaryPath).mode & 0o111)) pass(`bundled vendor ${binary}`);
+  else fail(`missing executable vendor binary: ${binaryPath}`);
+}
 
 const entries = asarList(asarPath);
 const requiredModules = [

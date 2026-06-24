@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start Creative Asset Extractor</title>
+  <style>
+    body { margin: 0; background: #f4f4f5; color: #18181b; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 680px; margin: 48px auto; padding: 32px; background: white; border: 1px solid #e4e4e7; border-radius: 20px; box-shadow: 0 12px 35px #00000012; }
+    h1 { margin-top: 0; font-size: 28px; }
+    .step { margin: 22px 0; padding: 18px; border-radius: 14px; background: #f8fafc; }
+    a, button { display: inline-block; border: 0; border-radius: 10px; padding: 11px 16px; background: #2563eb; color: white; font-weight: 700; text-decoration: none; cursor: pointer; }
+    code { display: block; margin: 12px 0; padding: 14px; overflow-wrap: anywhere; border-radius: 10px; background: #18181b; color: #f4f4f5; }
+    small { color: #52525b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Creative Asset Extractor — Beta Release</h1>
+    <p>Lightweight localhost package for macOS and Windows.</p>
+    <div class="step">
+      <strong>What’s included</strong>
+      <ul>
+        <li>Fast Mac-compatible 1080p H.264 video downloads by default.</li>
+        <li>YouTube downloads no longer wait at 35% before using the working download path.</li>
+        <li>Blank and tracking-only Vimeo players are filtered.</li>
+        <li>Cancel controls remain available during video downloads.</li>
+        <li>MP3 download options are removed.</li>
+      </ul>
+    </div>
+    <div class="step">
+      <strong>1. Download Beta Release</strong>
+      <p><a href="https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative-Asset-Extractor-Localhost.zip">Download Beta Release package</a></p>
+      <p>ZIP download path:</p>
+      <code id="zipPath">https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative-Asset-Extractor-Localhost.zip</code>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('zipPath').textContent).then(() => this.textContent='ZIP path copied')">Copy ZIP path</button>
+    </div>
+    <div class="step">
+      <strong>2. macOS installation — Installation guide.md</strong>
+      <p>Right-click the downloaded and extracted folder, select <strong>Open Folder in Terminal</strong>, paste the command below, and press Return:</p>
+      <code id="launch">xattr -dr com.apple.quarantine . &amp;&amp; chmod +x "Run Localhost.command" &amp;&amp; ./"Run Localhost.command"</code>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('launch').textContent).then(() => this.textContent='Copied')">Copy launch command</button>
+      <p><small>The launcher downloads a private Node.js LTS runtime inside this folder—no administrator password or system installation—then installs dependencies, starts localhost, and opens Chrome.</small></p>
+    </div>
+    <div class="step">
+      <strong>Windows installation</strong>
+      <p>Extract the ZIP and double-click <code>Run Localhost.cmd</code>.</p>
+    </div>
+  </main>
+</body>
+</html>

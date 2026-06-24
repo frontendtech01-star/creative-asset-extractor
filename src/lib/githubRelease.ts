@@ -29,11 +29,11 @@ export const resolveReleaseDownloadUrl = (release: GithubReleaseInfo | null | un
 export const releaseDownloadLabel = (release: GithubReleaseInfo | null | undefined, viewMode: 'update' | 'notes' = 'update') => {
   const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
   if (/win/i.test(platform) && release?.exeDownloadUrl) {
-    return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
+    return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
   }
-  if (release?.dmgDownloadUrl) return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
-  if (release?.packageDownloadUrl) return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
-  return viewMode === 'notes' ? 'Latest Release' : 'Download Update';
+  if (release?.dmgDownloadUrl) return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
+  if (release?.packageDownloadUrl) return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
+  return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
 };
 
 const RELEASE_DISMISS_SESSION_KEY = 'vdx.release.dismissedVersion';

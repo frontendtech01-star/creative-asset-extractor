@@ -17,6 +17,7 @@ import { useExtractionProgress } from './lib/extractionWs';
 import { buildImageZipItem, imageNeedsConversionChoice, resolveZipRasterTargetFormat } from './lib/imageAsset';
 import { buildFontZipItems } from './lib/fontAsset';
 import {
+  isUsableExtractedVideo,
   isYouTubeExtractUrl,
 } from './lib/visibleVideos';
 import { buildCreativeAssetsFolderName, creativeAssetsFolderLabel } from './lib/creativeAssetsFolder';
@@ -171,7 +172,7 @@ const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
   }
 };
 
-const sanitizeVideoAssets = (videos: any[] = []) =>
+const sanitizeVideoAssets = (videos: any[] = [], seedUrl = '') =>
   videos.filter((video) => {
     const candidates = [
       video?.url,
@@ -182,7 +183,10 @@ const sanitizeVideoAssets = (videos: any[] = []) =>
       video?.sourceUrl,
       video?.pageUrl,
     ];
-    return !candidates.some((candidate) => typeof candidate === 'string' && isTechnicalPlayerResourceUrl(candidate));
+    return (
+      !candidates.some((candidate) => typeof candidate === 'string' && isTechnicalPlayerResourceUrl(candidate)) &&
+      isUsableExtractedVideo(video, seedUrl)
+    );
   });
 
 const normalizeExtracterTab = (tab?: string): 'fonts' | 'images' | 'videos' | 'colors' => {
@@ -485,7 +489,7 @@ export default function App() {
 
   React.useEffect(() => {
     if (!assets?.videos?.length) return;
-    const cleanVideos = sanitizeVideoAssets(assets.videos);
+    const cleanVideos = sanitizeVideoAssets(assets.videos, extractedUrl);
     if (cleanVideos.length === assets.videos.length) return;
     setAssets({ ...assets, videos: cleanVideos });
     setAssetStateVersion((version) => version + 1);
@@ -900,7 +904,11 @@ export default function App() {
       : options?.mode === 'quick'
         ? 12000
         : options?.mode === 'static'
-          ? 20000
+          // A cold stylesheet scan can take longer on sites with many CSS bundles
+          // (Nike is a common example). Keep the request alive long enough for
+          // downloadable font URLs to be returned instead of falling back to the
+          // image-only quick result.
+          ? 45000
           : options?.crawlMode === 'deep'
             ? 95000
             : 125000; // Extended to allow backend-forced deep crawl (120s) + overhead
@@ -948,7 +956,7 @@ export default function App() {
       ...data,
       images: mergedImages,
       icons: [],
-      videos: sanitizeVideoAssets(Array.isArray(data?.videos) ? data.videos : []),
+      videos: sanitizeVideoAssets(Array.isArray(data?.videos) ? data.videos : [], sourceUrl),
       fonts: Array.isArray(data?.fonts) ? data.fonts : [],
       colors: normalizeExtractColors(data?.colors),
       extractionMeta: data?.extractionMeta,
@@ -1295,7 +1303,7 @@ export default function App() {
                 C
               </div>
               <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
-              <span className="text-xs text-zinc-500">v{appVersion.replace(/^v/i, '')}</span>
+              <span className="text-xs font-medium text-violet-700">Beta Release</span>
             </div>
             <nav className="flex flex-wrap items-center justify-end gap-1">
               <button

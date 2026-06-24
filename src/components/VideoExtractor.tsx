@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe } from 'lucide-react';
+import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe, XCircle } from 'lucide-react';
 import { apiFetchWithTimeout, MERGE_PREP_TIMEOUT_MS } from '../lib/api';
 import { getDesktopBridge } from '../lib/desktopBridge';
-import { isDirectVideoAssetUrl, isPlatformHostedUrl } from '../lib/visibleVideos';
+import { isDirectVideoAssetUrl, isPlatformHostedUrl, isUsableExtractedVideo } from '../lib/visibleVideos';
+import {
+  cancelDownloaderJob,
+  startDownloaderJob,
+  waitForDownloaderJob,
+  type DownloaderJob,
+  type DownloaderQuality,
+} from '../lib/videoDownloader';
 
 type WebsiteBulkDownloadJob = {
   id: string;
@@ -251,6 +258,7 @@ export default function VideoExtractor({
   hideManualSearch?: boolean;
 }) {
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [activeCardJob, setActiveCardJob] = useState<{ cardUrl: string; job: DownloaderJob } | null>(null);
   const [downloadResult, setDownloadResult] = useState<{ url: string; message: string; error?: boolean } | null>(null);
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [bulkJobs, setBulkJobs] = useState<WebsiteBulkDownloadJob[]>([]);
@@ -258,7 +266,9 @@ export default function VideoExtractor({
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
-  const visibleVideos = videos.filter((video) => !isTechnicalVideoItem(video));
+  const visibleVideos = videos.filter(
+    (video) => !isTechnicalVideoItem(video) && isUsableExtractedVideo(video, seedUrl)
+  );
 
   useEffect(() => {
     if (!seedUrl && manualUrl && !activeManualUrl) {
@@ -273,35 +283,26 @@ export default function VideoExtractor({
     setBulkMessage(null);
   }, [visibleVideos.length]);
 
-  const handleDownload = async (video: any, title: string) => {
+  const handleDownload = async (video: any, title: string, quality: DownloaderQuality = 'fhd') => {
     const cardUrl = String(video?.url || '');
     const request = resolveVideoDownloadRequest(video, seedUrl);
     setDownloading(cardUrl);
     setDownloadResult(null);
     try {
       if (!request.url) throw new Error('No downloadable video link was found.');
-      const response = await apiFetchWithTimeout(
-        request.endpoint,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: request.url,
-            title,
-            sourcePageUrl: request.sourcePageUrl,
-            quality: 'fhd',
-          }),
-        },
-        MERGE_PREP_TIMEOUT_MS,
-        'Video download timed out. Please retry.'
-      );
-      const data = await response.json();
-      if (!response.ok || !data?.ok || !data?.displayPath) {
-        throw new Error(data?.error || 'Download failed');
+      const started = await startDownloaderJob({ url: request.url, quality, title });
+      setActiveCardJob({ cardUrl, job: started });
+      const completed = await waitForDownloaderJob(started, (job) => setActiveCardJob({ cardUrl, job }));
+      if (completed.status === 'cancelled') {
+        setDownloadResult({ url: cardUrl, message: 'Download cancelled.' });
+        return;
+      }
+      if (completed.status === 'error' || !completed.result?.displayPath) {
+        throw new Error(completed.error || 'Download failed');
       }
       setDownloadResult({
         url: cardUrl,
-        message: data.reused ? `Already downloaded: ${data.displayPath}` : `Downloaded: ${data.displayPath}`,
+        message: `Video downloaded: ${completed.result.displayPath}`,
       });
     } catch (error: any) {
       const msg = error?.message || '';
@@ -311,6 +312,18 @@ export default function VideoExtractor({
       setDownloadResult({ url: cardUrl, message: msg || 'Failed to download video.', error: true });
     } finally {
       setDownloading(null);
+      setActiveCardJob(null);
+    }
+  };
+
+  const handleCancelCardDownload = async (cardUrl: string) => {
+    if (!activeCardJob || activeCardJob.cardUrl !== cardUrl) return;
+    try {
+      const cancelled = await cancelDownloaderJob(activeCardJob.job.id);
+      setActiveCardJob({ cardUrl, job: cancelled });
+      setDownloadResult({ url: cardUrl, message: 'Download cancelled.' });
+    } catch (error: any) {
+      setDownloadResult({ url: cardUrl, message: error?.message || 'Could not cancel download.', error: true });
     }
   };
 
@@ -569,7 +582,7 @@ export default function VideoExtractor({
               <div>
                 <h4 className="text-sm font-semibold text-zinc-900">Bulk Download Extracted Videos</h4>
                 <p className="mt-1 text-xs text-zinc-500">
-                  Saves {bulkDownloadUrls.length} resolved player link{bulkDownloadUrls.length === 1 ? '' : 's'} as MP4s in this website's CreativeAssets/Videos folder.
+                  Saves {bulkDownloadUrls.length} resolved player link{bulkDownloadUrls.length === 1 ? '' : 's'} as fast Mac-compatible FHD MP4 files.
                 </p>
               </div>
               <button
@@ -579,7 +592,7 @@ export default function VideoExtractor({
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Download className="h-4 w-4" />
-                {bulkDownloading ? 'Downloading All...' : 'Download All MP4'}
+                {bulkDownloading ? 'Downloading All...' : 'Download All · Fast FHD'}
               </button>
             </div>
             {bulkJobs.length ? (
@@ -726,11 +739,11 @@ export default function VideoExtractor({
                         className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       >
                         {downloading === video.url ? (
-                          <span className="animate-pulse">Downloading MP4...</span>
+                          <span className="animate-pulse">Downloading fast FHD...</span>
                         ) : (
                           <>
                             <Download className="w-4 h-4" />
-                            Download MP4
+                            Download MP4 · Fast Mac-Compatible FHD
                           </>
                         )}
                       </button>
@@ -768,21 +781,33 @@ export default function VideoExtractor({
                       </div>
                     </div>
                   ) : (
-                    <button
-                      onClick={() => handleDownload(video, displayTitle)}
-                      disabled={downloading === video.url}
-                      className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {downloading === video.url ? (
-                        <span className="animate-pulse">Downloading...</span>
-                      ) : (
-                        <>
-                          <Download className="w-4 h-4" />
-                          Download Video
-                        </>
-                      )}
-                    </button>
+                    <div className="space-y-2">
+                      <button
+                        onClick={() => handleDownload(video, displayTitle)}
+                        disabled={downloading === video.url}
+                        className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {downloading === video.url ? (
+                          <span className="animate-pulse">Downloading fast FHD...</span>
+                        ) : (
+                          <>
+                            <Download className="w-4 h-4" />
+                            Download Video · Fast Mac-Compatible FHD
+                          </>
+                        )}
+                      </button>
+                    </div>
                   )}
+                  {downloading === video.url && activeCardJob ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelCardDownload(video.url)}
+                      className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Cancel download
+                    </button>
+                  ) : null}
                   {downloadResult?.url === video.url ? (
                     <p className={`mt-2 text-xs font-medium ${downloadResult.error ? 'text-red-600' : 'text-emerald-700'}`}>
                       {downloadResult.message}

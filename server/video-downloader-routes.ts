@@ -13,7 +13,9 @@ const execFileAsync = promisify(execFile);
 
 const writeLog = async (jobId: string | undefined, data: Record<string, unknown>) => {
   try {
-    const logsDir = path.join(os.homedir(), 'Downloads', 'youtube_CreativeAssets', 'Logs');
+    // Diagnostic logs are temporary implementation details. Keep them out of
+    // Downloads so a video request creates only its detected platform folder.
+    const logsDir = path.join(os.tmpdir(), 'creative-asset-extractor', 'video-downloader-logs');
     await fsp.mkdir(logsDir, { recursive: true });
     const logFile = path.join(logsDir, `${jobId || 'unknown'}-${Date.now()}.log`);
     const entry = {
@@ -27,8 +29,8 @@ const writeLog = async (jobId: string | undefined, data: Record<string, unknown>
 };
 
 type DownloaderPlatform = 'youtube' | 'vimeo' | 'instagram' | 'facebook' | 'x' | 'tiktok' | 'ispot' | 'direct' | 'unknown';
-type DownloadQuality = 'fhd' | 'hd' | 'audio';
-type JobStatus = 'queued' | 'running' | 'completed' | 'error';
+type DownloadQuality = '4k' | 'fhd' | 'hd' | 'audio';
+type JobStatus = 'queued' | 'running' | 'completed' | 'error' | 'cancelled';
 
 type DownloaderCard = {
   id: string;
@@ -110,6 +112,8 @@ const USER_AGENT =
 const SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'tiktok', 'ispot', 'direct'] as const;
 const jobs = new Map<string, DownloadJob>();
 const pendingJobs: string[] = [];
+const cancelledJobs = new Set<string>();
+const activeDownloadProcesses = new Map<string, ReturnType<typeof spawn>>();
 let activeJobs = 0;
 let updatePromise: Promise<boolean> | null = null;
 let lastUpdateAttemptAt = 0;
@@ -193,6 +197,7 @@ const resolveTool = (options: VideoDownloaderRouteOptions, name: string) => {
     path.join(options.resourcesPath || '', 'bin', fileName),
     path.join(options.appRoot || '', 'vendor', 'bin-pack', fileName),
     path.join(options.resourcesPath || '', 'vendor', 'bin-pack', fileName),
+    path.join(process.cwd(), 'vendor', 'bin-pack', fileName),
     path.join(os.homedir(), '.creative-asset-extractor', 'runtime-bin', fileName),
     path.join(process.cwd(), 'runtime-bin', fileName),
   ].filter(Boolean);
@@ -221,6 +226,7 @@ const commonYtDlpArgs = (options: VideoDownloaderRouteOptions, platform: Downloa
     '--no-warnings',
     '--no-check-certificates',
     '--no-playlist',
+    '--force-ipv4',
     '--socket-timeout',
     '25',
     '--retries',
@@ -330,7 +336,7 @@ const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) 
   // Return the first line of the real error for debugging
   const short = message.split('\n')[0].slice(0, 150);
   if (short.length > 10) return short;
-  return 'Video download failed. Check ~/Downloads/youtube_CreativeAssets/Logs/ for details.';
+  return 'Video download failed. Please try again or report the issue from the app.';
 };
 
 const updateYtDlp = async (options: VideoDownloaderRouteOptions) => {
@@ -581,11 +587,27 @@ const updateJob = (job: DownloadJob, patch: Partial<DownloadJob>) => {
   Object.assign(job, patch, { updatedAt: now() });
 };
 
+const isJobCancelled = (job: DownloadJob) => cancelledJobs.has(job.id) || job.status === 'cancelled';
+
+const throwIfJobCancelled = (job: DownloadJob) => {
+  if (isJobCancelled(job)) throw new Error('Download cancelled by user.');
+};
+
 const formatSelector = (platform: DownloaderPlatform, quality: DownloadQuality, fallback = false) => {
   if (quality === 'audio') return 'bestaudio/best';
-  const height = quality === 'fhd' ? 1080 : 720;
+  const height = quality === '4k' ? 2160 : quality === 'fhd' ? 1080 : 720;
   if (platform === 'youtube') {
     if (!fallback) {
+      if (quality === '4k') {
+        return [
+          `bestvideo[height<=${height}][vcodec^=vp9]+bestaudio[ext=m4a]`,
+          `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]`,
+          `bestvideo[height<=${height}]+bestaudio`,
+          `best[height<=${height}][ext=mp4][vcodec!=none][acodec!=none]`,
+          `best[height<=${height}][vcodec!=none][acodec!=none]`,
+          'best',
+        ].join('/');
+      }
       return [
         `bestvideo[height<=${height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]`,
         `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio`,
@@ -638,7 +660,70 @@ const replaceFile = async (source: string, target: string) => {
   await fsp.rename(source, target);
 };
 
-const ensureQuickTimeMp4 = async (options: VideoDownloaderRouteOptions, inputPath: string, jobId?: string) => {
+const encodeQuickTimeMp4 = async (
+  ffmpegPath: string,
+  inputPath: string,
+  outputPath: string,
+  durationSeconds: number,
+  jobId?: string,
+  fast4k = false
+) => {
+  const videoArgs = fast4k
+    ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23'];
+  const args = [
+    '-y', '-i', inputPath,
+    ...videoArgs,
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    '-progress', 'pipe:1', '-nostats',
+    outputPath,
+  ];
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    if (jobId) activeDownloadProcesses.set(jobId, child);
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      const match = text.match(/out_time_us=(\d+)/);
+      if (!match || !jobId || durationSeconds <= 0) return;
+      const currentSeconds = Number(match[1]) / 1_000_000;
+      const job = jobs.get(jobId);
+      if (!job || job.status !== 'running') return;
+      const phaseStart = fast4k ? 86 : 95;
+      const phaseSpan = fast4k ? 11.8 : 2.8;
+      updateJob(job, {
+        progress: Math.min(97.8, phaseStart + (currentSeconds / durationSeconds) * phaseSpan),
+        message: fast4k ? 'Converting 4K to Mac-compatible MP4...' : 'Optimizing for QuickTime...',
+      });
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 20000) stderr = stderr.slice(-20000);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (jobId) activeDownloadProcesses.delete(jobId);
+      const job = jobId ? jobs.get(jobId) : undefined;
+      if (job && isJobCancelled(job)) {
+        reject(new Error('Download cancelled by user.'));
+      } else if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `QuickTime conversion exited with code ${code}.`));
+      }
+    });
+  });
+};
+
+const ensureQuickTimeMp4 = async (
+  options: VideoDownloaderRouteOptions,
+  inputPath: string,
+  jobId?: string,
+  fast4k = false
+) => {
   const ffmpegPath = resolveTool(options, 'ffmpeg');
   if (!ffmpegPath) throw new Error('ffmpeg is missing. Run npm install, then restart the app.');
   // Probe once
@@ -654,14 +739,8 @@ const ensureQuickTimeMp4 = async (options: VideoDownloaderRouteOptions, inputPat
   const outputPath = /\.mp4$/i.test(inputPath) ? inputPath : inputPath.replace(/\.[^.]+$/, '') + '.mp4';
   const tempOutput = path.join(path.dirname(outputPath), `.${path.basename(outputPath, path.extname(outputPath))}.${crypto.randomUUID()}.mp4`);
   const encodeStart = Date.now();
-  await execFileAsync(ffmpegPath, [
-    '-y', '-i', inputPath,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart',
-    tempOutput,
-  ], { timeout: 20 * 60 * 1000, maxBuffer: 20 * 1024 * 1024 });
+  const durationSeconds = Number(probe?.format?.duration || 0);
+  await encodeQuickTimeMp4(ffmpegPath, inputPath, tempOutput, durationSeconds, jobId, fast4k);
   void writeLog(jobId, { event: 'qt_encode', encode_ms: Date.now() - encodeStart });
   await replaceFile(tempOutput, outputPath);
   if (path.resolve(inputPath) !== path.resolve(outputPath)) await fsp.rm(inputPath, { force: true }).catch(() => undefined);
@@ -674,6 +753,7 @@ const runDownloadAttempt = async (
   url: string,
   extraArgs: string[] = []
 ) => {
+  throwIfJobCancelled(job);
   const attemptStart = Date.now();
   const ytdlp = await ensureRuntimeYtDlp(options);
   const platformDir = resolvePlatformVideoAssetsDir(job.platform);
@@ -682,7 +762,13 @@ const runDownloadAttempt = async (
   const outputTemplate = path.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
   const ffmpegPath = resolveTool(options, 'ffmpeg');
   const aria2Path = aria2cAvailable(options);
-  const hasAria2 = extraArgs.includes('--no-aria2') ? false : Boolean(aria2Path);
+  // Googlevideo URLs frequently reject aria2's segmented requests with HTTP
+  // 403. That left YouTube jobs showing synthetic 35% progress until the
+  // watchdog triggered the native yt-dlp fallback. Use yt-dlp's fragment
+  // downloader immediately for YouTube; keep aria2 acceleration elsewhere.
+  const hasAria2 = extraArgs.includes('--no-aria2') || job.platform === 'youtube'
+    ? false
+    : Boolean(aria2Path);
 
   void writeLog(job.id, {
     event: 'download_start',
@@ -719,7 +805,7 @@ const runDownloadAttempt = async (
     '--concurrent-fragments', '16',
     '--buffer-size', '64K',
     ...(job.quality === 'audio'
-      ? ['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K']
+      ? ['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K', '--postprocessor-args', 'ffmpeg:-t 120']
       : ['--merge-output-format', 'mp4', '--remux-video', 'mp4', '--postprocessor-args', 'ffmpeg:-c copy -movflags +faststart']),
     ...extraArgs.filter(a => !a.startsWith('--no-aria2') && !a.startsWith('--quality-fallback')),
     url,
@@ -736,6 +822,7 @@ const runDownloadAttempt = async (
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
     });
+    activeDownloadProcesses.set(job.id, child);
     let stdout = '';
     let stderr = '';
     let filePath = '';
@@ -809,11 +896,18 @@ const runDownloadAttempt = async (
     child.stderr.on('data', (chunk) => consume(chunk, true));
     child.on('error', (error) => {
       clearInterval(watchdogInterval);
+      activeDownloadProcesses.delete(job.id);
       void writeLog(job.id, { event: 'spawn_error', error: (error as Error).message });
       reject(error);
     });
     child.on('close', async (code) => {
       clearInterval(watchdogInterval);
+      activeDownloadProcesses.delete(job.id);
+
+      if (isJobCancelled(job)) {
+        reject(new Error('Download cancelled by user.'));
+        return;
+      }
 
       void writeLog(job.id, {
         event: 'download_exit',
@@ -846,6 +940,7 @@ const runDownloadAttempt = async (
 };
 
 const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, job: DownloadJob) => {
+  throwIfJobCancelled(job);
   const normalizedUrl = normalizeDownloaderUrl(job.url, job.platform);
   const urls = job.platform === 'x'
     ? Array.from(new Set([normalizedUrl, normalizedUrl.replace('twitter.com', 'x.com')]))
@@ -856,6 +951,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
   // A. Try with aria2c
   if (aria2) {
     for (const url of urls) {
+      throwIfJobCancelled(job);
       try {
         return await runDownloadAttempt(options, job, url);
       } catch (error) {
@@ -867,6 +963,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
 
   // B. Try without aria2c
   for (const url of urls) {
+    throwIfJobCancelled(job);
     try {
       return await runDownloadAttempt(options, job, url, ['--no-aria2']);
     } catch (error) {
@@ -879,6 +976,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
     updateJob(job, { message: 'Trying with browser cookies...' });
     for (const cookies of cookieAttempts(job.platform)) {
       for (const url of urls) {
+        throwIfJobCancelled(job);
         try {
           return await runDownloadAttempt(options, job, url, [...cookies, '--no-aria2']);
         } catch (error) {
@@ -890,9 +988,10 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
   }
 
   // D. Lower quality fallback
-  if (job.quality === 'fhd') {
+  if (job.quality === '4k' || job.quality === 'fhd') {
     updateJob(job, { message: 'Retrying with best available quality...' });
     for (const url of urls) {
+      throwIfJobCancelled(job);
       try {
         return await runDownloadAttempt(options, job, url, ['--no-aria2', '--quality-fallback']);
       } catch (error) {
@@ -1067,15 +1166,36 @@ const removeEmptyParents = async (directory: string, stopAt: string) => {
   }
 };
 
+const removePlatformDownloadFolder = async (platform: string) => {
+  const videosDir = resolvePlatformVideoAssetsDir(platform);
+  const platformRoot = path.dirname(videosDir);
+  // Platform CreativeAssets folders are owned by the downloader. Removing the
+  // complete managed root also clears ZIPs, sidecars, .DS_Store files and
+  // abandoned empty subfolders that would otherwise leave the main folder.
+  await fsp.rm(platformRoot, { recursive: true, force: true });
+};
+
 const completeJob = async (
   options: VideoDownloaderRouteOptions,
   job: DownloadJob,
   downloaded: { filePath: string; title?: string } | any
 ) => {
   const initialPath = String(downloaded?.filePath || downloaded?.downloadPath || downloaded?.localPath || '');
-  // Phase: QuickTime check (95-98%)
-  updateJob(job, { progress: 95, message: 'Optimizing for QuickTime...' });
-  const filePath = job.quality === 'audio' ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id);
+  if (isJobCancelled(job)) {
+    if (initialPath) await fsp.rm(initialPath, { force: true }).catch(() => undefined);
+    return;
+  }
+  // Convert VP9 4K to broadly playable H.264 while reporting meaningful
+  // progress. VideoToolbox rejects 4K encoding sessions on some Macs, so the
+  // fast software preset is the reliable cross-Mac path.
+  const preserveOriginal = job.quality === 'audio';
+  updateJob(job, {
+    progress: job.quality === '4k' ? 86 : 95,
+    message: job.quality === '4k' ? 'Converting 4K to Mac-compatible MP4...' : 'Optimizing for QuickTime...',
+  });
+  const filePath = preserveOriginal
+    ? initialPath
+    : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === '4k');
   updateJob(job, { progress: 98, message: 'Finalizing file...' });
   const stat = await fsp.stat(filePath);
   const downloadsRoot = path.join(os.homedir(), 'Downloads');
@@ -1084,7 +1204,7 @@ const completeJob = async (
     title,
     thumbnail: downloaded?.thumbnail || '',
     platform: job.platform,
-    quality: job.quality === 'fhd' ? 'FHD' : job.quality === 'hd' ? 'HD' : 'Audio',
+    quality: job.quality === '4k' ? '4K / Best' : job.quality === 'fhd' ? 'FHD' : job.quality === 'hd' ? 'HD' : 'Audio',
     status: 'completed',
     filePath,
     displayPath: downloaded?.displayPath || toDisplayPath(filePath),
@@ -1123,6 +1243,7 @@ const completeJob = async (
 };
 
 const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob) => {
+  if (isJobCancelled(job)) return;
   const startTime = Date.now();
   updateJob(job, { status: 'running', progress: 2, message: 'Preparing downloader...' });
   void writeLog(job.id, {
@@ -1143,6 +1264,7 @@ const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob
     const totalTime = Date.now() - startTime;
     void writeLog(job.id, { event: 'download_complete', total_ms: totalTime });
   } catch (error: any) {
+    if (isJobCancelled(job)) return;
     const rawError = errorText(error);
     const friendly = friendlyDownloaderError(job.platform, rawError);
     const totalTime = Date.now() - startTime;
@@ -1183,7 +1305,13 @@ const createJob = (
   input: { url: string; quality?: string; title?: string }
 ) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
-  const quality: DownloadQuality = input.quality === 'audio' ? 'audio' : input.quality === 'hd' ? 'hd' : 'fhd';
+  const quality: DownloadQuality = input.quality === 'audio'
+    ? 'audio'
+    : input.quality === 'hd'
+      ? 'hd'
+      : input.quality === 'fhd'
+        ? 'fhd'
+        : '4k';
   // Dedup: if same platform+url+quality is already running or completed, return existing
   const key = runningJobKey(validated.platform, validated.url, quality);
   for (const existing of jobs.values()) {
@@ -1259,12 +1387,13 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     const urls: string[] = Array.from(
       new Set<string>(rawUrls.map((value: unknown) => String(value || '').trim()).filter(Boolean))
     ).slice(0, 20);
+    const quality = String(req.body?.quality || 'fhd').toLowerCase();
     if (urls.length === 0) return res.status(400).json({ error: 'Enter at least one video URL.' });
     const created: DownloadJob[] = [];
     const errors: Array<{ url: string; error: string }> = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality: 'fhd' }));
+        created.push(createJob(options, { url, quality }));
       } catch (error: any) {
         errors.push({ url, error: error?.message || 'Invalid URL' });
       }
@@ -1276,6 +1405,26 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
   app.get('/api/downloader/jobs/:id', (req, res) => {
     const job = jobs.get(String(req.params.id || ''));
     if (!job) return res.status(404).json({ error: 'Download job was not found.' });
+    return res.json({ ok: true, job: publicJob(job) });
+  });
+
+  app.post('/api/downloader/jobs/:id/cancel', (req, res) => {
+    const id = String(req.params.id || '');
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: 'Download job was not found.' });
+    if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    cancelledJobs.add(id);
+    const pendingIndex = pendingJobs.indexOf(id);
+    if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
+    activeDownloadProcesses.get(id)?.kill('SIGTERM');
+    updateJob(job, {
+      status: 'cancelled',
+      progress: 0,
+      message: 'Download cancelled',
+      error: undefined,
+    });
     return res.json({ ok: true, job: publicJob(job) });
   });
 
@@ -1299,7 +1448,7 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
       const items = await listDownloaderFiles();
       const completedIds = new Set(
         Array.from(jobs.values())
-          .filter((job) => job.status === 'completed' || job.status === 'error')
+          .filter((job) => job.status === 'completed' || job.status === 'error' || job.status === 'cancelled')
           .map((job) => job.id)
       );
       completedIds.forEach((id) => jobs.delete(id));
@@ -1316,7 +1465,7 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         await removeEmptyParents(path.dirname(item.path), root);
       }
       for (const platform of SUPPORTED_PLATFORMS) {
-        await fsp.mkdir(resolvePlatformVideoAssetsDir(platform), { recursive: true }).catch(() => undefined);
+        await removePlatformDownloadFolder(platform);
       }
       return res.json({ ok: true, mode: 'files', removed: items.length });
     } catch (error: any) {

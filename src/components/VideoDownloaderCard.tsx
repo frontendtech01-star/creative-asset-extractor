@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Loader2, Music } from 'lucide-react';
+import { Download, Loader2, XCircle } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { formatBytes } from '../lib/download';
 import {
   downloaderFileUrl,
+  cancelDownloaderJob,
   startDownloaderJob,
   waitForDownloaderJob,
   type DownloaderJob,
@@ -49,8 +50,6 @@ export default function VideoDownloaderCard({
   const [job, setJob] = useState<DownloaderJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const providerLabel = String(video.provider || video.platform || 'video').toUpperCase();
-  const fhdAvailable = qualityAvailable(video, 'fhd');
-  const hdAvailable = qualityAvailable(video, 'hd');
   const audioAvailable = video.audioAvailable !== false && video.noAudio !== true;
   const durationLabel = formatDuration(video.duration);
   const busy = job?.status === 'queued' || job?.status === 'running';
@@ -75,6 +74,7 @@ export default function VideoDownloaderCard({
     try {
       const started = await startDownloaderJob({ url: video.url, quality, title: displayTitle });
       const completed = await waitForDownloaderJob(started, setJob);
+      if (completed.status === 'cancelled') return;
       if (completed.status === 'error') throw new Error(completed.error || 'Download failed.');
       onDownloadComplete?.(completed);
     } catch (err: any) {
@@ -88,6 +88,15 @@ export default function VideoDownloaderCard({
         assetType: quality === 'audio' ? 'audio' : 'video',
         openFeedback: false,
       });
+    }
+  };
+
+  const cancelDownload = async () => {
+    if (!job || !busy) return;
+    try {
+      setJob(await cancelDownloaderJob(job.id));
+    } catch (err: any) {
+      setError(err?.message || 'Could not cancel download.');
     }
   };
 
@@ -150,6 +159,19 @@ export default function VideoDownloaderCard({
               {job.speed ? <span>{job.speed}</span> : null}
               {job.eta ? <span>ETA {job.eta}</span> : null}
             </div>
+            {busy ? (
+              <button
+                type="button"
+                onClick={() => void cancelDownload()}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+                Cancel download
+              </button>
+            ) : null}
+            {job.status === 'cancelled' ? (
+              <p className="mt-2 text-xs font-semibold text-zinc-600">Download cancelled.</p>
+            ) : null}
             {job.status === 'completed' && job.result ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 <a
@@ -184,33 +206,15 @@ export default function VideoDownloaderCard({
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <div className="mt-4 grid gap-2">
           <button
             type="button"
-            disabled={busy || !fhdAvailable}
+            disabled={busy}
             onClick={() => void runDownload('fhd')}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy && job?.quality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Download FHD / Best
-          </button>
-          <button
-            type="button"
-            disabled={busy || !hdAvailable}
-            onClick={() => void runDownload('hd')}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy && job?.quality === 'hd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Download HD
-          </button>
-          <button
-            type="button"
-            disabled={busy || !audioAvailable}
-            onClick={() => void runDownload('audio')}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {busy && job?.quality === 'audio' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Music className="h-4 w-4" />}
-            Download Audio
+            Download Fast Mac-Compatible FHD
           </button>
         </div>
       </div>

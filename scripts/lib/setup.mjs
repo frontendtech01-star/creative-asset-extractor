@@ -43,6 +43,9 @@ const npmCommand = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 const ensureExecutable = async (filePath) => {
   if (!filePath || !existsSync(filePath) || process.platform === 'win32') return;
   await fs.chmod(filePath, 0o755).catch(() => undefined);
+  if (process.platform === 'darwin') {
+    await run('/usr/bin/xattr', ['-d', 'com.apple.quarantine', filePath]).catch(() => undefined);
+  }
 };
 
 const findOnPath = async (binaryName) => {

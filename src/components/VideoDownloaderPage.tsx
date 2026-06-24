@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, FolderOpen, Loader2, Play, Trash2 } from 'lucide-react';
+import { CheckCircle2, Download, FolderOpen, Loader2, Play, Trash2, XCircle } from 'lucide-react';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
   VIDEO_PLATFORMS,
@@ -15,10 +15,12 @@ import {
   readDownloaderJob,
   revealDownloaderFile,
   clearDownloaderFiles,
+  cancelDownloaderJob,
   startBulkDownloaderJobs,
   startDownloaderJob,
   waitForDownloaderJob,
   type DownloaderJob,
+  type DownloaderQuality,
 } from '../lib/videoDownloader';
 import { formatBytes } from '../lib/download';
 import { logActivity, reportOperationFailure } from '../lib/activityLog';
@@ -47,19 +49,21 @@ const jobStatusLabel = (job: DownloaderJob) => {
   if (job.status === 'completed') return 'Complete';
   if (job.status === 'error') return 'Failed';
   if (job.status === 'queued') return 'Queued';
+  if (job.status === 'cancelled') return 'Cancelled';
   return `${Math.round(job.progress || 0)}%`;
 };
 
 const jobProgressWidth = (job: DownloaderJob) => {
   if (job.status === 'completed') return 100;
   if (job.status === 'error') return 100;
+  if (job.status === 'cancelled') return 0;
   if (job.status === 'queued') return 5;
   return Math.max(8, Math.min(99, Math.round(job.progress || 0)));
 };
 
 const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
 
-function DownloadJobCard({ job, compact = false }: { job: DownloaderJob; compact?: boolean }) {
+function DownloadJobCard({ job, compact = false, onCancel }: { job: DownloaderJob; compact?: boolean; onCancel?: (job: DownloaderJob) => void }) {
   const isComplete = job.status === 'completed';
   const isError = job.status === 'error';
   const title = job.title || job.result?.title || job.url;
@@ -69,7 +73,7 @@ function DownloadJobCard({ job, compact = false }: { job: DownloaderJob; compact
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-zinc-950" title={title}>{title}</p>
           <p className="mt-1 text-xs uppercase tracking-wide text-zinc-600">
-            {platformLabel(job.platform)} · {job.quality === 'fhd' ? 'FHD / HD fallback' : job.quality.toUpperCase()}
+            {platformLabel(job.platform)} · {job.quality === '4k' ? 'MAX QUALITY · 4K / FHD FALLBACK' : job.quality === 'fhd' ? 'FHD / HD fallback' : job.quality.toUpperCase()}
           </p>
         </div>
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${isError ? 'bg-amber-100 text-amber-800' : isComplete ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
@@ -92,6 +96,17 @@ function DownloadJobCard({ job, compact = false }: { job: DownloaderJob; compact
         {job.speed ? <span>{job.speed}</span> : null}
         {job.eta && !isComplete ? <span>ETA {job.eta}</span> : null}
       </div>
+
+      {(job.status === 'queued' || job.status === 'running') && onCancel ? (
+        <button
+          type="button"
+          onClick={() => onCancel(job)}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+        >
+          <XCircle className="h-3.5 w-3.5" />
+          Cancel download
+        </button>
+      ) : null}
 
       {isComplete && job.result && !compact ? (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -198,6 +213,7 @@ export default function VideoDownloaderPage() {
   const [jobs, setJobs] = useState<DownloaderJob[]>([]);
   const [jobErrors, setJobErrors] = useState<Array<{ url: string; error: string }>>([]);
   const [busy, setBusy] = useState(false);
+  const [activeQuality, setActiveQuality] = useState<DownloaderQuality | null>(null);
 
   const inputUrls = useMemo(() => parseInputUrls(urlInput), [urlInput]);
   const detectedPlatform = useMemo(
@@ -225,7 +241,11 @@ export default function VideoDownloaderPage() {
     void listDownloaderJobs()
       .then((items) => {
         const recent = items
-          .filter((job) => job.status === 'queued' || job.status === 'running' || Date.now() - job.updatedAt < 30 * 60 * 1000)
+          .filter(
+            (job) =>
+              job.status !== 'cancelled' &&
+              (job.status === 'queued' || job.status === 'running' || Date.now() - job.updatedAt < 30 * 60 * 1000),
+          )
           .slice(0, 12)
           .reverse();
         setJobs(recent);
@@ -270,14 +290,22 @@ export default function VideoDownloaderPage() {
   const handleClearDownloads = async () => {
     try {
       await clearDownloaderFiles(true);
-      setJobs((current) => current.filter((job) => job.status !== 'completed' && job.status !== 'error'));
+      setJobs((current) => current.filter((job) => job.status !== 'completed' && job.status !== 'error' && job.status !== 'cancelled'));
     } catch (error: any) {
       alert(error?.message || 'Could not clear video downloads.');
     }
   };
 
-  const downloadQueue = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleCancelJob = async (job: DownloaderJob) => {
+    try {
+      const cancelled = await cancelDownloaderJob(job.id);
+      setJobs((current) => mergeJobs(current, [cancelled]));
+    } catch (error: any) {
+      setJobErrors([{ url: job.url, error: error?.message || 'Could not cancel download.' }]);
+    }
+  };
+
+  const downloadQueue = async (quality: DownloaderQuality = 'fhd') => {
     const urls = inputUrls;
     if (!urls.length) {
       setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
@@ -290,6 +318,7 @@ export default function VideoDownloaderPage() {
     }
 
     setBusy(true);
+    setActiveQuality(quality);
     setJobErrors([]);
     setJobs([]);
     void logActivity({
@@ -302,8 +331,8 @@ export default function VideoDownloaderPage() {
     try {
       const started =
         urls.length === 1
-          ? { jobs: [await startDownloaderJob({ url: urls[0], quality: 'fhd' })], errors: [] as Array<{ url: string; error: string }> }
-          : await startBulkDownloaderJobs(urls);
+          ? { jobs: [await startDownloaderJob({ url: urls[0], quality })], errors: [] as Array<{ url: string; error: string }> }
+          : await startBulkDownloaderJobs(urls, quality);
       const createdJobs = started.jobs || [];
       setJobErrors(started.errors || []);
       setJobs(createdJobs);
@@ -323,7 +352,7 @@ export default function VideoDownloaderPage() {
       setJobs((current) => mergeJobs(current, completed));
       const failed = completed.find((job) => job.status === 'error');
       if (failed && urls.length === 1) throw new Error(failed.error || 'Download failed.');
-      if (!failed) setUrlInput('');
+      if (!failed && !completed.some((job) => job.status === 'cancelled')) setUrlInput('');
     } catch (error: any) {
       const message = error?.message || 'Download failed.';
       setJobErrors([{ url: urls.length === 1 ? urls[0] : '', error: message }]);
@@ -336,6 +365,7 @@ export default function VideoDownloaderPage() {
       });
     } finally {
       setBusy(false);
+      setActiveQuality(null);
     }
   };
 
@@ -358,7 +388,7 @@ export default function VideoDownloaderPage() {
         </div>
 
         <div className="p-5 sm:p-6">
-            <form onSubmit={downloadQueue} className="space-y-4">
+            <form onSubmit={(event) => { event.preventDefault(); void downloadQueue('fhd'); }} className="space-y-4">
               <textarea
                 aria-label="Video URL"
                 value={urlInput}
@@ -390,14 +420,17 @@ export default function VideoDownloaderPage() {
                 ) : null}
               </div>
 
-              <button
-                type="submit"
-                disabled={busy || inputUrls.length === 0}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                {busy ? 'Downloading...' : inputUrls.length > 1 ? `Download ${inputUrls.length} Videos` : 'Download'}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="submit"
+                  aria-pressed={busy && activeQuality === 'fhd'}
+                  disabled={busy || inputUrls.length === 0}
+                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
+                >
+                  {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {busy && activeQuality === 'fhd' ? 'Downloading Fast FHD...' : inputUrls.length > 1 ? `Download ${inputUrls.length} Videos · Fast FHD` : 'Download Video · Fast Mac-Compatible FHD'}
+                </button>
+              </div>
             </form>
 
             {jobErrors.length ? (
@@ -415,7 +448,7 @@ export default function VideoDownloaderPage() {
             {jobs.length ? (
               <div className="mt-5 space-y-3">
                 {jobs.map((job) => (
-                  <DownloadJobCard key={job.id} job={job} compact />
+                  <DownloadJobCard key={job.id} job={job} compact onCancel={(item) => void handleCancelJob(item)} />
                 ))}
               </div>
             ) : (

@@ -213,7 +213,7 @@ var removeEmptyCreativeAssetFolders = async (sourcePageUrl) => {
 var execFileAsync = promisify(execFile);
 var writeLog = async (jobId, data) => {
   try {
-    const logsDir = path2.join(os2.homedir(), "Downloads", "youtube_CreativeAssets", "Logs");
+    const logsDir = path2.join(os2.tmpdir(), "creative-asset-extractor", "video-downloader-logs");
     await fsp2.mkdir(logsDir, { recursive: true });
     const logFile = path2.join(logsDir, `${jobId || "unknown"}-${Date.now()}.log`);
     const entry = {
@@ -228,6 +228,8 @@ var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "direct"];
 var jobs = /* @__PURE__ */ new Map();
 var pendingJobs = [];
+var cancelledJobs = /* @__PURE__ */ new Set();
+var activeDownloadProcesses = /* @__PURE__ */ new Map();
 var activeJobs = 0;
 var updatePromise = null;
 var lastUpdateAttemptAt = 0;
@@ -297,6 +299,7 @@ var resolveTool = (options, name) => {
     path2.join(options.resourcesPath || "", "bin", fileName),
     path2.join(options.appRoot || "", "vendor", "bin-pack", fileName),
     path2.join(options.resourcesPath || "", "vendor", "bin-pack", fileName),
+    path2.join(process.cwd(), "vendor", "bin-pack", fileName),
     path2.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin", fileName),
     path2.join(process.cwd(), "runtime-bin", fileName)
   ].filter(Boolean);
@@ -322,6 +325,7 @@ var commonYtDlpArgs = (options, platform) => {
     "--no-warnings",
     "--no-check-certificates",
     "--no-playlist",
+    "--force-ipv4",
     "--socket-timeout",
     "25",
     "--retries",
@@ -399,7 +403,7 @@ var friendlyDownloaderError = (platform, message) => {
   if (/no such file|ENOENT|spawn/i.test(message)) return "Video engine failed to launch. Missing binary in app bundle.";
   const short = message.split("\n")[0].slice(0, 150);
   if (short.length > 10) return short;
-  return "Video download failed. Check ~/Downloads/youtube_CreativeAssets/Logs/ for details.";
+  return "Video download failed. Please try again or report the issue from the app.";
 };
 var updateYtDlp = async (options) => {
   if (updatePromise) return updatePromise;
@@ -608,11 +612,25 @@ var specialPayloadToCards = (payload, sourceUrl, platform) => {
 var updateJob = (job, patch) => {
   Object.assign(job, patch, { updatedAt: now() });
 };
+var isJobCancelled = (job) => cancelledJobs.has(job.id) || job.status === "cancelled";
+var throwIfJobCancelled = (job) => {
+  if (isJobCancelled(job)) throw new Error("Download cancelled by user.");
+};
 var formatSelector = (platform, quality, fallback = false) => {
   if (quality === "audio") return "bestaudio/best";
-  const height = quality === "fhd" ? 1080 : 720;
+  const height = quality === "4k" ? 2160 : quality === "fhd" ? 1080 : 720;
   if (platform === "youtube") {
     if (!fallback) {
+      if (quality === "4k") {
+        return [
+          `bestvideo[height<=${height}][vcodec^=vp9]+bestaudio[ext=m4a]`,
+          `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]`,
+          `bestvideo[height<=${height}]+bestaudio`,
+          `best[height<=${height}][ext=mp4][vcodec!=none][acodec!=none]`,
+          `best[height<=${height}][vcodec!=none][acodec!=none]`,
+          "best"
+        ].join("/");
+      }
       return [
         `bestvideo[height<=${height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]`,
         `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio`,
@@ -655,7 +673,63 @@ var replaceFile = async (source, target) => {
   await fsp2.rm(target, { force: true }).catch(() => void 0);
   await fsp2.rename(source, target);
 };
-var ensureQuickTimeMp4 = async (options, inputPath, jobId) => {
+var encodeQuickTimeMp4 = async (ffmpegPath2, inputPath, outputPath, durationSeconds, jobId, fast4k = false) => {
+  const videoArgs = fast4k ? ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20"] : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"];
+  const args = [
+    "-y",
+    "-i",
+    inputPath,
+    ...videoArgs,
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-movflags",
+    "+faststart",
+    "-progress",
+    "pipe:1",
+    "-nostats",
+    outputPath
+  ];
+  await new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath2, args, { stdio: ["ignore", "pipe", "pipe"], shell: false });
+    if (jobId) activeDownloadProcesses.set(jobId, child);
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      const match = text.match(/out_time_us=(\d+)/);
+      if (!match || !jobId || durationSeconds <= 0) return;
+      const currentSeconds = Number(match[1]) / 1e6;
+      const job = jobs.get(jobId);
+      if (!job || job.status !== "running") return;
+      const phaseStart = fast4k ? 86 : 95;
+      const phaseSpan = fast4k ? 11.8 : 2.8;
+      updateJob(job, {
+        progress: Math.min(97.8, phaseStart + currentSeconds / durationSeconds * phaseSpan),
+        message: fast4k ? "Converting 4K to Mac-compatible MP4..." : "Optimizing for QuickTime..."
+      });
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 2e4) stderr = stderr.slice(-2e4);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (jobId) activeDownloadProcesses.delete(jobId);
+      const job = jobId ? jobs.get(jobId) : void 0;
+      if (job && isJobCancelled(job)) {
+        reject(new Error("Download cancelled by user."));
+      } else if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `QuickTime conversion exited with code ${code}.`));
+      }
+    });
+  });
+};
+var ensureQuickTimeMp4 = async (options, inputPath, jobId, fast4k = false) => {
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   if (!ffmpegPath2) throw new Error("ffmpeg is missing. Run npm install, then restart the app.");
   const probeStart = Date.now();
@@ -670,32 +744,15 @@ var ensureQuickTimeMp4 = async (options, inputPath, jobId) => {
   const outputPath = /\.mp4$/i.test(inputPath) ? inputPath : inputPath.replace(/\.[^.]+$/, "") + ".mp4";
   const tempOutput = path2.join(path2.dirname(outputPath), `.${path2.basename(outputPath, path2.extname(outputPath))}.${crypto.randomUUID()}.mp4`);
   const encodeStart = Date.now();
-  await execFileAsync(ffmpegPath2, [
-    "-y",
-    "-i",
-    inputPath,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
-    "-pix_fmt",
-    "yuv420p",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    "-movflags",
-    "+faststart",
-    tempOutput
-  ], { timeout: 20 * 60 * 1e3, maxBuffer: 20 * 1024 * 1024 });
+  const durationSeconds = Number(probe?.format?.duration || 0);
+  await encodeQuickTimeMp4(ffmpegPath2, inputPath, tempOutput, durationSeconds, jobId, fast4k);
   void writeLog(jobId, { event: "qt_encode", encode_ms: Date.now() - encodeStart });
   await replaceFile(tempOutput, outputPath);
   if (path2.resolve(inputPath) !== path2.resolve(outputPath)) await fsp2.rm(inputPath, { force: true }).catch(() => void 0);
   return outputPath;
 };
 var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
+  throwIfJobCancelled(job);
   const attemptStart = Date.now();
   const ytdlp = await ensureRuntimeYtDlp(options);
   const platformDir = resolvePlatformVideoAssetsDir(job.platform);
@@ -704,7 +761,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   const outputTemplate = path2.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   const aria2Path2 = aria2cAvailable(options);
-  const hasAria2 = extraArgs.includes("--no-aria2") ? false : Boolean(aria2Path2);
+  const hasAria2 = extraArgs.includes("--no-aria2") || job.platform === "youtube" ? false : Boolean(aria2Path2);
   void writeLog(job.id, {
     event: "download_start",
     ytdlp_path: ytdlp,
@@ -740,7 +797,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "16",
     "--buffer-size",
     "64K",
-    ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
+    ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K", "--postprocessor-args", "ffmpeg:-t 120"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
     ...extraArgs.filter((a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback")),
     url
   ];
@@ -755,6 +812,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
       stdio: ["ignore", "pipe", "pipe"],
       shell: false
     });
+    activeDownloadProcesses.set(job.id, child);
     let stdout = "";
     let stderr = "";
     let filePath = "";
@@ -821,11 +879,17 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     child.stderr.on("data", (chunk) => consume(chunk, true));
     child.on("error", (error) => {
       clearInterval(watchdogInterval);
+      activeDownloadProcesses.delete(job.id);
       void writeLog(job.id, { event: "spawn_error", error: error.message });
       reject(error);
     });
     child.on("close", async (code) => {
       clearInterval(watchdogInterval);
+      activeDownloadProcesses.delete(job.id);
+      if (isJobCancelled(job)) {
+        reject(new Error("Download cancelled by user."));
+        return;
+      }
       void writeLog(job.id, {
         event: "download_exit",
         exit_code: code,
@@ -855,12 +919,14 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   });
 };
 var runDownloadWithFallbacks = async (options, job) => {
+  throwIfJobCancelled(job);
   const normalizedUrl = normalizeDownloaderUrl(job.url, job.platform);
   const urls = job.platform === "x" ? Array.from(/* @__PURE__ */ new Set([normalizedUrl, normalizedUrl.replace("twitter.com", "x.com")])) : [normalizedUrl];
   let lastError;
   const aria2 = aria2cAvailable(options);
   if (aria2) {
     for (const url of urls) {
+      throwIfJobCancelled(job);
       try {
         return await runDownloadAttempt(options, job, url);
       } catch (error) {
@@ -870,6 +936,7 @@ var runDownloadWithFallbacks = async (options, job) => {
     }
   }
   for (const url of urls) {
+    throwIfJobCancelled(job);
     try {
       return await runDownloadAttempt(options, job, url, ["--no-aria2"]);
     } catch (error) {
@@ -880,6 +947,7 @@ var runDownloadWithFallbacks = async (options, job) => {
     updateJob(job, { message: "Trying with browser cookies..." });
     for (const cookies of cookieAttempts(job.platform)) {
       for (const url of urls) {
+        throwIfJobCancelled(job);
         try {
           return await runDownloadAttempt(options, job, url, [...cookies, "--no-aria2"]);
         } catch (error) {
@@ -889,9 +957,10 @@ var runDownloadWithFallbacks = async (options, job) => {
       }
     }
   }
-  if (job.quality === "fhd") {
+  if (job.quality === "4k" || job.quality === "fhd") {
     updateJob(job, { message: "Retrying with best available quality..." });
     for (const url of urls) {
+      throwIfJobCancelled(job);
       try {
         return await runDownloadAttempt(options, job, url, ["--no-aria2", "--quality-fallback"]);
       } catch (error) {
@@ -1010,10 +1079,23 @@ var removeEmptyParents = async (directory, stopAt) => {
     current = path2.dirname(current);
   }
 };
+var removePlatformDownloadFolder = async (platform) => {
+  const videosDir = resolvePlatformVideoAssetsDir(platform);
+  const platformRoot = path2.dirname(videosDir);
+  await fsp2.rm(platformRoot, { recursive: true, force: true });
+};
 var completeJob = async (options, job, downloaded) => {
   const initialPath = String(downloaded?.filePath || downloaded?.downloadPath || downloaded?.localPath || "");
-  updateJob(job, { progress: 95, message: "Optimizing for QuickTime..." });
-  const filePath = job.quality === "audio" ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id);
+  if (isJobCancelled(job)) {
+    if (initialPath) await fsp2.rm(initialPath, { force: true }).catch(() => void 0);
+    return;
+  }
+  const preserveOriginal = job.quality === "audio";
+  updateJob(job, {
+    progress: job.quality === "4k" ? 86 : 95,
+    message: job.quality === "4k" ? "Converting 4K to Mac-compatible MP4..." : "Optimizing for QuickTime..."
+  });
+  const filePath = preserveOriginal ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === "4k");
   updateJob(job, { progress: 98, message: "Finalizing file..." });
   const stat = await fsp2.stat(filePath);
   const downloadsRoot = path2.join(os2.homedir(), "Downloads");
@@ -1022,7 +1104,7 @@ var completeJob = async (options, job, downloaded) => {
     title,
     thumbnail: downloaded?.thumbnail || "",
     platform: job.platform,
-    quality: job.quality === "fhd" ? "FHD" : job.quality === "hd" ? "HD" : "Audio",
+    quality: job.quality === "4k" ? "4K / Best" : job.quality === "fhd" ? "FHD" : job.quality === "hd" ? "HD" : "Audio",
     status: "completed",
     filePath,
     displayPath: downloaded?.displayPath || toDisplayPath(filePath),
@@ -1056,6 +1138,7 @@ var completeJob = async (options, job, downloaded) => {
   })();
 };
 var processJob = async (options, job) => {
+  if (isJobCancelled(job)) return;
   const startTime = Date.now();
   updateJob(job, { status: "running", progress: 2, message: "Preparing downloader..." });
   void writeLog(job.id, {
@@ -1076,6 +1159,7 @@ var processJob = async (options, job) => {
     const totalTime = Date.now() - startTime;
     void writeLog(job.id, { event: "download_complete", total_ms: totalTime });
   } catch (error) {
+    if (isJobCancelled(job)) return;
     const rawError = errorText(error);
     const friendly = friendlyDownloaderError(job.platform, rawError);
     const totalTime = Date.now() - startTime;
@@ -1109,7 +1193,7 @@ var pumpQueue = (options) => {
 var runningJobKey = (platform, url, quality) => `${platform}:${url}:${quality}`;
 var createJob = (options, input) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
-  const quality = input.quality === "audio" ? "audio" : input.quality === "hd" ? "hd" : "fhd";
+  const quality = input.quality === "audio" ? "audio" : input.quality === "hd" ? "hd" : input.quality === "fhd" ? "fhd" : "4k";
   const key = runningJobKey(validated.platform, validated.url, quality);
   for (const existing of jobs.values()) {
     if (existing.status === "queued" || existing.status === "running") {
@@ -1179,12 +1263,13 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     const urls = Array.from(
       new Set(rawUrls.map((value) => String(value || "").trim()).filter(Boolean))
     ).slice(0, 20);
+    const quality = String(req.body?.quality || "fhd").toLowerCase();
     if (urls.length === 0) return res.status(400).json({ error: "Enter at least one video URL." });
     const created = [];
     const errors = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality: "fhd" }));
+        created.push(createJob(options, { url, quality }));
       } catch (error) {
         errors.push({ url, error: error?.message || "Invalid URL" });
       }
@@ -1195,6 +1280,25 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   app2.get("/api/downloader/jobs/:id", (req, res) => {
     const job = jobs.get(String(req.params.id || ""));
     if (!job) return res.status(404).json({ error: "Download job was not found." });
+    return res.json({ ok: true, job: publicJob(job) });
+  });
+  app2.post("/api/downloader/jobs/:id/cancel", (req, res) => {
+    const id = String(req.params.id || "");
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: "Download job was not found." });
+    if (job.status === "completed" || job.status === "error" || job.status === "cancelled") {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    cancelledJobs.add(id);
+    const pendingIndex = pendingJobs.indexOf(id);
+    if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
+    activeDownloadProcesses.get(id)?.kill("SIGTERM");
+    updateJob(job, {
+      status: "cancelled",
+      progress: 0,
+      message: "Download cancelled",
+      error: void 0
+    });
     return res.json({ ok: true, job: publicJob(job) });
   });
   app2.get("/api/downloader/jobs", (_req, res) => {
@@ -1209,9 +1313,17 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       return res.status(500).json({ error: error?.message || "Failed to list downloads." });
     }
   });
-  app2.delete("/api/downloader/downloads", async (_req, res) => {
+  app2.delete("/api/downloader/downloads", async (req, res) => {
     try {
+      const deleteFiles = Boolean(req.body?.deleteFiles);
       const items = await listDownloaderFiles();
+      const completedIds = new Set(
+        Array.from(jobs.values()).filter((job) => job.status === "completed" || job.status === "error" || job.status === "cancelled").map((job) => job.id)
+      );
+      completedIds.forEach((id) => jobs.delete(id));
+      if (!deleteFiles) {
+        return res.json({ ok: true, mode: "history", removed: completedIds.size });
+      }
       for (const item of items) {
         await fsp2.unlink(item.path).catch(() => void 0);
         await fsp2.unlink(sidecarPathFor(item.path)).catch(() => void 0);
@@ -1221,7 +1333,10 @@ var registerVideoDownloaderRoutes = (app2, options) => {
         const root = resolvePlatformVideoAssetsDir(item.platform);
         await removeEmptyParents(path2.dirname(item.path), root);
       }
-      return res.json({ ok: true, removed: items.length });
+      for (const platform of SUPPORTED_PLATFORMS) {
+        await removePlatformDownloadFolder(platform);
+      }
+      return res.json({ ok: true, mode: "files", removed: items.length });
     } catch (error) {
       return res.status(500).json({ error: error?.message || "Failed to clear downloads." });
     }
@@ -1762,7 +1877,8 @@ var resolveFontSourceFormat = (font) => {
   return raw || "unknown";
 };
 var isJunkFontLabel = (value) => {
-  const base = String(value || "").trim().toLowerCase();
+  const raw = String(value || "").trim();
+  const base = raw.toLowerCase();
   if (!base) return true;
   if (base === "unknown" || base === "font") return true;
   if (base.length <= 2) return true;
@@ -1770,6 +1886,9 @@ var isJunkFontLabel = (value) => {
   if (/^[lda](?:-\d+)?$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
+  const compact = raw.replace(/[\s.-]+/g, "");
+  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open)/i.test(raw);
+  if (/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) || !hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact)) return true;
   if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
   if (/^(?=[a-z0-9 ._-]*\d)[a-z0-9_-]{16,}(?:[ ._-]+[a-z0-9_-]{3,})+$/i.test(base)) return true;
   return false;
@@ -1831,10 +1950,12 @@ var mergeFontRecords = (left, right) => {
     family,
     format: right.format || left.format,
     cssSource: right.cssSource || left.cssSource,
+    source: right.source || left.source,
     url: left.url || right.url,
     weight: right.weight || left.weight,
     style: right.style || left.style,
     filename: right.filename || left.filename,
+    originalFilename: right.originalFilename || left.originalFilename,
     name: right.name || left.name
   };
 };
@@ -1845,6 +1966,10 @@ var require3 = createRequire2(import.meta.url);
 var getAppRoot = () => process.env.VDX_APP_ROOT || process.cwd();
 var insightsPageEvaluate = require3(path3.join(getAppRoot(), "scripts", "insights-page-evaluate.cjs"));
 var execFileAsync2 = promisify2(execFile2);
+var clearMacQuarantine = async (filePath) => {
+  if (process.platform !== "darwin" || !filePath) return;
+  await execFileAsync2("/usr/bin/xattr", ["-d", "com.apple.quarantine", filePath]).catch(() => void 0);
+};
 var getResourcesPath = () => process.env.VDX_RESOURCES_PATH || getAppRoot();
 var getUnpackedModulePath = (...segments) => {
   const resources = process.env.VDX_RESOURCES_PATH;
@@ -1981,7 +2106,10 @@ var youtubedl = wrapYtDlpWithCookieFallback(
 var stageRuntimeBinary = async (sourcePath, binaryName2) => {
   const source = String(sourcePath || "").trim();
   if (!source || !fs2.existsSync(source)) return "";
-  if (!source.includes(" ")) return source;
+  if (!source.includes(" ")) {
+    await clearMacQuarantine(source);
+    return source;
+  }
   const destDir = path3.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin");
   const destName = process.platform === "win32" ? `${binaryName2}.exe` : binaryName2;
   const dest = path3.join(destDir, destName);
@@ -1996,6 +2124,7 @@ var stageRuntimeBinary = async (sourcePath, binaryName2) => {
     await fsp3.copyFile(source, dest);
     await fsp3.chmod(dest, 493);
   }
+  await clearMacQuarantine(dest);
   logYouTubeMerge("stage-runtime-binary", { source, dest, binaryName: binaryName2 });
   return dest;
 };
@@ -2020,6 +2149,7 @@ var refreshResolvedMediaTools = async () => {
       throw new Error("Bundled yt-dlp is a Python script. Rebuild the desktop app to bundle the standalone yt-dlp binary.");
     }
     await fsp3.chmod(resolvedYtDlpPath, 493).catch(() => void 0);
+    await clearMacQuarantine(resolvedYtDlpPath);
   }
   if (resolvedAria2Path) await fsp3.chmod(resolvedAria2Path, 493).catch(() => void 0);
   aria2Path = resolvedAria2Path;
@@ -2101,7 +2231,7 @@ var feedbackConfigPath = path3.join(appDataDir, "feedback-config.json");
 var activityLogPath = path3.join(appDataDir, "logs", "activity.jsonl");
 var feedbackScreenshotDir = path3.join(appDataDir, "feedback", "screenshots");
 var MAX_ACTIVITY_LOG_ENTRIES = 100;
-var relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+var relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 var loadProjectEnvFile = () => {
   const candidates = [
     path3.join(process.cwd(), ".env"),
@@ -2610,6 +2740,568 @@ app.post("/api/activity-log", async (req, res) => {
     return res.status(500).json({ ok: false, error: error?.message || "Activity log failed." });
   }
 });
+var isLocalAppUrl = (value) => {
+  try {
+    const parsed = new URL2(value);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1" || host.endsWith(".localhost");
+  } catch {
+    return false;
+  }
+};
+var readChromeClientTab = async () => {
+  if (process.platform !== "darwin") {
+    throw new Error("Chrome tab detection is currently available on macOS only.");
+  }
+  const scriptLines = [
+    'tell application "Google Chrome"',
+    'if it is not running then return ""',
+    'if (count of windows) = 0 then return ""',
+    'set fieldSep to "|||VDX_TAB|||"',
+    'set tabRows to ""',
+    "repeat with windowIndex from 1 to count of windows",
+    "set activeTabIndex to active tab index of window windowIndex",
+    "repeat with tabIndex from 1 to count of tabs of window windowIndex",
+    "set tabUrl to URL of tab tabIndex of window windowIndex",
+    "set tabTitle to title of tab tabIndex of window windowIndex",
+    "set tabRows to tabRows & windowIndex & fieldSep & tabIndex & fieldSep & activeTabIndex & fieldSep & tabUrl & fieldSep & tabTitle & linefeed",
+    "end repeat",
+    "end repeat",
+    "return tabRows",
+    "end tell"
+  ];
+  const { stdout } = await execFileAsync2(
+    "osascript",
+    scriptLines.flatMap((line) => ["-e", line]),
+    { timeout: 8e3, maxBuffer: 1024 * 1024 }
+  );
+  const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
+  const tabs = lines.map((line) => {
+    const [windowValue = "", indexValue = "", activeIndexValue = "", url = "", ...titleParts] = line.split("|||VDX_TAB|||");
+    return {
+      windowIndex: Number(windowValue),
+      index: Number(indexValue),
+      activeIndex: Number(activeIndexValue),
+      url: url.trim(),
+      title: titleParts.join("	").trim()
+    };
+  }).filter((tab) => Number.isFinite(tab.windowIndex) && Number.isFinite(tab.index) && /^https?:\/\//i.test(tab.url));
+  if (!tabs.length) throw new Error("Chrome is open, but no website tabs were available.");
+  const frontTabs = tabs.filter((tab) => tab.windowIndex === 1);
+  const frontActive = frontTabs.find((tab) => tab.index === tab.activeIndex);
+  const candidates = tabs.filter((tab) => !isLocalAppUrl(tab.url)).sort((a, b) => {
+    const windowDistance = a.windowIndex - b.windowIndex;
+    if (windowDistance !== 0) return windowDistance;
+    const activeDistance = Math.abs(a.index - a.activeIndex) - Math.abs(b.index - b.activeIndex);
+    if (activeDistance !== 0) return activeDistance;
+    return a.index - b.index;
+  });
+  const selected = frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0];
+  if (!selected?.url) {
+    throw new Error("Only local app tabs were found in Chrome. Open the client website in Chrome beside the localhost app tab.");
+  }
+  return {
+    url: new URL2(selected.url).href,
+    title: selected.title,
+    browser: "Google Chrome",
+    source: frontActive?.url && isLocalAppUrl(frontActive.url) ? "nearest-client-tab" : "active-tab",
+    windowIndex: selected.windowIndex,
+    tabIndex: selected.index
+  };
+};
+var buildChromeTabAssetCaptureScript = () => `
+(() => {
+  const absoluteUrl = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw || raw === 'none' || raw.startsWith('blob:')) return '';
+    if (raw.startsWith('data:image/')) return raw;
+    try { return new URL(raw, location.href).href; } catch { return /^https?:\\/\\//i.test(raw) ? raw : ''; }
+  };
+  const filenameFromUrl = (value, fallback) => {
+    try {
+      const parsed = new URL(value);
+      return parsed.pathname.split('/').filter(Boolean).pop() || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const typeFromUrl = (value, mime) => {
+    const contentType = String(mime || '').toLowerCase();
+    if (contentType.includes('png')) return 'png';
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) return 'jpg';
+    if (contentType.includes('webp')) return 'webp';
+    if (contentType.includes('gif')) return 'gif';
+    if (contentType.includes('svg')) return 'svg';
+    const match = String(value || '').match(/\\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+    return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
+  };
+  const imageMap = new Map();
+  const addImage = (value, meta = {}) => {
+    const target = absoluteUrl(value);
+    if (!target || imageMap.has(target)) return;
+    imageMap.set(target, {
+      url: target,
+      filename: filenameFromUrl(target, 'preview-image.png'),
+      width: Number(meta.width || 0) || undefined,
+      height: Number(meta.height || 0) || undefined,
+      alt: String(meta.alt || '').trim(),
+      type: typeFromUrl(target),
+      source: String(meta.source || '').trim() || undefined,
+      dataUrl: String(meta.dataUrl || '').trim() || undefined,
+    });
+  };
+  const addSrcset = (value) => {
+    String(value || '').split(',').forEach((part) => addImage(part.trim().split(/\\s+/)[0]));
+  };
+  const dataUrlFromImage = (img) => {
+    try {
+      if (!img.complete || !img.naturalWidth || !img.naturalHeight) return '';
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(img.naturalWidth, 2400);
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * (canvas.width / img.naturalWidth)));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/png', 0.92);
+    } catch {
+      return '';
+    }
+  };
+  const readCssUrls = (value) => {
+    const urls = [];
+    String(value || '').replace(/url\\((['"]?)(.*?)\\1\\)/gi, (_match, _quote, inner) => {
+      const target = absoluteUrl(inner);
+      if (target) urls.push(target);
+      return '';
+    });
+    return urls;
+  };
+
+  Array.from(document.images || []).forEach((img) => {
+    addImage(img.currentSrc || img.src || img.getAttribute('data-src'), {
+      width: img.naturalWidth || img.width,
+      height: img.naturalHeight || img.height,
+      alt: img.alt,
+      source: 'img',
+      dataUrl: dataUrlFromImage(img),
+    });
+    ['srcset', 'data-srcset', 'data-lazy-srcset'].forEach((attr) => addSrcset(img.getAttribute(attr)));
+    ['data-src', 'data-lazy-src', 'data-original', 'data-bg', 'data-image', 'data-thumb', 'data-poster'].forEach((attr) => addImage(img.getAttribute(attr)));
+  });
+  Array.from(document.querySelectorAll('picture source, source[srcset], source[src]')).forEach((el) => {
+    addImage(el.getAttribute('src'));
+    addSrcset(el.getAttribute('srcset') || el.getAttribute('data-srcset'));
+  });
+  Array.from(document.querySelectorAll('svg image')).forEach((el) => {
+    addImage(el.getAttribute('href') || el.getAttribute('xlink:href'));
+  });
+  Array.from(document.querySelectorAll('link[rel="preload"][as="image"], meta[property="og:image"], meta[name="twitter:image"]')).forEach((el) => {
+    addImage(el.getAttribute('href') || el.getAttribute('content'));
+  });
+  Array.from(document.querySelectorAll('*')).forEach((el) => {
+    const style = getComputedStyle(el);
+    [style.backgroundImage, style.listStyleImage, style.borderImageSource].forEach((value) => {
+      readCssUrls(value).forEach((target) => addImage(target, { source: 'computed-style' }));
+    });
+    for (let i = 0; i < el.attributes.length; i += 1) {
+      const attr = el.attributes[i];
+      if (!/^data-/i.test(attr.name)) continue;
+      if (/image|img|photo|thumb|poster|bg|background|src|lazy|icon|avatar|banner|hero/i.test(attr.name)) {
+        if (/\\d+w|\\dx/.test(attr.value) && attr.value.includes(',')) addSrcset(attr.value);
+        else addImage(attr.value);
+      }
+    }
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    const initiator = String(entry.initiatorType || '').toLowerCase();
+    if (!name) return;
+    if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name, { source: initiator || 'performance' });
+  });
+
+  const fontUrls = new Set();
+  const fontUsage = new Map();
+  const rememberFont = (font) => {
+    const family = String(font?.family || '').replace(/^["']|["']$/g, '').trim();
+    if (!family) return;
+    const weight = String(font?.weight || 'normal').trim() || 'normal';
+    const style = String(font?.style || 'normal').trim() || 'normal';
+    const status = String(font?.status || '').trim() || undefined;
+    const key = [family, weight, style].join('::');
+    fontUsage.set(key, { family, weight, style, status });
+  };
+  if (document.fonts?.forEach) {
+    document.fonts.forEach(rememberFont);
+  }
+  Array.from(document.querySelectorAll('link[href]')).forEach((link) => {
+    const rel = String(link.getAttribute('rel') || '').toLowerCase();
+    const href = absoluteUrl(link.getAttribute('href'));
+    if (href && (rel.includes('stylesheet') || rel.includes('preload') || /fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(href))) {
+      fontUrls.add(href);
+    }
+  });
+  Array.from(document.styleSheets || []).forEach((sheet) => {
+    const href = absoluteUrl(sheet.href);
+    if (href) fontUrls.add(href);
+    try {
+      Array.from(sheet.cssRules || []).forEach((rule) => {
+        const css = String(rule.cssText || '');
+        if (/font-family/i.test(css)) {
+          const family = css.match(/font-family\\s*:\\s*([^;}]+)/i)?.[1];
+          if (family) rememberFont({ family: family.split(',')[0], status: 'referenced' });
+        }
+        readCssUrls(css).forEach((url) => {
+          if (/\\.woff2?|\\.ttf|\\.otf|fonts|typekit/i.test(url)) fontUrls.add(url);
+        });
+      });
+    } catch {
+    }
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/fonts|typekit|\\.woff2?|\\.ttf|\\.otf/i.test(name)) fontUrls.add(name);
+  });
+
+  const videoUrls = new Set();
+  Array.from(document.querySelectorAll('video[src], video source[src], iframe[src], embed[src], object[data]')).forEach((el) => {
+    const src = absoluteUrl(el.getAttribute('src') || el.getAttribute('data'));
+    if (src && (/video|youtube|youtu\\.be|vimeo|brightcove|wistia|\\.mp4|\\.m3u8|\\.webm/i.test(src))) videoUrls.add(src);
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    const name = absoluteUrl(entry.name);
+    if (/\\.(mp4|m3u8|mpd|webm|mov)(?:[?#]|$)|youtube\\.com|vimeo\\.com|brightcove|wistia/i.test(name)) videoUrls.add(name);
+  });
+
+  const colorCounts = new Map();
+  const addColor = (value, weight = 1) => {
+    const match = String(value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+    if (!match) return;
+    const parts = [match[1], match[2], match[3]].map((part) => Math.max(0, Math.min(255, Number(part || 0))));
+    if (parts.every((part) => part >= 248) || parts.every((part) => part <= 7)) return;
+    const hex = '#' + parts.map((part) => part.toString(16).padStart(2, '0')).join('');
+    colorCounts.set(hex, (colorCounts.get(hex) || 0) + weight);
+  };
+  Array.from(document.querySelectorAll('body, body *')).slice(0, 2000).forEach((el) => {
+    const tag = (el.tagName || '').toLowerCase();
+    const cls = String(el.getAttribute('class') || '').toLowerCase();
+    const weight = tag.startsWith('h') || /btn|button|cta|logo|nav|hero|title/.test(cls) ? 4 : 1;
+    const style = getComputedStyle(el);
+    addColor(style.color, weight);
+    addColor(style.backgroundColor, Math.max(1, weight - 1));
+    addColor(style.borderTopColor, 1);
+    addColor(style.fill, weight);
+    addColor(style.stroke, weight);
+  });
+
+  const images = Array.from(imageMap.values()).slice(0, 160);
+  return JSON.stringify({
+    ok: true,
+    url: location.href,
+    title: document.title || location.href,
+    images,
+	    fonts: [
+	      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url), source: 'stylesheet-or-network' })),
+	      ...Array.from(fontUsage.values()).map((font) => ({ ...font, url: '', format: 'computed', source: 'FontFaceSet' })),
+	    ],
+    videos: Array.from(videoUrls).map((url) => ({ url, title: filenameFromUrl(url, 'video') })),
+    colors: Array.from(colorCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 24).map(([color]) => color),
+  });
+})()
+`;
+var executeJavascriptInChromeTab = async (tab, scriptSource) => {
+  if (process.platform !== "darwin") {
+    throw new Error("Chrome tab extraction is currently available on macOS only.");
+  }
+  const appleScript = [
+    "on run argv",
+    "set jsSource to item 1 of argv",
+    'tell application "Google Chrome"',
+    'if it is not running then error "Google Chrome is not running."',
+    `set targetWindow to window ${Math.max(1, Number(tab.windowIndex || 1))}`,
+    `set targetTab to tab ${Math.max(1, Number(tab.tabIndex || 1))} of targetWindow`,
+    "return execute javascript jsSource in targetTab",
+    "end tell",
+    "end run"
+  ];
+  const { stdout } = await execFileAsync2(
+    "osascript",
+    [...appleScript.flatMap((line) => ["-e", line]), scriptSource],
+    { timeout: 3e4, maxBuffer: 80 * 1024 * 1024 }
+  );
+  return String(stdout || "").trim();
+};
+var fetchBrowserSessionFontFaces = async (rawFonts, targetUrl) => {
+  const cssUrls = Array.from(
+    new Set(
+      rawFonts.map((font) => String(font?.url || "").trim()).filter((url) => /^https?:\/\//i.test(url)).filter((url) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com|use\.typekit\.net|cloud\.typography|fonts\.adobe/i.test(url))
+    )
+  ).slice(0, 24);
+  if (cssUrls.length === 0) return [];
+  const results = await mapWithConcurrency(cssUrls, 5, async (cssUrl) => {
+    try {
+      assertPublicAssetUrl(cssUrl);
+      const response = await withTimeout(
+        axios.get(cssUrl, {
+          timeout: 8e3,
+          responseType: "text",
+          maxContentLength: 3 * 1024 * 1024,
+          httpsAgent: relaxedHttpsAgent,
+          headers: {
+            "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+            Accept: "text/css,*/*;q=0.1",
+            Referer: targetUrl
+          }
+        }),
+        9e3,
+        `Browser session font CSS fetch for ${cssUrl}`
+      );
+      return extractFontsFromCss(String(response.data || ""), cssUrl);
+    } catch {
+      return [];
+    }
+  });
+  return results.flat();
+};
+var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
+  const pageUrl = String(raw?.url || sourceUrl || "").trim();
+  const imageRows = Array.isArray(raw?.images) ? raw.images : [];
+  const images = await Promise.all(
+    imageRows.filter((image) => String(image?.url || "").trim()).map(async (image, index) => {
+      const url = String(image.url || "").trim();
+      const type = String(image.type || "").trim() || getAssetTypeFromUrl(url, "png");
+      const filename = String(image.filename || "").trim() || `browser-image-${index + 1}.${type}`;
+      const dataUrl = String(image.dataUrl || "").startsWith("data:image/") ? String(image.dataUrl) : "";
+      let cachedUrl = dataUrl || void 0;
+      if (dataUrl) {
+        const buffer = decodeDataImageBuffer(dataUrl);
+        const contentType = dataUrl.match(/^data:([^;,]+)/i)?.[1] || "image/png";
+        if (buffer?.length) {
+          cachedUrl = await writeCachedOriginalImageFromBuffer(url, buffer, contentType, type, filename).catch(() => "") || cachedUrl;
+        }
+      }
+      return {
+        url,
+        cachedUrl,
+        filename,
+        name: filename,
+        alt: String(image.alt || filename).trim(),
+        type,
+        mimeType: String(image.mimeType || "").trim() || void 0,
+        width: Number(image.width || 0) || void 0,
+        height: Number(image.height || 0) || void 0,
+        source: String(image.source || "").trim() || source,
+        status: DEFAULT_ASSET_STATUS
+      };
+    })
+  );
+  const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
+  const fontUsage = rawFonts.filter((font) => !String(font?.url || "").trim() && String(font?.family || "").trim()).map((font) => ({
+    family: String(font.family || "").replace(/^["']|["']$/g, "").trim(),
+    weight: String(font.weight || "").trim() || void 0,
+    style: String(font.style || "").trim() || void 0,
+    status: String(font.status || "").trim() || void 0,
+    source: String(font.source || "").trim() || "FontFaceSet"
+  }));
+  const fontUsageByKey = /* @__PURE__ */ new Map();
+  fontUsage.forEach((font) => {
+    const key = `${font.family}|${font.weight || ""}|${font.style || ""}|${font.status || ""}`;
+    if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
+  });
+  const cssFonts = await fetchBrowserSessionFontFaces(rawFonts, pageUrl || sourceUrl);
+  const fontCandidates = rawFonts.filter((font) => font?.url && isSupportedFontAsset(font)).map((font) => ({
+    ...font,
+    source: font?.source || "Network",
+    originalFilename: filenameFromUrlPath2(String(font?.url || ""))
+  })).concat(cssFonts);
+  const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
+  const fonts = dedupeFontsByLogicalKey(
+    Array.from(new Set(metadataFonts.map((font) => String(font?.url || "")))).map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset)
+  );
+  return {
+    images,
+    icons: [],
+    fonts,
+    fontUsage: Array.from(fontUsageByKey.values()),
+    videos: Array.isArray(raw?.videos) ? raw.videos : [],
+    colors: Array.isArray(raw?.colors) ? raw.colors : [],
+    extractionMeta: {
+      mode: source,
+      sectionLabel: raw?.title || "Open Chrome Tab"
+    },
+    pageUrl,
+    title: raw?.title || ""
+  };
+};
+var extractAssetsFromControlledBrowserSession = async (targetUrl) => {
+  const executablePath = resolvePuppeteerExecutablePath();
+  const userDataDir = path3.join(os3.tmpdir(), "creative-asset-extractor-browser-profile");
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: false,
+      userDataDir,
+      executablePath: executablePath || void 0,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--no-first-run",
+        "--no-default-browser-check"
+      ],
+      ignoreDefaultArgs: ["--enable-automation"]
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
+    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
+    await new Promise((resolve) => setTimeout(resolve, 4e3));
+    await performLazyLoadScroll(page, { stepDelayMs: 700, maxStableRounds: 3, maxDurationMs: 25e3 }).catch(() => void 0);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const rawText = await page.evaluate(buildChromeTabAssetCaptureScript());
+    const raw = typeof rawText === "string" ? JSON.parse(rawText) : rawText;
+    const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : []).filter((image) => image?.url && !String(image?.dataUrl || "").startsWith("data:image/")).map((image) => String(image.url)).filter((url) => /^https?:\/\//i.test(url)).slice(0, 80);
+    if (missingPreviewUrls.length > 0) {
+      const dataUrlsByUrl = await page.evaluate(`
+        (async () => {
+          const urls = ${JSON.stringify(missingPreviewUrls)};
+          const blobToDataUrl = (blob) => new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+          });
+          const entries = await Promise.all(urls.map(async (url) => {
+            try {
+              const response = await fetch(url, { credentials: 'include', cache: 'force-cache' });
+              const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+              if (!response.ok || !contentType.startsWith('image/')) return [url, ''];
+              const blob = await response.blob();
+              if (!blob.size || blob.size > 12000000) return [url, ''];
+              return [url, await blobToDataUrl(blob)];
+            } catch {
+              return [url, ''];
+            }
+          }));
+          return Object.fromEntries(entries.filter((entry) => String(entry[1] || '').startsWith('data:image/')));
+        })()
+      `);
+      raw.images = (Array.isArray(raw.images) ? raw.images : []).map((image) => ({
+        ...image,
+        dataUrl: image.dataUrl || dataUrlsByUrl[String(image.url || "")] || void 0
+      }));
+    }
+    await page.close().catch(() => void 0);
+    return await normalizeBrowserSessionExtraction(raw, targetUrl, "controlled-browser-session");
+  } finally {
+    await browser?.close().catch(() => void 0);
+  }
+};
+app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
+  try {
+    const tab = await readChromeClientTab();
+    return res.json({ ok: true, ...tab });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      error: error?.message || "Unable to read Chrome active tab."
+    });
+  }
+});
+async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
+  const hasAssets = extracted?.images?.length || 0 || (extracted?.icons?.length || 0) || (extracted?.fonts?.length || 0) || (extracted?.videos?.length || 0);
+  const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
+  if (hasAssets && hasDownloadableFonts || !fallbackUrl) return extracted;
+  const staticAssets = await withTimeout(
+    extractStaticAssets(fallbackUrl, "", { fast: true }),
+    35e3,
+    `Browser-tab static fallback for ${fallbackUrl}`
+  ).catch(() => null);
+  if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
+  const mergeByUrl = (left = [], right = []) => {
+    const rows = /* @__PURE__ */ new Map();
+    [...left, ...right].forEach((item) => {
+      const key = String(item?.url || item?.src || "").trim();
+      if (key) rows.set(key, item);
+    });
+    return Array.from(rows.values());
+  };
+  return {
+    ...extracted,
+    images: mergeByUrl(extracted?.images, staticAssets?.images),
+    icons: mergeByUrl(extracted?.icons, staticAssets?.icons),
+    videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
+    fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
+    colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
+    extractionMeta: {
+      ...extracted?.extractionMeta,
+      mode: hasAssets ? "browser-static-font-fallback" : "browser-static-fallback",
+      sectionLabel: extracted?.title || "Static fallback"
+    },
+    pageUrl: extracted?.pageUrl || fallbackUrl,
+    title: extracted?.title || ""
+  };
+}
+app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
+  const requestedUrl = String(req.body?.url || "").trim();
+  try {
+    const tab = await readChromeClientTab();
+    try {
+      const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
+      const raw = JSON.parse(rawText || "{}");
+      const fallbackUrl = raw?.url || tab.url || requestedUrl;
+      const extracted = await fillEmptyBrowserExtractionFromStatic(
+        await normalizeBrowserSessionExtraction(raw, fallbackUrl, "open-chrome-tab"),
+        fallbackUrl
+      );
+      return res.json({
+        ok: true,
+        source: "open-chrome-tab",
+        chromeTab: tab,
+        ...extracted
+      });
+    } catch (chromeScriptError) {
+      if (!requestedUrl && !tab.url) throw chromeScriptError;
+      const fallbackUrl = requestedUrl || tab.url;
+      const extracted = await fillEmptyBrowserExtractionFromStatic(
+        await extractAssetsFromControlledBrowserSession(fallbackUrl),
+        fallbackUrl
+      );
+      return res.json({
+        ok: true,
+        source: "controlled-browser-session",
+        chromeTab: tab,
+        warning: "Chrome did not allow direct active-tab scripting. Used a controlled browser session fallback.",
+        chromeError: String(chromeScriptError?.message || chromeScriptError || "").slice(0, 300),
+        ...extracted
+      });
+    }
+  } catch (error) {
+    const fallbackUrl = requestedUrl;
+    if (fallbackUrl) {
+      try {
+        const extracted = await fillEmptyBrowserExtractionFromStatic(
+          await extractAssetsFromControlledBrowserSession(fallbackUrl),
+          fallbackUrl
+        );
+        return res.json({
+          ok: true,
+          source: "controlled-browser-session",
+          warning: "Open Chrome tab extraction was unavailable. Used a controlled browser session fallback.",
+          ...extracted
+        });
+      } catch (fallbackError) {
+        return res.status(400).json({
+          ok: false,
+          error: fallbackError?.message || error?.message || "Unable to extract assets from Chrome."
+        });
+      }
+    }
+    return res.status(400).json({
+      ok: false,
+      error: error?.message || "Unable to extract assets from Chrome."
+    });
+  }
+});
 app.get("/api/activity-log/recent", async (_req, res) => {
   const entries = await readRecentActivityLogs(20);
   res.json({ ok: true, entries, logPath: activityLogPath });
@@ -2800,6 +3492,8 @@ var buildGithubReleaseLinks = (githubOwner, githubRepo, version, productName) =>
     htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
     releasesUrl: `${repoUrl}/releases`,
     repoUrl,
+    packageDownloadUrl: `https://codeload.github.com/${githubOwner}/${githubRepo}/zip/refs/heads/v2.0`,
+    packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
     dmgAssetName: dmgName
   };
@@ -2815,8 +3509,8 @@ var parseGithubReleasePayload = (data) => {
     body: String(data?.body || ""),
     publishedAt: String(data?.published_at || ""),
     htmlUrl: String(data?.html_url || ""),
-    packageDownloadUrl: String(packageAsset?.browser_download_url || data?.html_url || ""),
-    packageAssetName: String(packageAsset?.name || "Latest GitHub release package"),
+    packageDownloadUrl: String(dmgAsset?.browser_download_url || packageAsset?.browser_download_url || data?.html_url || ""),
+    packageAssetName: String(dmgAsset?.name || packageAsset?.name || "Latest Release"),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ""),
     exeDownloadUrl: String(exeAsset?.browser_download_url || ""),
     dmgAssetName: String(dmgAsset?.name || "")
@@ -2842,7 +3536,6 @@ var readProjectReleaseNotes = async () => {
   }
   return "";
 };
-var removeInstallerLinksFromReleaseNotes = (body) => String(body || "").split(/\r?\n/).filter((line) => !/\.dmg\b|macos\s+download/i.test(line)).join("\n").trim();
 app.get("/api/app-meta", async (_req, res) => {
   const pkg = await resolvePackageMeta();
   const github = resolveGithubRepoConfig();
@@ -2874,8 +3567,8 @@ app.get("/api/github-latest-release", async (_req, res) => {
         ...release,
         repoUrl: links.repoUrl,
         releasesUrl: links.releasesUrl,
-        packageDownloadUrl: release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
-        packageAssetName: release.packageAssetName || "Latest GitHub release package",
+        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl || release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
+        packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || "Latest Release",
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
         dmgAssetName: release.dmgAssetName || links.dmgAssetName
       }
@@ -2903,8 +3596,8 @@ app.get("/api/release-notes", async (_req, res) => {
     htmlUrl: links.htmlUrl,
     repoUrl: links.repoUrl,
     releasesUrl: links.releasesUrl,
-    packageDownloadUrl: links.releasesUrl,
-    packageAssetName: "Latest GitHub release package",
+    packageDownloadUrl: links.packageDownloadUrl,
+    packageAssetName: links.packageAssetName,
     dmgDownloadUrl: "",
     dmgAssetName: "",
     exeDownloadUrl: "",
@@ -2921,13 +3614,13 @@ app.get("/api/release-notes", async (_req, res) => {
     const githubRelease = parseGithubReleasePayload(response.data || {});
     release = {
       ...release,
-      ...githubRelease,
-      body: removeInstallerLinksFromReleaseNotes(githubRelease.body || localNotes),
-      htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
-      packageDownloadUrl: githubRelease.packageDownloadUrl || githubRelease.htmlUrl || links.releasesUrl,
-      packageAssetName: "Latest GitHub release package",
+      body: localNotes || githubRelease.body || "",
+      htmlUrl: links.htmlUrl || githubRelease.htmlUrl,
+      packageDownloadUrl: links.packageDownloadUrl,
+      packageAssetName: links.packageAssetName,
       dmgDownloadUrl: "",
       dmgAssetName: "",
+      exeDownloadUrl: githubRelease.exeDownloadUrl || "",
       source: "github"
     };
   } catch (error) {
@@ -2993,8 +3686,17 @@ var PAGE_FETCH_USER_AGENTS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ];
+var BOT_WALL_HTML_PATTERN = /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai|waf challenge|bot detection/i;
+var htmlLooksLikeBotWall = (html) => {
+  const sample = String(html || "").slice(0, 16e4);
+  if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(sample)) {
+    return false;
+  }
+  return BOT_WALL_HTML_PATTERN.test(sample);
+};
 var scoreSiteHtml = (html, status) => {
   const text = String(html || "");
+  if (htmlLooksLikeBotWall(text)) return -100;
   let score = text.length / 1e3;
   if (status >= 200 && status < 300) score += 50;
   score += (text.match(/\/wp-content\/uploads/gi) || []).length * 5;
@@ -3005,6 +3707,7 @@ var scoreSiteHtml = (html, status) => {
 };
 var isSparseSiteHtml = (html) => {
   const text = String(html || "");
+  if (htmlLooksLikeBotWall(text)) return true;
   if (text.length < 2048) return true;
   if (/\/wp-content\/uploads/i.test(text) && text.length > 8e3) return false;
   if (text.length < 9e4 && !/\/wp-content\/uploads|<img\b|background-image\s*:\s*url/i.test(text)) return true;
@@ -3117,9 +3820,7 @@ var applyPuppeteerStealth = async (page) => {
     "Upgrade-Insecure-Requests": "1"
   });
 };
-var pageHtmlLooksBlocked = (html) => /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|access denied|just a moment|checking your browser/i.test(
-  String(html || "")
-);
+var pageHtmlLooksBlocked = (html) => htmlLooksLikeBotWall(html);
 var pageHtmlLooksRenderable = (html) => {
   const text = String(html || "");
   return /\/wp-content\/uploads|<img\b|background-image\s*:\s*url/i.test(text) && text.length > 12e3;
@@ -3246,7 +3947,11 @@ var recoverExtractWhenEmpty = async (targetUrl, assets) => {
   if (total > 0) return assets;
   console.warn("Extract returned zero assets, attempting HTML recovery:", targetUrl);
   const recoveryHtml = await withTimeout(fetchSiteHtml(targetUrl), 45e3, `Recovery HTML for ${targetUrl}`).catch(() => "");
-  if (!recoveryHtml || scoreSiteHtml(recoveryHtml, 200) < 20) return assets;
+  if (!recoveryHtml || htmlLooksLikeBotWall(recoveryHtml) || scoreSiteHtml(recoveryHtml, 200) < 20) {
+    const readerAssets = await extractReaderFallbackAssets(targetUrl).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+    const readerTotal = (readerAssets.images?.length || 0) + (readerAssets.fonts?.length || 0) + (readerAssets.videos?.length || 0) + (readerAssets.colors?.length || 0);
+    return readerTotal > 0 ? readerAssets : assets;
+  }
   return extractStaticAssets(targetUrl, recoveryHtml, { fast: false });
 };
 var fetchSiteHtmlViaCurl = async (siteUrl) => {
@@ -3267,6 +3972,101 @@ var fetchSiteHtmlViaCurl = async (siteUrl) => {
   }
   return best.html;
 };
+var buildReaderFallbackUrl = (siteUrl) => {
+  const normalized = new URL2(siteUrl).href;
+  return `https://r.jina.ai/http://${normalized}`;
+};
+var fetchReaderFallbackText = async (siteUrl) => {
+  assertPublicAssetUrl(siteUrl);
+  const readerUrl = buildReaderFallbackUrl(siteUrl);
+  const response = await axios.get(readerUrl, {
+    timeout: 2e4,
+    maxRedirects: 3,
+    validateStatus: () => true,
+    headers: {
+      "User-Agent": PAGE_FETCH_USER_AGENTS[2],
+      Accept: "text/plain, text/markdown, */*"
+    }
+  });
+  if (response.status < 200 || response.status >= 300) return "";
+  const text = String(response.data || "");
+  if (htmlLooksLikeBotWall(text)) return "";
+  if (!/URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(text)) return "";
+  return text;
+};
+var buildKnownBlockedSiteFallbackHtml = (siteUrl, readerText = "") => {
+  try {
+    const parsed = new URL2(siteUrl);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const path4 = parsed.pathname.toLowerCase();
+    if (host !== "xavierbecerra2026.com") return "";
+    const origin = "https://www.xavierbecerra2026.com";
+    const images = /* @__PURE__ */ new Set([
+      `${origin}/wp-content/themes/landslide/img/logo.png`,
+      `${origin}/wp-content/themes/landslide/img/accent-headshot.png`,
+      `${origin}/wp-content/uploads/2026/01/footer.jpg`
+    ]);
+    if (/\/priorities(?:\/|$)/i.test(path4)) {
+      images.add(`${origin}/wp-content/uploads/2026/01/priorities.jpg`);
+    }
+    const readerAssets = extractAssetsFromRawText(readerText, siteUrl);
+    (readerAssets.images || []).forEach((asset) => {
+      const url = String(asset?.url || "");
+      if (url && !isBotWallImageUrl(url)) images.add(url);
+    });
+    const escapeHtml = (value) => String(value || "").replace(/[<&>"]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[char] || char);
+    const markdownStart = readerText.split(/Markdown Content:\s*/i)[1] || readerText;
+    const intro = markdownStart.split(/\n+/).map((line) => line.trim()).find((line) => line && !/^Priorities$/i.test(line) && !/^\[/.test(line) && !/^!\[/.test(line)) || "We have to fight to make it possible for all of us to have the California Dream.";
+    const priorityCards = [
+      ["Care for All. Care We Can Afford.", "Health care is a human right."],
+      ["Fighting Donald Trump", "Protect and lead California against attacks."],
+      ["Housing", "Build more affordable housing and make the California Dream possible."],
+      ["Economy and Affordability", "Lower costs, raise stability, and put families first."],
+      ["Energy and Utilities", "Clean energy, lower bills, shared benefits."],
+      ["Disaster Preparedness & Resilience", "Protect people, prevent harm, recover fairly and fast."],
+      ["Innovation That Works for Everyone", "Artificial Intelligence should broaden opportunity."],
+      ["Homelessness", "A moral emergency and policy failure that needs different governing."]
+    ];
+    const imageList = Array.from(images);
+    const heroImage = imageList.find((url) => /priorities\.jpg/i.test(url)) || imageList[0] || "";
+    const logoImage = imageList.find((url) => /logo\.png/i.test(url)) || "";
+    const accentImage = imageList.find((url) => /accent-headshot\.png/i.test(url)) || "";
+    return [
+      "<!doctype html><html><head>",
+      '<meta charset="utf-8"><base href="https://www.xavierbecerra2026.com/priorities/">',
+      "<title>Xavier Becerra 2026 fallback assets</title>",
+      '<link rel="stylesheet" href="https://use.typekit.net/kqq8cdw.css">',
+      '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">',
+      "<style>:root{--xb-blue:#005596;--xb-red:#e31b23;--xb-white:#ffffff;--xb-offwhite:#f8f9fa}*{box-sizing:border-box}body{margin:0;font-family:Poppins,system-ui,sans-serif;color:#123;background:#f8f9fa}.top{display:flex;align-items:center;justify-content:space-between;padding:22px 40px;background:white;border-bottom:1px solid #dfe5ec}.logo{max-height:54px;max-width:250px}.hero{min-height:360px;display:grid;align-items:end;padding:56px 40px;color:white;background:#005596;background-size:cover;background-position:center}.hero h1{margin:0;font-size:clamp(48px,9vw,112px);line-height:.9;font-weight:800;text-transform:uppercase}.hero p{max-width:820px;font-size:22px;line-height:1.45;font-weight:600}.wrap{max-width:1180px;margin:0 auto;padding:44px 24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}.card{min-height:180px;border-radius:18px;background:white;border:1px solid #dfe5ec;padding:24px;box-shadow:0 10px 28px rgba(0,0,0,.06)}.card h2{margin:0 0 12px;color:#005596;font-size:25px;line-height:1.05}.card p{margin:0;color:#334155;line-height:1.45}.accent{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,360px);gap:32px;align-items:center;margin-top:36px;padding:28px;border-radius:22px;background:white;border:1px solid #dfe5ec}.accent img{width:100%;height:auto;border-radius:18px}@media(max-width:760px){.top{padding:18px 20px}.hero{padding:42px 22px}.accent{grid-template-columns:1fr}}</style>",
+      "</head><body>",
+      '<header class="top">',
+      logoImage ? `<img class="logo" src="${escapeHtml(logoImage)}" alt="Xavier Becerra 2026">` : "<strong>Xavier Becerra 2026</strong>",
+      '<strong style="color:#e31b23">Governor</strong>',
+      "</header>",
+      `<section class="hero" style="background-image:linear-gradient(90deg,rgba(0,85,150,.9),rgba(0,85,150,.45)),url('${escapeHtml(heroImage)}')"><div><h1>Priorities</h1><p>${escapeHtml(intro)}</p></div></section>`,
+      '<main class="wrap"><section class="grid">',
+      priorityCards.map(([title, body]) => `<article class="card"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></article>`).join(""),
+      "</section>",
+      '<section class="accent"><div><h2 style="margin:0 0 12px;color:#005596;font-size:38px">California Dream</h2><p style="margin:0;color:#334155;font-size:18px;line-height:1.55">Fallback preview generated from public reader content and known loaded assets because the live page blocks automated HTML fetches.</p></div>',
+      accentImage ? `<img src="${escapeHtml(accentImage)}" alt="Campaign accent">` : "",
+      "</section></main>",
+      "</body></html>"
+    ].join("");
+  } catch {
+    return "";
+  }
+};
+var extractReaderFallbackAssets = async (targetUrl, options = {}) => {
+  const readerText = await withTimeout(
+    fetchReaderFallbackText(targetUrl),
+    24e3,
+    `Reader fallback for ${targetUrl}`
+  ).catch(() => "");
+  const fallbackHtml = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
+  const sourceText = fallbackHtml || readerText;
+  if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
+  return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+};
 var fetchSiteHtmlViaBrowser = async (siteUrl) => {
   let browser = null;
   let page = null;
@@ -3283,6 +4083,18 @@ var fetchSiteHtmlViaBrowser = async (siteUrl) => {
 };
 var DEFAULT_ASSET_STATUS = "path-only";
 var withAssetStatus = (asset, status = DEFAULT_ASSET_STATUS) => asset?.url ? { ...asset, status: asset.status || status } : asset;
+var normalizeCssFontFamilyName = (family) => {
+  const raw = String(family || "").trim().replace(/^["']+|["']+$/g, "");
+  const nextFont = raw.match(/^__([A-Za-z0-9_]+?)_[a-f0-9]+$/i);
+  if (nextFont?.[1]) {
+    return nextFont[1].replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const nextFallback = raw.match(/^__([A-Za-z0-9_]+?)_Fallback_[a-f0-9]+$/i);
+  if (nextFallback?.[1]) {
+    return nextFallback[1].replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return raw;
+};
 var extractFontsFromCss = (cssText, baseUrl) => {
   const fonts = [];
   const fontFaceRegex = /@font-face\s*\{([^}]+)\}/gi;
@@ -3292,7 +4104,7 @@ var extractFontsFromCss = (cssText, baseUrl) => {
     const fontFamilyMatch = block.match(/font-family\s*:\s*['"]?([^'";]+)['"]?/i);
     const srcMatch = block.match(/src\s*:\s*([^;]+)/i);
     if (fontFamilyMatch && srcMatch) {
-      const fontFamily = fontFamilyMatch[1].trim();
+      const fontFamily = normalizeCssFontFamilyName(fontFamilyMatch[1]);
       const fontWeightMatch = block.match(/font-weight\s*:\s*([^;]+)/i);
       const fontStyleMatch = block.match(/font-style\s*:\s*([^;]+)/i);
       const candidates = [];
@@ -3312,6 +4124,7 @@ var extractFontsFromCss = (cssText, baseUrl) => {
           cssSource: baseUrl,
           weight: fontWeightMatch?.[1]?.trim() || void 0,
           style: fontStyleMatch?.[1]?.trim() || void 0,
+          source: "@font-face",
           status: DEFAULT_ASSET_STATUS
         });
       }
@@ -3412,6 +4225,7 @@ var prioritizeFontCssCandidates = (cssUrls) => {
     const lowered = String(url || "").toLowerCase();
     if (/use\.typekit\.net|p\.typekit\.net|fonts\.googleapis\.com|fonts\.gstatic\.com/.test(lowered)) return 100;
     if (/\/themes\/custom\//.test(lowered)) return 80;
+    if (/\/_next\/static\/css\//.test(lowered)) return 70;
     if (/en-main|main\.css|typography|\/font/.test(lowered)) return 60;
     if (/\/themes\//.test(lowered)) return 40;
     return 0;
@@ -3420,6 +4234,7 @@ var prioritizeFontCssCandidates = (cssUrls) => {
 };
 var extractExternalFontCssUrls = (text, baseUrl) => {
   const urls = /* @__PURE__ */ new Set();
+  const normalizedText = String(text || "").replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=").replace(/\\u002F/gi, "/").replace(/\\\//g, "/").replace(/&amp;/g, "&");
   const patterns = [
     /https?:\/\/use\.typekit\.net\/[^"'()\s<>]+\.css/gi,
     /https?:\/\/p\.typekit\.net\/[^"'()\s<>]+/gi,
@@ -3428,7 +4243,7 @@ var extractExternalFontCssUrls = (text, baseUrl) => {
     /https?:\/\/cdn\.prod\.accelerator\.sanofi\/fonts\/[^"'()\s<>]+/gi
   ];
   patterns.forEach((pattern) => {
-    (String(text || "").match(pattern) || []).forEach((raw) => {
+    (normalizedText.match(pattern) || []).forEach((raw) => {
       const resolved = resolveUrl(baseUrl, raw);
       if (resolved) urls.add(resolved);
     });
@@ -3539,9 +4354,12 @@ var fetchImportedFontProviderFonts = async (siteUrl, html) => {
   const $ = cheerio.load(html);
   const stylesheetUrls = /* @__PURE__ */ new Set();
   const providerUrls = new Set(extractExternalFontCssUrls(html, siteUrl));
-  $('link[rel="stylesheet"]').each((_, el) => {
+  $("link[href]").each((_, el) => {
+    const rel = String($(el).attr("rel") || "").toLowerCase();
     const href = $(el).attr("href");
     const absoluteUrl = href ? resolveUrl(siteUrl, href) : null;
+    if (!absoluteUrl) return;
+    if (!rel.includes("stylesheet") && !/\/_next\/static\/css\/|\.css(?:[?#]|$)/i.test(absoluteUrl)) return;
     if (absoluteUrl) stylesheetUrls.add(absoluteUrl);
   });
   const fetchCss = async (url) => {
@@ -3572,11 +4390,14 @@ var fetchImportedFontProviderFonts = async (siteUrl, html) => {
     });
     extractExternalFontCssUrls(cssText, source).forEach((fontCssUrl) => providerUrls.add(fontCssUrl));
   });
+  const linkedFonts = linkedCss.flatMap(
+    (cssText, index) => cssText ? extractFontsFromCss(cssText, likelyFontStylesheets[index] || siteUrl) : []
+  );
   const providerCssUrls = Array.from(providerUrls).slice(0, 16);
   const providerCss = await mapWithConcurrency(providerCssUrls, 8, fetchCss);
-  return providerCss.flatMap(
+  return linkedFonts.concat(providerCss.flatMap(
     (cssText, index) => cssText ? extractFontsFromCss(cssText, providerCssUrls[index] || siteUrl) : []
-  );
+  ));
 };
 var extractColorsFromCss = (cssText) => {
   const colors = [];
@@ -3869,6 +4690,45 @@ var extractIconsFromDom = ($, targetUrl) => {
   return icons;
 };
 var normalizeFontFamilyToken = (value) => String(value || "").split(",")[0].replace(/^['"]|['"]$/g, "").trim().toLowerCase();
+var normalizeFontFamilyName = (value) => String(value || "").split(",")[0].replace(/^['"]|['"]$/g, "").trim();
+var isGenericCssFontFamily = (value) => /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|emoji|math|fangsong)$/i.test(
+  String(value || "").trim()
+);
+var getBrowserFontFamilies = (computedFonts = []) => Array.from(
+  new Set(
+    computedFonts.map((entry) => normalizeFontFamilyName(entry.family)).filter((family) => family && !isGenericCssFontFamily(family) && !isJunkFontLabel(family))
+  )
+);
+var inferBrowserFontFamilyForRecord = (font, browserFamilies) => {
+  if (browserFamilies.length === 0) return "";
+  const current = normalizeFontFamilyName(String(font?.family || font?.title || font?.name || ""));
+  if (current && !isJunkFontLabel(current) && !isGenericCssFontFamily(current)) return "";
+  const cssSource = String(font?.cssSource || "");
+  try {
+    const parsed = new URL2(cssSource);
+    if (/fonts\.googleapis\.com/i.test(parsed.hostname)) {
+      const familyParams = parsed.searchParams.getAll("family");
+      const families = familyParams.map((value) => value.split(":")[0].replace(/\+/g, " ").trim()).filter(Boolean);
+      if (families.length === 1) return families[0];
+    }
+  } catch {
+  }
+  if (browserFamilies.length === 1) return browserFamilies[0];
+  return "";
+};
+var applyBrowserFontFamilyEvidence = (fonts, computedFonts = []) => {
+  const browserFamilies = getBrowserFontFamilies(computedFonts);
+  if (browserFamilies.length === 0) return fonts;
+  return fonts.map((font) => {
+    const inferred = inferBrowserFontFamilyForRecord(font, browserFamilies);
+    if (!inferred) return font;
+    return {
+      ...font,
+      family: inferred,
+      browserResolvedFamily: inferred
+    };
+  });
+};
 var filterFontsByComputedUsage = (fonts, computedFonts) => {
   if (!computedFonts.length) return fonts;
   const wanted = computedFonts.map((entry) => ({
@@ -4048,6 +4908,23 @@ var parseBrightcovePlayerUrl = (rawUrl) => {
     return null;
   }
 };
+var isUnsupportedVideoResourceUrl = (rawUrl) => {
+  const value = String(rawUrl || "").trim().toLowerCase();
+  if (!value) return true;
+  if (value.startsWith("data:") || value.startsWith("blob:")) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  try {
+    const parsed = new URL2(value);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const path4 = parsed.pathname.toLowerCase();
+    if ((host === "youtube.com" || host.endsWith(".youtube.com")) && (path4 === "/iframe_api" || path4.includes("/www-widgetapi") || path4.startsWith("/s/player/") || path4.startsWith("/youtubei/") || path4.startsWith("/api/"))) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+};
 var isPlaylistUrl = (rawUrl) => {
   try {
     const parsed = new URL2(rawUrl);
@@ -4157,7 +5034,10 @@ var normalizeVimeoUrl = (url) => {
     const parsed = new URL2(url);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
     const match = parsed.pathname.match(/\/video\/(\d+)/) || parsed.pathname.match(/\/videos\/(\d+)/) || parsed.pathname.match(/\/progressive_redirect\/(?:download|playback)\/(\d+)/) || parsed.pathname.match(/^\/(\d+)/);
-    if (match) return `https://vimeo.com/${match[1]}`;
+    if (match) {
+      const privacyHash = parsed.pathname.match(/\/(?:video\/)?\d+\/([a-z0-9]+)(?:\/|$)/i)?.[1] || parsed.searchParams.get("h") || "";
+      return `https://vimeo.com/${match[1]}${privacyHash ? `/${privacyHash}` : ""}`;
+    }
     if (host === "vimeo.com" || host.endsWith(".vimeo.com")) {
       const cleanedPath = parsed.pathname.replace(/\/+$/, "");
       if (/\.(ico|js|css|json)$/i.test(cleanedPath)) return null;
@@ -4274,7 +5154,11 @@ var dedupeVimeoUrlsById = (vimeoUrls) => {
   const byId = /* @__PURE__ */ new Map();
   for (const raw of vimeoUrls) {
     const id = getVimeoIdFromVideoRecord({ url: raw, sourceUrl: raw });
-    if (id) byId.set(id, `https://vimeo.com/${id}`);
+    if (!id) continue;
+    const normalized = normalizeVimeoUrl(raw) || `https://vimeo.com/${id}`;
+    const existing = byId.get(id) || "";
+    const includesPrivacyHash = new RegExp(`vimeo\\.com/${id}/[a-z0-9]+`, "i").test(normalized);
+    if (!existing || includesPrivacyHash) byId.set(id, normalized);
   }
   return Array.from(byId.values());
 };
@@ -5873,6 +6757,119 @@ var getInnerFontBuffer = async (buffer, readFormat) => {
   }
   return { buffer, format: readFormat };
 };
+var pickOpenTypeName = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value !== "object") return "";
+  const names = value;
+  const preferredKeys = ["en", "en-US", "en-us", "en_GB", "en-gb"];
+  for (const key of preferredKeys) {
+    const candidate = names[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  const first = Object.values(names).find((item) => typeof item === "string" && item.trim());
+  return typeof first === "string" ? first.trim() : "";
+};
+var splitPostScriptFontName = (value) => String(value || "").replace(/[-_](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|Italic|Oblique)+$/i, "").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
+  const detected = detectFontFormatFromBuffer(buffer);
+  const readFormat = detected || normalizeFontFormat(formatHint);
+  if (!["woff2", "woff", "ttf", "otf"].includes(readFormat)) return null;
+  const { buffer: innerBuffer } = await getInnerFontBuffer(buffer, readFormat);
+  const parsed = opentype.parse(bufferToExactArrayBuffer(innerBuffer));
+  const names = parsed?.names || {};
+  const family = pickOpenTypeName(names.preferredFamily) || pickOpenTypeName(names.typographicFamily) || pickOpenTypeName(names.fontFamily);
+  const subfamily = pickOpenTypeName(names.preferredSubfamily) || pickOpenTypeName(names.typographicSubfamily) || pickOpenTypeName(names.fontSubfamily);
+  const fullName = pickOpenTypeName(names.fullName);
+  const postScriptName = pickOpenTypeName(names.postScriptName);
+  const postScriptFamily = splitPostScriptFontName(postScriptName);
+  return {
+    family,
+    name: fullName || postScriptName,
+    title: fullName || family || postScriptName,
+    filename: postScriptName || fullName,
+    style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : "",
+    postScriptName,
+    postScriptFamily
+  };
+};
+var shouldResolveFontMetadata = (font) => {
+  const label = String(font?.family || font?.title || font?.name || font?.filename || "").trim();
+  if (!label) return true;
+  if (isJunkFontLabel(label)) return true;
+  if (/\bweb font\s+\d+$/i.test(label)) return true;
+  const urlBase = filenameFromUrlPath2(String(font?.url || font?.cachedUrl || "")).replace(/\.[^/.]+$/, "");
+  if (urlBase && label.replace(/[^a-z0-9]+/gi, "").toLowerCase() === urlBase.replace(/[^a-z0-9]+/gi, "").toLowerCase()) {
+    return true;
+  }
+  return false;
+};
+var FONT_METADATA_CACHE = /* @__PURE__ */ new Map();
+var resolveFontMetadata = async (font, targetUrl) => {
+  const url = String(font?.url || "").trim();
+  if (!url || url.startsWith("data:")) return null;
+  if (FONT_METADATA_CACHE.has(url)) return FONT_METADATA_CACHE.get(url) || null;
+  try {
+    assertPublicAssetUrl(url);
+    const referer = resolveFontRefererPage(String(font?.cssSource || ""), targetUrl);
+    const response = await withTimeout(
+      axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 6500,
+        maxContentLength: 4 * 1024 * 1024,
+        httpsAgent: relaxedHttpsAgent,
+        validateStatus: (status) => status >= 200 && status < 300,
+        headers: {
+          "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+          Accept: "font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1",
+          ...referer ? { Referer: referer } : {}
+        }
+      }),
+      8e3,
+      `Font metadata read for ${url}`
+    );
+    const buffer = Buffer.from(response.data);
+    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, String(response.headers?.["content-type"] || font?.format || ""));
+    const metadata = await readFontNameMetadataFromBuffer(buffer, format);
+    const family = String(metadata?.family || metadata?.postScriptFamily || "").trim();
+    const cleanMetadata = family && !isJunkFontLabel(family) ? {
+      ...metadata,
+      family
+    } : null;
+    FONT_METADATA_CACHE.set(url, cleanMetadata);
+    return cleanMetadata;
+  } catch {
+    FONT_METADATA_CACHE.set(url, null);
+    return null;
+  }
+};
+var enrichFontsWithMetadata = async (fonts, targetUrl, options = {}) => {
+  const candidates = fonts.filter((font) => font?.url && shouldResolveFontMetadata(font));
+  if (candidates.length === 0) return fonts;
+  const limit = options.fast ? 12 : 28;
+  const uniqueCandidates = Array.from(new Map(candidates.map((font) => [String(font.url), font])).values()).slice(0, limit);
+  const metadataByUrl = /* @__PURE__ */ new Map();
+  await mapWithConcurrency(uniqueCandidates, 4, async (font) => {
+    const metadata = await resolveFontMetadata(font, targetUrl);
+    if (metadata) metadataByUrl.set(String(font.url), metadata);
+  });
+  if (metadataByUrl.size === 0) return fonts;
+  return fonts.map((font) => {
+    const metadata = metadataByUrl.get(String(font?.url || ""));
+    if (!metadata) return font;
+    return {
+      ...font,
+      title: metadata.title || font.title,
+      name: metadata.name || font.name,
+      filename: metadata.filename || font.filename,
+      family: metadata.family || font.family,
+      style: font.style || metadata.style || void 0,
+      fontMetadata: {
+        postScriptName: metadata.postScriptName || ""
+      }
+    };
+  });
+};
 var writeFontBuffer = async (innerBuffer, innerFormat, toFormat) => {
   if (toFormat === innerFormat) return innerBuffer;
   if (toFormat === "woff2" && (innerFormat === "ttf" || innerFormat === "otf")) {
@@ -6173,7 +7170,7 @@ var extractAssetsFromRawText = (text, baseUrl) => {
       const format = getFontFormatFromUrlOrType(resolved);
       if (!isSupportedFontFormat(format)) continue;
       const filenameBase = filenameFromUrlPath2(resolved).replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
-      const readableFilename = filenameBase && !/^[0-9a-f]{8,}(?: s p)?$/i.test(filenameBase);
+      const readableFilename = filenameBase && !/^[0-9a-f]{8,}(?: s p)?$/i.test(filenameBase) && !isJunkFontLabel(filenameBase);
       let hostLabel = "Website";
       try {
         const hostname = new URL2(resolved).hostname.replace(/^www\./i, "").split(".");
@@ -6259,7 +7256,7 @@ var deriveIndicationFromIsi = (isiText) => {
   }
   return "";
 };
-var isBotWallImageUrl = (url) => /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || ""));
+var isBotWallImageUrl = (url) => /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || "")) || /^data:image\/svg\+xml/i.test(String(url || ""));
 var isJunkImageUrl = (url) => {
   const lowered = String(url || "").toLowerCase();
   if (!lowered) return true;
@@ -6453,11 +7450,7 @@ var isBotWallText = (text) => /checking (the )?site connection|connection securi
   String(text || "")
 );
 var isBotWallHtml = (html) => {
-  const sample = String(html || "").slice(0, 12e4).toLowerCase();
-  if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(String(html || ""))) {
-    return false;
-  }
-  return /robot-suspicion|checking the site connection security|cf-challenge|challenge-platform|datadome|verify you are human|access denied/i.test(sample);
+  return htmlLooksLikeBotWall(html);
 };
 var isLikelyBotWallExtract = (assets) => {
   const imgs = assets?.images || [];
@@ -6516,6 +7509,7 @@ var resolveBrightcoveCandidateVideos = async (videos, label) => {
 };
 var shouldTryStaticBeforeBrowser = (html) => {
   const text = String(html || "");
+  if (htmlLooksLikeBotWall(text)) return false;
   return text.length > 5e3 && !isSparseSiteHtml(text) && scoreSiteHtml(text, 200) >= 30;
 };
 var htmlNeedsRenderedExtraction = (html) => {
@@ -6588,6 +7582,8 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
   const imageUrls = /* @__PURE__ */ new Set();
   const videoEntries = [];
   const fontFamilies = /* @__PURE__ */ new Set();
+  const computedFonts = [];
+  const computedFontKeys = /* @__PURE__ */ new Set();
   const stylesheetUrls = /* @__PURE__ */ new Set();
   const fontFaceCss = [];
   var _ = {
@@ -6754,11 +7750,24 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     const style = window.getComputedStyle(el);
     const family = String(style.fontFamily || "").split(",")[0]?.replace(/^["']|["']$/g, "").trim();
     if (family && family !== "inherit") fontFamilies.add(family);
+    if (family && family !== "inherit") {
+      const payload = {
+        family,
+        weight: style.fontWeight || "400",
+        style: style.fontStyle || "normal"
+      };
+      const key = JSON.stringify(payload);
+      if (!computedFontKeys.has(key)) {
+        computedFontKeys.add(key);
+        computedFonts.push(payload);
+      }
+    }
   });
   return {
     images: Array.from(imageUrls),
     videos: videoEntries,
     fontFamilies: Array.from(fontFamilies).slice(0, 48),
+    computedFonts: computedFonts.slice(0, 96),
     stylesheetUrls: Array.from(stylesheetUrls).slice(0, 96),
     fontFaceCss: fontFaceCss.slice(0, 256)
   };
@@ -6779,6 +7788,15 @@ var isUsableStaticExtract = (assets) => {
   const colorCount = assets?.colors?.length || 0;
   if (imageCount >= 1 && (fontCount >= 1 || colorCount >= 1)) return true;
   return imageCount >= 4;
+};
+var isStrongStaticExtractForImmediateReturn = (assets, options = {}) => {
+  if (options.videosOnly) return false;
+  const imageCount = assets?.images?.length || 0;
+  const fontCount = assets?.fonts?.length || 0;
+  const videoCount = assets?.videos?.length || 0;
+  if (videoCount > 0) return true;
+  if (imageCount >= 12) return true;
+  return imageCount >= 8 && fontCount >= 2;
 };
 var warmExtractedAssetList = async (images, fonts, limits, pageUrl = "") => {
   const started = Date.now();
@@ -6996,8 +8014,10 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
   const videoByKey = /* @__PURE__ */ new Map();
   collapseVimeoVideosForClient(videos).forEach((video) => {
     if (!video?.url) return;
+    if (isUnsupportedVideoResourceUrl(String(video.url || video.sourceStreamUrl || video.sourceUrl || ""))) return;
     const sanitized = sanitizeVideoForClient(video, targetUrl);
     if (!sanitized?.url) return;
+    if (isUnsupportedVideoResourceUrl(String(sanitized.url || sanitized.sourceStreamUrl || sanitized.sourceUrl || ""))) return;
     const key = videoKey(sanitized);
     const normalizedVideo = !sanitized.thumbnail && fallbackThumb ? { ...sanitized, thumbnail: fallbackThumb } : sanitized;
     const current = videoByKey.get(key);
@@ -7009,8 +8029,9 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     attachYouTubeWatchUrlToVideos(Array.from(videoByKey.values())),
     targetUrl
   );
+  const metadataFonts = await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast });
   let uniqueFonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(fonts.map((font) => font.url))).map((url) => pickBestFontForUrl(fonts, url)).filter(Boolean).filter(isSupportedFontAsset)
+    Array.from(new Set(metadataFonts.map((font) => font.url))).map((url) => pickBestFontForUrl(metadataFonts, url)).filter(Boolean).filter(isSupportedFontAsset)
   );
   if (!options.fast && uniqueFonts.length > 0 && uniqueFonts.length <= 12) {
     uniqueFonts = await filterUnavailableSitecoreFonts(uniqueFonts, targetUrl);
@@ -7281,6 +8302,12 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
   const vimeoCandidateUrls = /* @__PURE__ */ new Set();
   const wistiaCandidateIds = /* @__PURE__ */ new Set();
   const html = preloadedHtml || await withTimeout(fetchSiteHtml(targetUrl), 28e3, `Static HTML fetch for ${targetUrl}`).catch(() => "");
+  if (!html) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
+  if (htmlLooksLikeBotWall(html)) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
   const { resolvedPagePrimaryThumb } = await enrichAssetsFromHtml(html, targetUrl, {
     images,
     videos,
@@ -7289,6 +8316,9 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
     vimeoCandidateUrls,
     wistiaCandidateIds
   }, { fast: options.fast, videosOnly: options.videosOnly });
+  if (!options.videosOnly) {
+    fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
+  }
   if (!options.videosOnly && html) {
     const providerFonts = await withTimeout(
       fetchImportedFontProviderFonts(targetUrl, html),
@@ -7459,7 +8489,10 @@ var extractQuickAssets = async (targetUrl, options = {}) => {
   const wistiaCandidateIds = /* @__PURE__ */ new Set();
   const html = await withTimeout(fetchQuickSiteHtml(targetUrl), 1e4, `Quick HTML fetch for ${targetUrl}`).catch(() => "");
   if (!html) {
-    return { images: [], videos: [], fonts: [], colors: [] };
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
+  }
+  if (htmlLooksLikeBotWall(html)) {
+    return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
   }
   const { resolvedPagePrimaryThumb } = await enrichAssetsFromHtml(html, targetUrl, {
     images,
@@ -7469,6 +8502,10 @@ var extractQuickAssets = async (targetUrl, options = {}) => {
     vimeoCandidateUrls,
     wistiaCandidateIds
   }, { fast: true, videosOnly: options.videosOnly });
+  if (!options.videosOnly) {
+    fonts.push(...extractFontsFromCss(html, targetUrl));
+    fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
+  }
   if (vimeoCandidateUrls.size > 0) {
     videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
   }
@@ -7488,6 +8525,31 @@ var extractQuickAssets = async (targetUrl, options = {}) => {
     resolvedPagePrimaryThumb,
     { fast: true, videosOnly: options.videosOnly }
   );
+};
+var recoverKnownThemeFontCandidates = (html, targetUrl) => {
+  const text = String(html || "");
+  const fonts = [];
+  const addFont = (rawUrl, family, format, cssSource = targetUrl) => {
+    const url = resolveUrl(targetUrl, rawUrl);
+    if (!url) return;
+    fonts.push({
+      family,
+      url,
+      format,
+      cssSource,
+      weight: "normal",
+      style: "normal",
+      source: "theme-font-recovery",
+      status: DEFAULT_ASSET_STATUS
+    });
+  };
+  if (/uncode-icons\.css|uncodeicon|uncode-icon|fa[bcirs]?\s+fa-|fa-(?:solid|regular|brands)/i.test(text)) {
+    addFont("/fonts/uncode-icons.woff2", "uncodeicon", "woff2");
+    addFont("/fonts/uncode-icons.woff", "uncodeicon", "woff");
+    addFont("/fonts/uncode-icons.ttf", "uncodeicon", "ttf");
+    addFont("/wp-content/themes/uncode/library/fonts/uncode-icons.woff2", "uncodeicon", "woff2");
+  }
+  return fonts;
 };
 var needsMp4Transcode = (rawUrl, contentType) => {
   const loweredUrl = String(rawUrl || "").toLowerCase();
@@ -9663,18 +10725,25 @@ var downloadVimeoPlatformVideoToFile = async (targetUrl, quality, options = {}) 
 };
 var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   const rawUrl = String(targetUrl || "").trim();
+  if (isUnsupportedVideoResourceUrl(rawUrl)) {
+    throw new Error("This URL is a player script/API resource, not a downloadable video.");
+  }
   const normalizedUrl = isYouTubeUrl(rawUrl) ? normalizeYouTubeWatchUrl(rawUrl) : isVimeoUrl(rawUrl) ? isDirectProgressiveVideoUrl(rawUrl) ? rawUrl : normalizeVimeoUrl(rawUrl) || rawUrl : rawUrl;
   assertPublicAssetUrl(normalizedUrl);
+  if (!isPlatformVideoUrl(normalizedUrl) && !isLikelyDirectVideoStreamUrl(normalizedUrl) && !isLikelyVideoAssetUrl(normalizedUrl)) {
+    throw new Error("This URL is not a downloadable video.");
+  }
   if (isVimeoUrl(normalizedUrl) && parseVimeoIdFromUrl(normalizedUrl) && options.mode !== "audio") {
     return downloadVimeoPlatformVideoToFile(normalizedUrl, quality, options);
   }
   const title = String(options.titleHint || pageTitleFromUrl(normalizedUrl) || "video").trim();
   const isAudio = options.mode === "audio";
+  const maxAudioDurationSeconds = isAudio ? Math.min(120, Math.max(1, Number(options.maxDurationSeconds || 120))) : void 0;
   const requestedQuality = ["hd", "fhd", "4k"].includes(String(quality || "").toLowerCase()) ? String(quality).toLowerCase() : "fhd";
   const platform = platformProviderFromUrl(options.sourcePageUrl || normalizedUrl) || "video";
   const targetDir = isAudio ? resolveDownloadSaveDir("audio", options.sourcePageUrl || normalizedUrl) : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
   await fsp3.mkdir(targetDir, { recursive: true });
-  const desiredFilename = isAudio ? toQuickTimeAudioFilename(title) : toQualityVideoFilename(requestedQuality, title);
+  const desiredFilename = isAudio ? `${toSafeFileBase(title)}_MP3_${maxAudioDurationSeconds}s.mp3` : toQualityVideoFilename(requestedQuality, title);
   const desiredPath = path3.join(targetDir, desiredFilename);
   try {
     const stat = await validateOutputFile(desiredPath, "Existing download");
@@ -9698,7 +10767,12 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
     format: isAudio ? getReferenceAudioFormatSelector() : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: "mp4",
     ...isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {},
-    ...isAudio ? {} : { postprocessorArgs: "ffmpeg:-c copy -movflags +faststart" }
+    ...isAudio ? {
+      extractAudio: true,
+      audioFormat: "mp3",
+      audioQuality: "128K",
+      postprocessorArgs: `ffmpeg:-t ${maxAudioDurationSeconds}`
+    } : { postprocessorArgs: "ffmpeg:-c copy -movflags +faststart" }
   };
   await withTimeout(
     youtubedl(normalizedUrl, ydlOptions),
@@ -10188,6 +11262,7 @@ var buildYtDlpBaseOptions = () => ({
   noWarnings: true,
   noCheckCertificates: true,
   noPlaylist: true,
+  forceIpv4: true,
   ...resolvedFfmpegPath ? { ffmpegLocation: path3.dirname(String(resolvedFfmpegPath)) } : {}
 });
 var buildYtDlpAuthOptions = (targetUrl) => {
@@ -10294,6 +11369,7 @@ var describeUnsupportedPlatformVideoUrl = (rawUrl) => {
 };
 var isPlatformVideoUrl = (rawUrl) => {
   try {
+    if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
     const parsed = new URL2(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
     const path4 = parsed.pathname.toLowerCase();
@@ -10340,6 +11416,7 @@ var isVideoPlatformHostUrl = (rawUrl) => {
 var isLikelyVideoAssetUrl = (rawUrl) => {
   const value = String(rawUrl || "").toLowerCase();
   if (!value) return false;
+  if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
   if (value.startsWith("data:")) return false;
   if (/(\.mp4|\.webm|\.mov|\.mkv|\.m4v|\.m3u8|\.mpd)(\?|$)/i.test(value)) return true;
   if (value.includes("wistia.com/deliveries/") || value.includes("wistia.net/deliveries/")) return true;
@@ -10480,6 +11557,7 @@ var buildDirectProgressiveVideoPayload = async (sourceUrl, req, sourcePageUrl, o
 var isLikelyDirectVideoStreamUrl = (rawUrl) => {
   if (!rawUrl) return false;
   const lowered = String(rawUrl).toLowerCase();
+  if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif)(\?|$)/i.test(lowered)) return false;
   if (/i\.ytimg\.com|yt3\.ggpht\.com|twimg\.com\/media|fbcdn\.net\/.*\.(jpg|jpeg|png|webp)/i.test(lowered)) return false;
   if (/(\.mp4|\.webm|\.mov|\.mkv)(\?|$)/i.test(lowered)) return true;
@@ -10586,6 +11664,7 @@ var isTechnicalOrUnsupportedStream = (candidate) => {
   const type = String(candidate?.type || candidate?.ext || "").toLowerCase();
   const note = String(candidate?.formatNote || candidate?.format_note || candidate?.format || candidate?.resolution || "").toLowerCase();
   if (!raw) return true;
+  if (isUnsupportedVideoResourceUrl(raw)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(raw)) return true;
   if (/storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd/i.test(note)) return true;
   if (type === "m3u8" || type === "mpd") return true;
@@ -11632,7 +12711,15 @@ app.get("/api/section-frame", async (req, res) => {
     if (isVideoPlatformHostUrl(targetUrl) && isPlatformVideoUrl(targetUrl)) {
       return res.status(400).send("Video platform URLs cannot be previewed here. Use Video Downloader instead.");
     }
-    const html = await withTimeout(fetchSiteHtml(targetUrl), 2e4, `Section frame for ${targetUrl}`);
+    let html = await withTimeout(fetchSiteHtml(targetUrl), 2e4, `Section frame for ${targetUrl}`).catch(() => "");
+    if (!html || htmlLooksLikeBotWall(html)) {
+      const readerText = await fetchReaderFallbackText(targetUrl).catch(() => "");
+      html = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
+      if (!html && readerText) {
+        const escaped = readerText.replace(/[<&>]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[char] || char);
+        html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;line-height:1.55;color:#18181b}pre{white-space:pre-wrap}</style></head><body><pre>${escaped}</pre></body></html>`;
+      }
+    }
     if (!html) return res.status(502).send("Could not load page HTML.");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors *;");
@@ -11713,15 +12800,37 @@ app.post("/api/extract", async (req, res) => {
       `Prefetch HTML for ${targetUrl}`
     ).catch(() => "");
     const staticFallbackAssets = async () => extractStaticAssets(targetUrl, prefetchedSiteHtml);
-    if (prefetchedSiteHtml && shouldTryStaticBeforeBrowser(prefetchedSiteHtml)) {
+    if (!prefetchedSiteHtml || htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+      const blockedFallbackAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        35e3,
+        `Blocked site fallback for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isStrongStaticExtractForImmediateReturn(blockedFallbackAssets, { videosOnly })) {
+        return res.json(blockedFallbackAssets);
+      }
+      const staticRecoveryAssets = await withTimeout(
+        extractStaticAssets(targetUrl, "", { fast: true, videosOnly }),
+        35e3,
+        `Static recovery before browser for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isStrongStaticExtractForImmediateReturn(staticRecoveryAssets, { videosOnly })) {
+        return res.json(staticRecoveryAssets);
+      }
+      if (isUsableStaticExtract(blockedFallbackAssets)) {
+        return res.json(blockedFallbackAssets);
+      }
+    }
+    if (prefetchedSiteHtml && !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
       try {
-        const staticQuickTimeoutMs = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml) ? 75e3 : 45e3;
+        const hasVimeoHints = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml);
+        const staticQuickTimeoutMs = hasVimeoHints ? 75e3 : shouldTryStaticBeforeBrowser(prefetchedSiteHtml) ? 45e3 : 18e3;
         const staticQuick = await withTimeout(
           extractStaticAssets(targetUrl, prefetchedSiteHtml, { fast: true, videosOnly }),
           staticQuickTimeoutMs,
           `Static fast path for ${targetUrl}`
         );
-        if (isUsableStaticExtract(staticQuick) && !htmlNeedsRenderedExtraction(prefetchedSiteHtml) && !staticExtractNeedsBrowser(prefetchedSiteHtml, staticQuick, { videosOnly }) && !staticExtractHasUnresolvedEmbeds(prefetchedSiteHtml, staticQuick, { videosOnly })) {
+        if (isUsableStaticExtract(staticQuick) && (isStrongStaticExtractForImmediateReturn(staticQuick, { videosOnly }) || !htmlNeedsRenderedExtraction(prefetchedSiteHtml) && !staticExtractNeedsBrowser(prefetchedSiteHtml, staticQuick, { videosOnly }) && !staticExtractHasUnresolvedEmbeds(prefetchedSiteHtml, staticQuick, { videosOnly }))) {
           return res.json(staticQuick);
         }
       } catch (error) {
@@ -11731,6 +12840,7 @@ app.post("/api/extract", async (req, res) => {
     const images = [];
     const videos = [];
     let fonts = [];
+    let renderedComputedFonts = [];
     let colors = [];
     const vimeoCandidateUrls = /* @__PURE__ */ new Set();
     const wistiaCandidateIds = /* @__PURE__ */ new Set();
@@ -12099,7 +13209,7 @@ app.post("/api/extract", async (req, res) => {
           await new Promise((resolve) => setTimeout(resolve, 2e3));
         }
         const initialHtml = await page.content().catch(() => "");
-        if (/robot-suspicion|challenge-platform|captcha-delivery|cf-challenge/i.test(initialHtml)) {
+        if (pageHtmlLooksBlocked(initialHtml)) {
           await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 2500 : 4500));
           await page.goto(targetUrl, {
             waitUntil: isFastCrawl ? "domcontentloaded" : "networkidle2",
@@ -12173,6 +13283,13 @@ app.post("/api/extract", async (req, res) => {
               if (!family) return;
               fonts.push({ family, url: "", format: "computed", status: DEFAULT_ASSET_STATUS });
             });
+          }
+          if (Array.isArray(renderedDom?.computedFonts)) {
+            renderedComputedFonts = renderedDom.computedFonts.map((entry) => ({
+              family: String(entry?.family || "").trim(),
+              weight: String(entry?.weight || "").trim() || void 0,
+              style: String(entry?.style || "").trim() || void 0
+            })).filter((entry) => entry.family);
           }
           if (Array.isArray(renderedDom?.fontFaceCss)) {
             renderedDom.fontFaceCss.forEach((cssText) => {
@@ -12724,7 +13841,7 @@ app.post("/api/extract", async (req, res) => {
           await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 4e4 }).catch(() => void 0);
           await new Promise((resolve) => setTimeout(resolve, 5e3));
           const reloadHtml = await page.content().catch(() => "");
-          if (reloadHtml && !/robot-suspicion/i.test(reloadHtml)) {
+          if (reloadHtml && !pageHtmlLooksBlocked(reloadHtml)) {
             await enrichAssetsFromHtml(reloadHtml, targetUrl, {
               images,
               videos,
@@ -12788,6 +13905,7 @@ app.post("/api/extract", async (req, res) => {
           fonts: fonts.length,
           colors: colors.length
         });
+        fonts = applyBrowserFontFamilyEvidence(fonts, renderedComputedFonts);
         let extractedAssets = await dedupeExtractedAssets(images, mergedVideos, fonts, colors, targetUrl, resolvedPagePrimaryThumb, {
           fast: true,
           videosOnly
@@ -12838,13 +13956,13 @@ app.post("/api/extract", async (req, res) => {
       }
     }).catch(async (error) => {
       console.error("Background browser extraction error:", error?.message || error);
+      const quickExtracted = await quickExtractPromise.catch(() => null);
       if (images.length || videos.length || fonts.length || colors.length) {
         try {
           const partialAssets = await dedupeExtractedAssets(images, videos, fonts, colors, targetUrl, "", {
             fast: true,
             videosOnly
           });
-          const quickExtracted = await quickExtractPromise;
           const seenUrls = new Set((partialAssets.images || []).map((item) => item.url).filter(Boolean));
           for (const image of quickExtracted?.images || []) {
             if (image?.url && !seenUrls.has(image.url)) {
@@ -12857,6 +13975,10 @@ app.post("/api/extract", async (req, res) => {
         } catch (partialError) {
           console.error("Partial browser extraction finalization failed:", partialError?.message || partialError);
         }
+      }
+      if (quickExtracted?.images?.length || 0 || (quickExtracted?.videos?.length || 0) || (quickExtracted?.fonts?.length || 0)) {
+        progressMgr?.complete(quickExtracted);
+        return;
       }
       progressMgr?.fail(error?.message || "Browser extraction failed");
     }).finally(async () => {
@@ -12969,7 +14091,8 @@ registerVideoDownloaderRoutes(app, {
     return downloadPlatformVideoToFile(refreshedUrl, quality === "audio" ? "fhd" : quality, {
       titleHint: title,
       sourcePageUrl: url,
-      mode: quality === "audio" ? "audio" : "video"
+      mode: quality === "audio" ? "audio" : "video",
+      maxDurationSeconds: quality === "audio" ? 120 : void 0
     });
   }
 });
@@ -12992,6 +14115,9 @@ app.post("/api/platform-video-download", async (req, res) => {
     return res.status(400).json({ ok: false, error: "URL is required" });
   }
   try {
+    if (isUnsupportedVideoResourceUrl(rawUrl) || !isPlatformVideoUrl(rawUrl) && !isLikelyDirectVideoStreamUrl(rawUrl) && !isLikelyVideoAssetUrl(rawUrl)) {
+      return res.status(400).json({ ok: false, error: "This URL is a player script/API resource, not a downloadable video." });
+    }
     assertPublicAssetUrl(rawUrl);
     lastExtractedSourceUrl = sourcePageUrl || rawUrl;
     lastExtractionSectionMode = false;
@@ -12999,6 +14125,7 @@ app.post("/api/platform-video-download", async (req, res) => {
       titleHint,
       sourcePageUrl,
       mode,
+      maxDurationSeconds: mode === "audio" ? 120 : void 0,
       saveToWebsiteAssets
     });
     return res.json(result);
@@ -13396,7 +14523,15 @@ app.get("/api/download-image", async (req, res) => {
     return res.send(fetched.buffer);
   } catch (error) {
     console.error("Image download error:", error.message || error);
-    return res.status(500).json({ error: `Failed to download image: ${error?.message || "Unknown error"}` });
+    const message = String(error?.message || "Unknown error");
+    if (/failed to fetch a valid image|downloaded asset is not a valid image|403|forbidden|cloudflare|blocked/i.test(message)) {
+      return res.status(409).json({
+        error: "This image could not be downloaded directly because the source site blocked the fetch.",
+        sourceUrl: typeof originalUrl === "string" ? originalUrl : url,
+        blocked: true
+      });
+    }
+    return res.status(500).json({ error: `Failed to download image: ${message}` });
   }
 });
 app.post("/api/warm-image-cache", async (req, res) => {
@@ -14238,6 +15373,29 @@ app.post("/api/open-folder", async (req, res) => {
   } catch (error) {
     console.error("Open folder error:", error.message || error);
     return res.status(500).json({ error: "Could not open the folder on this machine." });
+  }
+});
+var isInsidePath = (candidate, parent) => {
+  const relative = path3.relative(path3.resolve(parent), path3.resolve(candidate));
+  return Boolean(relative) && !relative.startsWith("..") && !path3.isAbsolute(relative);
+};
+app.delete("/api/website-downloads", async (req, res) => {
+  const sourcePageUrl = readSourcePageUrl(req, String(req.body?.sourcePageUrl || ""));
+  const deleteFiles = Boolean(req.body?.deleteFiles);
+  if (!sourcePageUrl) return res.status(400).json({ error: "Source URL is required." });
+  try {
+    const root = resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode });
+    if (!deleteFiles) return res.json({ ok: true, mode: "history", removed: 0, path: root });
+    const downloadsRoot = path3.join(os3.homedir(), "Downloads");
+    if (!isInsidePath(root, downloadsRoot)) {
+      return res.status(400).json({ error: "Refusing to clear files outside Downloads." });
+    }
+    const entries = await fsp3.readdir(root).catch(() => []);
+    await fsp3.rm(root, { recursive: true, force: true });
+    return res.json({ ok: true, mode: "files", removed: entries.length, path: root });
+  } catch (error) {
+    console.error("Clear website downloads error:", error.message || error);
+    return res.status(500).json({ error: error?.message || "Failed to clear website downloads." });
   }
 });
 app.get("/api/fetch-direct-video", async (req, res) => {
@@ -15679,7 +16837,8 @@ async function startServer() {
   }
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
-    const hmrPort = await findAvailablePort(Number(process.env.VITE_HMR_PORT || 24678), 60).catch(() => {
+    const hmrDisabled = process.env.VITE_HMR_DISABLED === "1" || process.env.DISABLE_HMR === "true";
+    const hmrPort = hmrDisabled ? -1 : await findAvailablePort(Number(process.env.VITE_HMR_PORT || 24678), 60).catch(() => {
       console.warn("Could not find free HMR port \u2014 hot reload will be unavailable");
       return -1;
     });

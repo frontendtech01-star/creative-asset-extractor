@@ -11,7 +11,12 @@ const child = spawn(tsxBin, ['server.ts'], {
   cwd: projectRoot,
   stdio: 'inherit',
   shell: process.platform === 'win32',
-  env: { ...process.env, NODE_ENV: process.env.NODE_ENV || 'development' },
+  env: {
+    ...process.env,
+    NODE_ENV: process.env.VITE_HMR_DISABLED === '1'
+      ? 'production'
+      : process.env.NODE_ENV || 'development',
+  },
 });
 
 child.on('exit', (code) => process.exit(code ?? 0));

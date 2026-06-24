@@ -11,6 +11,11 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const binPackDir = path.join(projectRoot, 'vendor', 'bin-pack');
 
+const clearMacQuarantine = async (filePath) => {
+  if (process.platform !== 'darwin' || !filePath) return;
+  await execFileAsync('/usr/bin/xattr', ['-d', 'com.apple.quarantine', filePath]).catch(() => undefined);
+};
+
 const YTDLP_RELEASE_URLS = {
   darwin: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos',
   win32: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
@@ -64,6 +69,7 @@ const copyExecutable = async (source, destination) => {
   if (!source || !existsSync(source)) return false;
   await copyFile(source, destination);
   await chmod(destination, 0o755).catch(() => undefined);
+  await clearMacQuarantine(destination);
   return true;
 };
 
@@ -72,6 +78,7 @@ const downloadStandaloneYtDlp = async (destination) => {
   console.log(`Downloading standalone yt-dlp from ${url}`);
   await downloadFile(url, destination);
   await chmod(destination, 0o755);
+  await clearMacQuarantine(destination);
   await assertStandaloneBinary(destination, 'yt-dlp');
   return true;
 };

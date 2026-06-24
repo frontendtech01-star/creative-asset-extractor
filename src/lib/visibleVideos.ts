@@ -252,6 +252,82 @@ export const isDirectVideoAssetUrl = (rawUrl: string) =>
   /wistia\.com\/deliveries\//i.test(String(rawUrl || '')) ||
   /vimeo\.com\/progressive_redirect|vimeocdn\.com|vod-adaptive\.akamaized\.net/i.test(String(rawUrl || ''));
 
+/**
+ * Website crawls can observe analytics/navigation requests on video-platform
+ * pages. Only expose an unresolved Vimeo item when it identifies a plausible
+ * clip and has an actual preview; resolved media streams are always retained.
+ */
+export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
+  if (!item) return false;
+  const candidates = [
+    item?.sourceStreamUrl,
+    item?.downloadUrl,
+    item?.originalUrl,
+    item?.embedUrl,
+    item?.url,
+  ]
+    .map((candidate) => String(candidate || '').trim())
+    .filter(Boolean);
+  const contextCandidates = [
+    ...candidates,
+    String(item?.sourceUrl || '').trim(),
+    String(item?.pageUrl || '').trim(),
+    String(seedUrl || '').trim(),
+  ].filter(Boolean);
+  const isVimeoContext = contextCandidates.some((candidate) => {
+    try {
+      const host = new URL(candidate).hostname.replace(/^www\./, '').toLowerCase();
+      return host === 'vimeo.com' || host === 'player.vimeo.com' || host.endsWith('.vimeo.com');
+    } catch {
+      return false;
+    }
+  });
+  const title = String(item?.title || item?.name || item?.label || '').trim().toLowerCase();
+  const primaryUrl = String(item?.url || item?.embedUrl || '').trim();
+  if (
+    isVimeoContext &&
+    (
+      /^(?:gtm|info|tr|attribution_trigger|collect(?:\s*\d+)?|0|\d{13,})$/i.test(title) ||
+      /\.(?:svg|png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.test(primaryUrl) ||
+      /\/(?:gtm|info|tr|attribution_trigger|collect(?:\/?\d+)?)\/?(?:[?#]|$)/i.test(primaryUrl)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    item?.isDirect ||
+    item?.isVimeoDirect ||
+    item?.isYouTubeDirect ||
+    item?.isWistiaDirect ||
+    item?.isYouTubeMerged ||
+    item?.isMp4Proxy ||
+    candidates.some(isDirectVideoAssetUrl)
+  ) {
+    return true;
+  }
+
+  const platformUrl = candidates.find(isPlatformHostedUrl);
+  // Preserve ordinary website video candidates; this guard specifically
+  // tightens false platform-player placeholders.
+  if (!platformUrl) return true;
+
+  try {
+    const parsed = new URL(platformUrl);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname;
+    if (host === 'vimeo.com' || host === 'player.vimeo.com' || host.endsWith('.vimeo.com')) {
+      const id = String(item?.vimeoId || path.match(/\/(?:video\/|videos\/)?(\d+)(?:\/|$)/)?.[1] || '');
+      const hasPlausibleId = /^\d{6,12}$/.test(id);
+      const hasRealPreview = Boolean(String(item?.thumbnail || item?.poster || '').trim());
+      return hasPlausibleId && hasRealPreview && !item?.unresolvable;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const isDirectProgressiveVideoUrl = (rawUrl: string) =>
   /\/api\/(?:youtube-merged-stream|download|download-local-video)(?:\?|$)/i.test(String(rawUrl || '')) ||
   /\/converted-videos\//i.test(String(rawUrl || '')) ||

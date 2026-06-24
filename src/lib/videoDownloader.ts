@@ -1,7 +1,7 @@
 import { apiFetch } from './api';
 
-export type DownloaderQuality = 'fhd' | 'hd' | 'audio';
-export type DownloaderJobStatus = 'queued' | 'running' | 'completed' | 'error';
+export type DownloaderQuality = '4k' | 'fhd' | 'hd' | 'audio';
+export type DownloaderJobStatus = 'queued' | 'running' | 'completed' | 'error' | 'cancelled';
 
 export type DownloaderVideo = {
   id: string;
@@ -114,11 +114,11 @@ export const startDownloaderJob = async (input: {
   return data.job as DownloaderJob;
 };
 
-export const startBulkDownloaderJobs = async (urls: string[]) => {
+export const startBulkDownloaderJobs = async (urls: string[], quality: DownloaderQuality = '4k') => {
   const response = await apiFetch('/api/downloader/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ urls }),
+    body: JSON.stringify({ urls, quality }),
   });
   const data = await readJson(response);
   if (!response.ok) throw new Error(data?.error || 'Could not start bulk download.');
@@ -129,6 +129,15 @@ export const readDownloaderJob = async (id: string) => {
   const response = await apiFetch(`/api/downloader/jobs/${encodeURIComponent(id)}`);
   const data = await readJson(response);
   if (!response.ok) throw new Error(data?.error || 'Download job was not found.');
+  return data.job as DownloaderJob;
+};
+
+export const cancelDownloaderJob = async (id: string) => {
+  const response = await apiFetch(`/api/downloader/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not cancel download.');
   return data.job as DownloaderJob;
 };
 

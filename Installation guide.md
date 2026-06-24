@@ -1,6 +1,6 @@
 # Creative Asset Extractor — Installation Guide
 
-1. Download and open the Apple Silicon DMG.
+1. Download and open the DMG.
 2. Drag **Creative Asset Extractor** into **Applications**.
 3. Open Terminal and run:
 

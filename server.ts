@@ -65,6 +65,11 @@ const insightsPageEvaluate = require(path.join(getAppRoot(), 'scripts', 'insight
 
 const execFileAsync = promisify(execFile);
 
+const clearMacQuarantine = async (filePath: string) => {
+  if (process.platform !== 'darwin' || !filePath) return;
+  await execFileAsync('/usr/bin/xattr', ['-d', 'com.apple.quarantine', filePath]).catch(() => undefined);
+};
+
 const getResourcesPath = () => process.env.VDX_RESOURCES_PATH || getAppRoot();
 
 const getUnpackedModulePath = (...segments: string[]) => {
@@ -220,7 +225,10 @@ let youtubedl = wrapYtDlpWithCookieFallback(
 const stageRuntimeBinary = async (sourcePath: string, binaryName: string) => {
   const source = String(sourcePath || '').trim();
   if (!source || !fs.existsSync(source)) return '';
-  if (!source.includes(' ')) return source;
+  if (!source.includes(' ')) {
+    await clearMacQuarantine(source);
+    return source;
+  }
   const destDir = path.join(os.homedir(), '.creative-asset-extractor', 'runtime-bin');
   const destName = process.platform === 'win32' ? `${binaryName}.exe` : binaryName;
   const dest = path.join(destDir, destName);
@@ -235,6 +243,7 @@ const stageRuntimeBinary = async (sourcePath: string, binaryName: string) => {
     await fsp.copyFile(source, dest);
     await fsp.chmod(dest, 0o755);
   }
+  await clearMacQuarantine(dest);
   logYouTubeMerge('stage-runtime-binary', { source, dest, binaryName });
   return dest;
 };
@@ -260,6 +269,7 @@ const refreshResolvedMediaTools = async () => {
       throw new Error('Bundled yt-dlp is a Python script. Rebuild the desktop app to bundle the standalone yt-dlp binary.');
     }
     await fsp.chmod(resolvedYtDlpPath, 0o755).catch(() => undefined);
+    await clearMacQuarantine(resolvedYtDlpPath);
   }
   if (resolvedAria2Path) await fsp.chmod(resolvedAria2Path, 0o755).catch(() => undefined);
   aria2Path = resolvedAria2Path;
@@ -362,7 +372,9 @@ const feedbackConfigPath = path.join(appDataDir, 'feedback-config.json');
 const activityLogPath = path.join(appDataDir, 'logs', 'activity.jsonl');
 const feedbackScreenshotDir = path.join(appDataDir, 'feedback', 'screenshots');
 const MAX_ACTIVITY_LOG_ENTRIES = 100;
-const relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+// Prefer IPv4 because some media CDNs (notably videos-cdn.ispot.tv) publish an
+// IPv6 route that is unreachable on otherwise healthy local networks.
+const relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 
 const loadProjectEnvFile = () => {
   const candidates = [
@@ -1530,7 +1542,8 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
     (extracted?.icons?.length || 0) ||
     (extracted?.fonts?.length || 0) ||
     (extracted?.videos?.length || 0);
-  if (hasAssets || !fallbackUrl) return extracted;
+  const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
+  if ((hasAssets && hasDownloadableFonts) || !fallbackUrl) return extracted;
 
   const staticAssets = await withTimeout(
     extractStaticAssets(fallbackUrl, '', { fast: true }),
@@ -1539,11 +1552,25 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
   ).catch(() => null) as any;
   if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
 
+  const mergeByUrl = (left: any[] = [], right: any[] = []) => {
+    const rows = new Map<string, any>();
+    [...left, ...right].forEach((item) => {
+      const key = String(item?.url || item?.src || '').trim();
+      if (key) rows.set(key, item);
+    });
+    return Array.from(rows.values());
+  };
+
   return {
-    ...staticAssets,
+    ...extracted,
+    images: mergeByUrl(extracted?.images, staticAssets?.images),
+    icons: mergeByUrl(extracted?.icons, staticAssets?.icons),
+    videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
+    fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
+    colors: Array.from(new Set([...(extracted?.colors || []), ...(staticAssets?.colors || [])])),
     extractionMeta: {
-      ...(staticAssets as any).extractionMeta,
-      mode: 'browser-static-fallback',
+      ...extracted?.extractionMeta,
+      mode: hasAssets ? 'browser-static-font-fallback' : 'browser-static-fallback',
       sectionLabel: extracted?.title || 'Static fallback',
     },
     pageUrl: extracted?.pageUrl || fallbackUrl,
@@ -3733,7 +3760,13 @@ const normalizeVimeoUrl = (url: string) => {
       parsed.pathname.match(/\/progressive_redirect\/(?:download|playback)\/(\d+)/) ||
       parsed.pathname.match(/^\/(\d+)/);
 
-    if (match) return `https://vimeo.com/${match[1]}`;
+    if (match) {
+      const privacyHash =
+        parsed.pathname.match(/\/(?:video\/)?\d+\/([a-z0-9]+)(?:\/|$)/i)?.[1] ||
+        parsed.searchParams.get('h') ||
+        '';
+      return `https://vimeo.com/${match[1]}${privacyHash ? `/${privacyHash}` : ''}`;
+    }
 
     // Support Vimeo slug URLs as standalone links, e.g. /spencerwardwell/stg
     if (host === 'vimeo.com' || host.endsWith('.vimeo.com')) {
@@ -3884,7 +3917,11 @@ const dedupeVimeoUrlsById = (vimeoUrls: string[]) => {
   const byId = new Map<string, string>();
   for (const raw of vimeoUrls) {
     const id = getVimeoIdFromVideoRecord({ url: raw, sourceUrl: raw });
-    if (id) byId.set(id, `https://vimeo.com/${id}`);
+    if (!id) continue;
+    const normalized = normalizeVimeoUrl(raw) || `https://vimeo.com/${id}`;
+    const existing = byId.get(id) || '';
+    const includesPrivacyHash = new RegExp(`vimeo\\.com/${id}/[a-z0-9]+`, 'i').test(normalized);
+    if (!existing || includesPrivacyHash) byId.set(id, normalized);
   }
   return Array.from(byId.values());
 };
@@ -8225,6 +8262,10 @@ const extractQuickAssets = async (targetUrl: string, options: { videosOnly?: boo
     wistiaCandidateIds,
   }, { fast: true, videosOnly: options.videosOnly });
   if (!options.videosOnly) {
+    // Some storefronts (including nike.in) embed their @font-face rules in the
+    // initial document rather than a separately linked stylesheet. Capture
+    // those in the quick result so the UI does not finish with images only.
+    fonts.push(...extractFontsFromCss(html, targetUrl));
     fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
   }
 
@@ -11213,6 +11254,7 @@ const downloadPlatformVideoToFile = async (
     titleHint?: string;
     sourcePageUrl?: string;
     mode?: 'video' | 'audio';
+    maxDurationSeconds?: number;
     saveToWebsiteAssets?: boolean;
   } = {}
 ) => {
@@ -11236,6 +11278,9 @@ const downloadPlatformVideoToFile = async (
 
   const title = String(options.titleHint || pageTitleFromUrl(normalizedUrl) || 'video').trim();
   const isAudio = options.mode === 'audio';
+  const maxAudioDurationSeconds = isAudio
+    ? Math.min(120, Math.max(1, Number(options.maxDurationSeconds || 120)))
+    : undefined;
   const requestedQuality = ['hd', 'fhd', '4k'].includes(String(quality || '').toLowerCase())
     ? String(quality).toLowerCase()
     : 'fhd';
@@ -11244,7 +11289,9 @@ const downloadPlatformVideoToFile = async (
     ? resolveDownloadSaveDir('audio', options.sourcePageUrl || normalizedUrl)
     : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
   await fsp.mkdir(targetDir, { recursive: true });
-  const desiredFilename = isAudio ? toQuickTimeAudioFilename(title) : toQualityVideoFilename(requestedQuality, title);
+  const desiredFilename = isAudio
+    ? `${toSafeFileBase(title)}_MP3_${maxAudioDurationSeconds}s.mp3`
+    : toQualityVideoFilename(requestedQuality, title);
   const desiredPath = path.join(targetDir, desiredFilename);
 
   try {
@@ -11271,7 +11318,14 @@ const downloadPlatformVideoToFile = async (
     format: isAudio ? getReferenceAudioFormatSelector() : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: 'mp4',
     ...(isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {}),
-    ...(isAudio ? {} : { postprocessorArgs: 'ffmpeg:-c copy -movflags +faststart' }),
+    ...(isAudio
+      ? {
+          extractAudio: true,
+          audioFormat: 'mp3',
+          audioQuality: '128K',
+          postprocessorArgs: `ffmpeg:-t ${maxAudioDurationSeconds}`,
+        }
+      : { postprocessorArgs: 'ffmpeg:-c copy -movflags +faststart' }),
   };
 
   await withTimeout(
@@ -11913,6 +11967,7 @@ const buildYtDlpBaseOptions = () => ({
   noWarnings: true,
   noCheckCertificates: true,
   noPlaylist: true,
+  forceIpv4: true,
   ...(resolvedFfmpegPath ? { ffmpegLocation: path.dirname(String(resolvedFfmpegPath)) } : {}),
 });
 
@@ -15267,6 +15322,7 @@ registerVideoDownloaderRoutes(app, {
       titleHint: title,
       sourcePageUrl: url,
       mode: quality === 'audio' ? 'audio' : 'video',
+      maxDurationSeconds: quality === 'audio' ? 120 : undefined,
     });
   },
 });
@@ -15303,6 +15359,7 @@ app.post('/api/platform-video-download', async (req, res) => {
       titleHint,
       sourcePageUrl,
       mode,
+      maxDurationSeconds: mode === 'audio' ? 120 : undefined,
       saveToWebsiteAssets,
     });
     return res.json(result);
@@ -18599,10 +18656,13 @@ export async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
-    const hmrPort = await findAvailablePort(Number(process.env.VITE_HMR_PORT || 24678), 60).catch(() => {
-      console.warn('Could not find free HMR port — hot reload will be unavailable');
-      return -1;
-    });
+    const hmrDisabled = process.env.VITE_HMR_DISABLED === '1' || process.env.DISABLE_HMR === 'true';
+    const hmrPort = hmrDisabled
+      ? -1
+      : await findAvailablePort(Number(process.env.VITE_HMR_PORT || 24678), 60).catch(() => {
+          console.warn('Could not find free HMR port — hot reload will be unavailable');
+          return -1;
+        });
     const vite = await createViteServer({
       server: {
         middlewareMode: true,

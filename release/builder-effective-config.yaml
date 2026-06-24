@@ -11,6 +11,7 @@ files:
       - desktop/**/*
       - electron/**/*
       - scripts/insights-page-evaluate.cjs
+      - server/**/*
       - server.ts
       - src/lib/streamUrl.ts
       - package.json
@@ -24,6 +25,7 @@ files:
       - node_modules/normalize-path/**/*
       - node_modules/readdir-glob/**/*
       - node_modules/graceful-fs/**/*
+      - node_modules/fonteditor-core/**/*
       - node_modules/sharp/**/*
       - node_modules/@img/**/*
 asarUnpack:
@@ -34,6 +36,10 @@ asarUnpack:
 extraResources:
   - from: vendor/chromium-pack
     to: chromium
+    filter:
+      - '**/*'
+  - from: vendor/bin-pack
+    to: bin
     filter:
       - '**/*'
 win:

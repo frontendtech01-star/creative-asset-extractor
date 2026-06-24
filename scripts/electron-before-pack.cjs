@@ -90,7 +90,10 @@ module.exports = async function beforePack() {
     if (!shouldIncludeChromiumVersionDir(versionDir, packArch)) continue;
     const src = path.join(sourceRoot, versionDir);
     const dest = path.join(packChromeDir, versionDir);
-    execFileSync('cp', ['-RL', src, dest]);
+    // Preserve Chromium's framework symlinks. Dereferencing them turns the
+    // framework root into a second physical bundle and makes codesign report
+    // "bundle format is ambiguous" on another Mac.
+    execFileSync('cp', ['-R', src, dest]);
     const bundleFolder = versionDir.startsWith('mac_arm-') ? 'chrome-mac-arm64' : 'chrome-mac-x64';
     const chromeApp = path.join(dest, bundleFolder, 'Google Chrome for Testing.app');
     pruneBundledChromiumTree(chromeApp);

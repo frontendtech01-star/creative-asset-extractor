@@ -82,6 +82,10 @@ export const writeWebsiteExtractionSession = (session: WebsiteExtractionSession)
 export const clearWebsiteExtractionSession = () => removeJson(WEBSITE_SESSION_KEY);
 
 export const readMainSection = (): MainSection => {
+  const saved = readJson<{ section?: MainSection }>(MAIN_SECTION_KEY);
+  if (saved?.section === 'video-downloader' || saved?.section === 'website-extraction') {
+    return saved.section;
+  }
   return 'website-extraction';
 };
 
