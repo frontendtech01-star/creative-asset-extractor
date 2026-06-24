@@ -2,7 +2,7 @@
 
 ## Download
 
-[Download Creative Asset Extractor for Apple Silicon Mac](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative%20Asset%20Extractor-2.0.0-arm64.dmg)
+[Download Creative Asset Extractor for Apple Silicon Mac](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg)
 
 ## Features and capabilities
 
