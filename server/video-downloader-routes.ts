@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import archiver from 'archiver';
-import { resolvePlatformVideoAssetsDir } from '../src/lib/projectDownloadsPaths';
+import { resolveCreativeAssetsDir, resolvePlatformVideoAssetsDir } from '../src/lib/projectDownloadsPaths';
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +79,8 @@ type DownloadJob = {
   title?: string;
   platform: DownloaderPlatform;
   quality: DownloadQuality;
+  sourcePageUrl?: string;
+  saveToWebsiteAssets?: boolean;
   status: JobStatus;
   progress: number;
   downloadedBytes: number;
@@ -97,6 +99,8 @@ type SpecialDownload = (input: {
   url: string;
   quality: DownloadQuality;
   title?: string;
+  sourcePageUrl?: string;
+  saveToWebsiteAssets?: boolean;
 }) => Promise<any>;
 
 export type VideoDownloaderRouteOptions = {
@@ -756,7 +760,9 @@ const runDownloadAttempt = async (
   throwIfJobCancelled(job);
   const attemptStart = Date.now();
   const ytdlp = await ensureRuntimeYtDlp(options);
-  const platformDir = resolvePlatformVideoAssetsDir(job.platform);
+  const platformDir = job.saveToWebsiteAssets && job.sourcePageUrl
+    ? resolveCreativeAssetsDir(job.sourcePageUrl, 'Videos')
+    : resolvePlatformVideoAssetsDir(job.platform);
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
   await fsp.mkdir(platformDir, { recursive: true });
   const outputTemplate = path.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
@@ -1255,7 +1261,13 @@ const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob
   try {
     if (job.platform === 'ispot' && options.specialDownload) {
       updateJob(job, { progress: 12, message: 'Resolving iSpot.tv stream...' });
-      const special = await options.specialDownload({ url: job.url, quality: job.quality, title: job.title });
+      const special = await options.specialDownload({
+        url: job.url,
+        quality: job.quality,
+        title: job.title,
+        sourcePageUrl: job.sourcePageUrl,
+        saveToWebsiteAssets: job.saveToWebsiteAssets,
+      });
       await completeJob(options, job, special);
       return;
     }
@@ -1297,12 +1309,12 @@ const pumpQueue = (options: VideoDownloaderRouteOptions) => {
   }
 };
 
-const runningJobKey = (platform: string, url: string, quality: string) =>
-  `${platform}:${url}:${quality}`;
+const runningJobKey = (platform: string, url: string, quality: string, sourcePageUrl = '') =>
+  `${platform}:${url}:${quality}:${sourcePageUrl}`;
 
 const createJob = (
   options: VideoDownloaderRouteOptions,
-  input: { url: string; quality?: string; title?: string }
+  input: { url: string; quality?: string; title?: string; sourcePageUrl?: string; saveToWebsiteAssets?: boolean }
 ) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality: DownloadQuality = input.quality === 'audio'
@@ -1313,10 +1325,17 @@ const createJob = (
         ? 'fhd'
         : '4k';
   // Dedup: if same platform+url+quality is already running or completed, return existing
-  const key = runningJobKey(validated.platform, validated.url, quality);
+  const sourcePageUrl = String(input.sourcePageUrl || '').trim();
+  const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
+  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : '');
   for (const existing of jobs.values()) {
     if (existing.status === 'queued' || existing.status === 'running') {
-      if (runningJobKey(existing.platform, existing.url, existing.quality) === key) {
+      if (runningJobKey(
+        existing.platform,
+        existing.url,
+        existing.quality,
+        existing.saveToWebsiteAssets ? existing.sourcePageUrl : ''
+      ) === key) {
         return existing;
       }
     }
@@ -1327,6 +1346,8 @@ const createJob = (
     title: sanitizeFilenamePart(input.title || '', ''),
     platform: validated.platform,
     quality,
+    sourcePageUrl,
+    saveToWebsiteAssets,
     status: 'queued',
     progress: 0,
     downloadedBytes: 0,
@@ -1374,6 +1395,8 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         url: String(req.body?.url || '').trim(),
         quality: String(req.body?.quality || 'fhd').toLowerCase(),
         title: String(req.body?.title || '').trim(),
+        sourcePageUrl: String(req.body?.sourcePageUrl || '').trim(),
+        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
       });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });

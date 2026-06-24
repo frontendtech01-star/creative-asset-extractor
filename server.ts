@@ -1994,11 +1994,11 @@ app.get('/api/release-notes', async (_req, res) => {
     release = {
       ...release,
       body: localNotes || githubRelease.body || '',
-      htmlUrl: links.htmlUrl || githubRelease.htmlUrl,
-      packageDownloadUrl: links.packageDownloadUrl,
-      packageAssetName: links.packageAssetName,
-      dmgDownloadUrl: '',
-      dmgAssetName: '',
+      htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
+      packageDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
+      dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       exeDownloadUrl: githubRelease.exeDownloadUrl || '',
       source: 'github',
     };
@@ -15314,13 +15314,14 @@ registerVideoDownloaderRoutes(app, {
   resourcesPath: getResourcesPath(),
   validateUrl: assertPublicAssetUrl,
   specialInspect: async (url) => ispotVideoExtractor(url),
-  specialDownload: async ({ url, quality, title }) => {
+  specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
     const payload = await ispotVideoExtractor(url);
     const card = Array.isArray(payload?.videos) ? payload.videos[0] : null;
     const refreshedUrl = String(card?.sourceStreamUrl || card?.url || url);
     return downloadPlatformVideoToFile(refreshedUrl, quality === 'audio' ? 'fhd' : quality, {
       titleHint: title,
-      sourcePageUrl: url,
+      sourcePageUrl: sourcePageUrl || url,
+      saveToWebsiteAssets,
       mode: quality === 'audio' ? 'audio' : 'video',
       maxDurationSeconds: quality === 'audio' ? 120 : undefined,
     });

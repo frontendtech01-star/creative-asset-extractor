@@ -1,13 +1,13 @@
-import React, { useState } from 'react';
-import { Check, Copy, Download, PackageOpen, Sparkles, X } from 'lucide-react';
+import React from 'react';
+import { Download, Sparkles, X } from 'lucide-react';
 import type { GithubReleaseInfo } from '../lib/githubRelease';
 import { releaseDownloadLabel, resolveReleaseDownloadUrl } from '../lib/githubRelease';
 import { openExternalUrl } from '../lib/openExternal';
 
-const LATEST_BETA_PACKAGE_URL =
-  'https://codeload.github.com/frontendtech01-star/creative-asset-extractor/zip/refs/heads/v2.0';
-const ZIP_DOWNLOAD_PATH = 'https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative-Asset-Extractor-Localhost.zip';
-const MAC_LAUNCH_COMMAND = 'xattr -dr com.apple.quarantine . && chmod +x "Run Localhost.command" && ./"Run Localhost.command"';
+const BETA_DMG_URL =
+  'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg';
+const REMOVE_QUARANTINE_COMMAND = 'xattr -dr com.apple.quarantine "/Applications/Creative Asset Extractor.app"';
+const OPEN_APP_COMMAND = 'open "/Applications/Creative Asset Extractor.app"';
 
 export function LatestReleaseModal({
   open,
@@ -26,14 +26,13 @@ export function LatestReleaseModal({
   onDownload: () => void;
   onLater: () => void;
 }) {
-  const [copiedZipPath, setCopiedZipPath] = useState(false);
   if (!open) return null;
 
   const versionLabel = currentVersion.replace(/^v/i, '');
   const isNotesView = viewMode === 'notes';
   const downloadUrl = resolveReleaseDownloadUrl(release);
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
-  const notesDownloadUrl = LATEST_BETA_PACKAGE_URL;
+  const notesDownloadUrl = release?.dmgDownloadUrl || BETA_DMG_URL;
   const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
 
   return (
@@ -81,61 +80,29 @@ export function LatestReleaseModal({
                 <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
                   <p className="font-medium text-zinc-900">Beta Release</p>
                   <ul className="list-disc space-y-1 pl-5 text-zinc-700">
-                    <li>Uses fast Mac-compatible 1080p H.264 downloads by default.</li>
-                    <li>Prevents YouTube downloads from stalling at 35% before fallback.</li>
-                    <li>Filters blank and tracking-only Vimeo player cards.</li>
-                    <li>Keeps cancel controls for active video downloads.</li>
-                    <li>Removes MP3 download options.</li>
-                    <li>Includes a lightweight localhost ZIP for macOS and Windows.</li>
-                    <li>Downloads a private Node.js runtime on macOS without an administrator password.</li>
+                    <li>Extract images, fonts, colors and videos from websites.</li>
+                    <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.</li>
+                    <li>Save fast, Mac-compatible 1080p H.264 video files.</li>
+                    <li>Cancel active downloads and clear downloaded platform folders.</li>
+                    <li>Run locally with bundled Node.js, Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
                   </ul>
-                  <p className="text-zinc-700">
-                    <button
-                      type="button"
-                      onClick={() => notesDownloadUrl ? openExternalUrl(notesDownloadUrl) : undefined}
-                      disabled={!notesDownloadUrl}
-                      className="font-medium text-blue-600 hover:text-blue-700"
-                    >
-                      Download Beta Release package
-                    </button>
-                  </p>
-                  <div className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">ZIP download path</p>
-                    <code className="mt-2 block break-all rounded bg-zinc-900 px-3 py-2 font-mono text-xs text-white">
-                      {ZIP_DOWNLOAD_PATH}
-                    </code>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(ZIP_DOWNLOAD_PATH).then(() => {
-                          setCopiedZipPath(true);
-                          window.setTimeout(() => setCopiedZipPath(false), 1600);
-                        });
-                      }}
-                      className="mt-2 inline-flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-100"
-                    >
-                      {copiedZipPath ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
-                      {copiedZipPath ? 'ZIP path copied' : 'Copy ZIP path'}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void openExternalUrl(notesDownloadUrl)}
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700"
+                  >
+                    <Download className="h-4 w-4" />
+                    Download DMG for Apple Silicon Mac
+                  </button>
                 </div>
               ) : null}
 
               {isNotesView ? (
                 <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-950">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <PackageOpen className="h-4 w-4" />
-                    Installation guide.md
-                  </div>
-                  <ol className="mt-2 list-decimal space-y-1 pl-5 text-blue-900">
-                    <li>Right-click the downloaded and extracted folder.</li>
-                    <li>Select <strong>Open Folder in Terminal</strong>.</li>
-                    <li>Paste the command below and press Return.</li>
-                  </ol>
-                  <code className="mt-3 block break-all rounded-lg bg-blue-950 px-3 py-3 font-mono text-xs text-white">
-                    {MAC_LAUNCH_COMMAND}
+                  <p className="font-semibold">Open the installed app from Terminal</p>
+                  <code className="mt-3 block whitespace-pre-wrap break-all rounded-lg bg-blue-950 px-3 py-3 font-mono text-xs text-white">
+                    {REMOVE_QUARANTINE_COMMAND}{'\n'}{OPEN_APP_COMMAND}
                   </code>
-                  <p className="mt-2 text-xs text-blue-800">The launcher installs required packages, starts localhost, and opens the browser.</p>
                 </div>
               ) : null}
             </>

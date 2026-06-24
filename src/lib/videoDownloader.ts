@@ -103,6 +103,8 @@ export const startDownloaderJob = async (input: {
   url: string;
   quality: DownloaderQuality;
   title?: string;
+  sourcePageUrl?: string;
+  saveToWebsiteAssets?: boolean;
 }) => {
   const response = await apiFetch('/api/downloader/download', {
     method: 'POST',

@@ -7,8 +7,8 @@
 ## Features and capabilities
 
 - Extract images, fonts, colors and videos from websites.
-- Download fast, Mac-compatible 1080p H.264 videos.
-- Supports YouTube, Vimeo, Instagram, Facebook, X.com, TikTok and iSpot.tv.
+- Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.
+- Save fast, Mac-compatible 1080p H.264 videos.
 - Cancel active downloads and clear downloaded files with their platform folders.
 - Includes Node.js, Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.
 - Runs locally without installing Node.js on the Mac.

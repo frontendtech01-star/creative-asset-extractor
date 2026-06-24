@@ -290,7 +290,13 @@ export default function VideoExtractor({
     setDownloadResult(null);
     try {
       if (!request.url) throw new Error('No downloadable video link was found.');
-      const started = await startDownloaderJob({ url: request.url, quality, title });
+      const started = await startDownloaderJob({
+        url: request.url,
+        quality,
+        title,
+        sourcePageUrl: seedUrl || request.sourcePageUrl,
+        saveToWebsiteAssets: true,
+      });
       setActiveCardJob({ cardUrl, job: started });
       const completed = await waitForDownloaderJob(started, (job) => setActiveCardJob({ cardUrl, job }));
       if (completed.status === 'cancelled') {

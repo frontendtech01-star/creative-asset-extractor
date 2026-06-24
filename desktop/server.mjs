@@ -755,7 +755,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   throwIfJobCancelled(job);
   const attemptStart = Date.now();
   const ytdlp = await ensureRuntimeYtDlp(options);
-  const platformDir = resolvePlatformVideoAssetsDir(job.platform);
+  const platformDir = job.saveToWebsiteAssets && job.sourcePageUrl ? resolveCreativeAssetsDir(job.sourcePageUrl, "Videos") : resolvePlatformVideoAssetsDir(job.platform);
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   await fsp2.mkdir(platformDir, { recursive: true });
   const outputTemplate = path2.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
@@ -1150,7 +1150,13 @@ var processJob = async (options, job) => {
   try {
     if (job.platform === "ispot" && options.specialDownload) {
       updateJob(job, { progress: 12, message: "Resolving iSpot.tv stream..." });
-      const special = await options.specialDownload({ url: job.url, quality: job.quality, title: job.title });
+      const special = await options.specialDownload({
+        url: job.url,
+        quality: job.quality,
+        title: job.title,
+        sourcePageUrl: job.sourcePageUrl,
+        saveToWebsiteAssets: job.saveToWebsiteAssets
+      });
       await completeJob(options, job, special);
       return;
     }
@@ -1190,14 +1196,21 @@ var pumpQueue = (options) => {
     });
   }
 };
-var runningJobKey = (platform, url, quality) => `${platform}:${url}:${quality}`;
+var runningJobKey = (platform, url, quality, sourcePageUrl = "") => `${platform}:${url}:${quality}:${sourcePageUrl}`;
 var createJob = (options, input) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality = input.quality === "audio" ? "audio" : input.quality === "hd" ? "hd" : input.quality === "fhd" ? "fhd" : "4k";
-  const key = runningJobKey(validated.platform, validated.url, quality);
+  const sourcePageUrl = String(input.sourcePageUrl || "").trim();
+  const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
+  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : "");
   for (const existing of jobs.values()) {
     if (existing.status === "queued" || existing.status === "running") {
-      if (runningJobKey(existing.platform, existing.url, existing.quality) === key) {
+      if (runningJobKey(
+        existing.platform,
+        existing.url,
+        existing.quality,
+        existing.saveToWebsiteAssets ? existing.sourcePageUrl : ""
+      ) === key) {
         return existing;
       }
     }
@@ -1208,6 +1221,8 @@ var createJob = (options, input) => {
     title: sanitizeFilenamePart(input.title || "", ""),
     platform: validated.platform,
     quality,
+    sourcePageUrl,
+    saveToWebsiteAssets,
     status: "queued",
     progress: 0,
     downloadedBytes: 0,
@@ -1250,7 +1265,9 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       const job = createJob(options, {
         url: String(req.body?.url || "").trim(),
         quality: String(req.body?.quality || "fhd").toLowerCase(),
-        title: String(req.body?.title || "").trim()
+        title: String(req.body?.title || "").trim(),
+        sourcePageUrl: String(req.body?.sourcePageUrl || "").trim(),
+        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true
       });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
@@ -3615,11 +3632,11 @@ app.get("/api/release-notes", async (_req, res) => {
     release = {
       ...release,
       body: localNotes || githubRelease.body || "",
-      htmlUrl: links.htmlUrl || githubRelease.htmlUrl,
-      packageDownloadUrl: links.packageDownloadUrl,
-      packageAssetName: links.packageAssetName,
-      dmgDownloadUrl: "",
-      dmgAssetName: "",
+      htmlUrl: githubRelease.htmlUrl || links.htmlUrl,
+      packageDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
+      dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
+      dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       exeDownloadUrl: githubRelease.exeDownloadUrl || "",
       source: "github"
     };
@@ -14084,13 +14101,14 @@ registerVideoDownloaderRoutes(app, {
   resourcesPath: getResourcesPath(),
   validateUrl: assertPublicAssetUrl,
   specialInspect: async (url) => ispotVideoExtractor(url),
-  specialDownload: async ({ url, quality, title }) => {
+  specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
     const payload = await ispotVideoExtractor(url);
     const card = Array.isArray(payload?.videos) ? payload.videos[0] : null;
     const refreshedUrl = String(card?.sourceStreamUrl || card?.url || url);
     return downloadPlatformVideoToFile(refreshedUrl, quality === "audio" ? "fhd" : quality, {
       titleHint: title,
-      sourcePageUrl: url,
+      sourcePageUrl: sourcePageUrl || url,
+      saveToWebsiteAssets,
       mode: quality === "audio" ? "audio" : "video",
       maxDurationSeconds: quality === "audio" ? 120 : void 0
     });
