@@ -1850,8 +1850,7 @@ const normalizeAssetVersion = (version: string) => {
 
 const buildDmgAssetName = (productName: string, version: string) => {
   const cleanVersion = normalizeAssetVersion(version);
-  const displayName = String(productName || 'Creative Asset Extractor').trim() || 'Creative Asset Extractor';
-  return `${displayName}-${cleanVersion}-arm64.dmg`;
+  return `Creative.Asset.Extractor-${cleanVersion}-arm64.dmg`;
 };
 
 const buildExeAssetName = (version: string) => {
