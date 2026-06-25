@@ -204,7 +204,11 @@ const providerAllowsLocalEmbed = (video: any) => {
   const source = resolveEmbeddedVideoLink(video);
   try {
     const host = new URL(source).hostname.replace(/^www\./, '').toLowerCase();
-    return host.includes('youtube.com') || host === 'youtu.be' || host.includes('wistia.com') || host.includes('wistia.net');
+    // YouTube embeds frequently render "Watch video on YouTube / Error 153"
+    // inside localhost/package contexts, which looks like a broken player card.
+    // Keep the card actions, but show the thumbnail instead of a live iframe.
+    if (host.includes('youtube.com') || host === 'youtu.be') return false;
+    return host.includes('wistia.com') || host.includes('wistia.net');
   } catch {
     return false;
   }
@@ -598,7 +602,7 @@ export default function VideoExtractor({
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Download className="h-4 w-4" />
-                {bulkDownloading ? 'Downloading All...' : 'Download All · Fast FHD'}
+                {bulkDownloading ? 'Downloading All Video...' : 'Download All Video'}
               </button>
             </div>
             {bulkJobs.length ? (
@@ -745,11 +749,11 @@ export default function VideoExtractor({
                         className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       >
                         {downloading === video.url ? (
-                          <span className="animate-pulse">Downloading fast FHD...</span>
+                          <span className="animate-pulse">Downloading Video...</span>
                         ) : (
                           <>
                             <Download className="w-4 h-4" />
-                            Download MP4 · Fast Mac-Compatible FHD
+                            Download Video
                           </>
                         )}
                       </button>
@@ -794,11 +798,11 @@ export default function VideoExtractor({
                         className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       >
                         {downloading === video.url ? (
-                          <span className="animate-pulse">Downloading fast FHD...</span>
+                          <span className="animate-pulse">Downloading Video...</span>
                         ) : (
                           <>
                             <Download className="w-4 h-4" />
-                            Download Video · Fast Mac-Compatible FHD
+                            Download Video
                           </>
                         )}
                       </button>

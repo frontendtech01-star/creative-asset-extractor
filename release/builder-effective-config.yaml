@@ -43,7 +43,11 @@ extraResources:
     filter:
       - '**/*'
 win:
-  target: nsis
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Creative.Asset.Extractor-Setup-${version}-${arch}.${ext}
 compression: maximum
 dmg:
   format: UDZO

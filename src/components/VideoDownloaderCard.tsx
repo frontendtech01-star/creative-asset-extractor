@@ -214,7 +214,7 @@ export default function VideoDownloaderCard({
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy && job?.quality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            Download Fast Mac-Compatible FHD
+            Download Video
           </button>
         </div>
       </div>

@@ -428,7 +428,7 @@ export default function VideoDownloaderPage() {
                   className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
                 >
                   {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  {busy && activeQuality === 'fhd' ? 'Downloading Fast FHD...' : inputUrls.length > 1 ? `Download ${inputUrls.length} Videos · Fast FHD` : 'Download Video · Fast Mac-Compatible FHD'}
+                  {busy && activeQuality === 'fhd' ? 'Downloading Video...' : inputUrls.length > 1 ? 'Download All Video' : 'Download Video'}
                 </button>
               </div>
             </form>

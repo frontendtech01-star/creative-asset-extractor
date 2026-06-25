@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Download, FolderOpen, Search, Type, Filter } from 'lucide-react';
+import { Check, Download, FolderOpen, Search, Type } from 'lucide-react';
 import { apiFetch, apiUrl } from '../lib/api';
 import {
   buildFontDisplayName,
@@ -65,7 +65,6 @@ const getFontVariantKey = (font: any) => {
     normalizeFontWeightKey(identity.weight),
     normalizeFontStyleKey(String(identity.style || '')),
     resolveFontSourceFormat(font),
-    getFontSelectionKey(font),
   ].join('|').toLowerCase();
 };
 
@@ -126,10 +125,8 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
 
 export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: any[]; sourcePageUrl?: string }) {
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState('all');
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadingZip, setDownloadingZip] = useState(false);
-  const [selectedFormats, setSelectedFormats] = useState<Record<string, string>>({});
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -137,10 +134,6 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
   useEffect(() => {
     setSelected(new Set());
   }, [fonts, sourcePageUrl]);
-
-  const handleFormatChange = (url: string, format: string) => {
-    setSelectedFormats(prev => ({ ...prev, [url]: format }));
-  };
 
   const openDownloadFolder = async () => {
     try {
@@ -161,7 +154,7 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
     const url = getFontSelectionKey(font);
     setDownloading(url);
     const originalFormat = resolveFontSourceFormat(font);
-    const toFormat = selectedFormats[url] || originalFormat || 'ttf';
+    const toFormat = originalFormat === 'woff2' ? 'woff2' : 'woff';
     setDownloadResult(null);
 
     try {
@@ -202,12 +195,10 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
     const label = getReadableFontLabel(font);
     const filename = getOriginalFontFilename(font);
     const matchesSearch = `${label} ${filename}`.toLowerCase().includes(searchTerm.toLowerCase());
-    const currentFormat = selectedFormats[font.url] || (['ttf', 'woff', 'woff2', 'eot', 'svg'].includes(font.format) ? font.format : 'ttf');
-    const matchesFilter = filterType === 'all' || currentFormat.toLowerCase() === filterType.toLowerCase();
-    return matchesSearch && matchesFilter;
+    const format = resolveFontSourceFormat(font);
+    return matchesSearch && (format === 'woff' || format === 'woff2');
   });
 
-  const uniqueTypes = ['ttf', 'woff', 'woff2', 'eot', 'svg'];
   const selectedFonts = filteredFonts.filter((font) => selected.has(getFontSelectionKey(font)));
   const selectedCount = selectedFonts.length;
   const toggleSelected = (font: any) => {
@@ -226,9 +217,7 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
     setDownloadResult(null);
     try {
       const items = selectedFonts.flatMap((font) =>
-        (['ttf', 'woff'] as const).map((toFormat) =>
-          buildFontZipItem(font, toFormat, getFontFilenameBase(font))
-        )
+        [buildFontZipItem(font, resolveFontSourceFormat(font) === 'woff2' ? 'woff2' : 'woff', getFontFilenameBase(font))]
       );
       const response = await apiFetch('/api/download-zip', {
         method: 'POST',
@@ -280,19 +269,6 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
-          </div>
-          <div className="relative">
-            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="pl-9 pr-8 py-2 bg-white border border-zinc-200 rounded-xl text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="all">All Types</option>
-              {uniqueTypes.map(type => (
-                <option key={type} value={type}>{type.toUpperCase()}</option>
-              ))}
-            </select>
           </div>
         </div>
         <div className="flex w-full gap-2 sm:w-auto">
@@ -407,25 +383,13 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
                   <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
                 </div>
                 <div className="flex gap-2 w-full">
-                  <select
-                    className="flex-1 bg-zinc-50 border border-zinc-200 text-zinc-700 text-sm rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium appearance-none"
-                    value={selectedFormats[font.url] || (['ttf', 'woff', 'woff2', 'eot', 'svg'].includes(font.format) ? font.format : 'ttf')}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(e) => handleFormatChange(font.url, e.target.value)}
-                  >
-                    <option value="ttf">TTF</option>
-                    <option value="woff">WOFF</option>
-                    <option value="woff2">WOFF2</option>
-                    <option value="eot">EOT</option>
-                    <option value="svg">SVG</option>
-                  </select>
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
                       handleDownload(font);
                     }}
                     disabled={downloading === selectionKey}
-                    className="flex-2 flex items-center justify-center flex-grow gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="flex w-full items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {downloading === selectionKey ? (
                       <span className="animate-pulse">...</span>

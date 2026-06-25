@@ -1917,9 +1917,64 @@ var scoreFontRecord = (font) => {
   if (String(font?.status || "").toLowerCase() === "downloaded") score += 40;
   return score;
 };
+var isPreferredExtractedFontFormat = (font) => {
+  const format = resolveFontSourceFormat(font);
+  return format === "woff" || format === "woff2";
+};
+var fontDedupeFormatPriority = (font) => {
+  const format = resolveFontSourceFormat(font);
+  if (format === "woff") return 50;
+  if (format === "woff2") return 40;
+  return 0;
+};
+var compareFontDedupePreference = (a, b) => {
+  const formatDelta = fontDedupeFormatPriority(b) - fontDedupeFormatPriority(a);
+  if (formatDelta !== 0) return formatDelta;
+  return scoreFontRecord(b) - scoreFontRecord(a);
+};
+var getFontFileVariantKey = (font) => {
+  const candidate = String(font?.url || font?.cachedUrl || "").trim();
+  if (!candidate || candidate.startsWith("data:")) return "";
+  try {
+    const parsed = new URL(candidate);
+    const pathWithoutExt = parsed.pathname.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
+    if (pathWithoutExt === parsed.pathname) return "";
+    return `${parsed.hostname.replace(/^www\./i, "").toLowerCase()}${decodeURIComponent(pathWithoutExt).toLowerCase()}`;
+  } catch {
+    const pathWithoutExt = candidate.split(/[?#]/)[0].replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
+    if (!pathWithoutExt || pathWithoutExt === candidate.split(/[?#]/)[0]) return "";
+    return pathWithoutExt.toLowerCase();
+  }
+};
+var preferSingleFontFormatPerFileStem = (fonts) => {
+  const groups = /* @__PURE__ */ new Map();
+  const passthrough = [];
+  for (const font of fonts) {
+    const key = getFontFileVariantKey(font);
+    if (!key) {
+      passthrough.push(font);
+      continue;
+    }
+    const bucket = groups.get(key) || [];
+    bucket.push(font);
+    groups.set(key, bucket);
+  }
+  const preferred = Array.from(groups.values()).map((group) => {
+    const sorted = [...group].sort(compareFontDedupePreference);
+    const best = sorted[0];
+    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
+    return {
+      ...merged,
+      url: best.url,
+      format: best.format || merged.format,
+      cachedUrl: best.cachedUrl || merged.cachedUrl
+    };
+  });
+  return [...passthrough, ...preferred];
+};
 var dedupeFontsByLogicalKey = (fonts) => {
   const groups = /* @__PURE__ */ new Map();
-  for (const font of fonts) {
+  for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
     if (!font?.url || String(font.url).startsWith("data:")) continue;
     const key = getFontLogicalKey(font);
     if (!key) continue;
@@ -1929,7 +1984,7 @@ var dedupeFontsByLogicalKey = (fonts) => {
   }
   const deduped = [];
   for (const group of groups.values()) {
-    const sorted = [...group].sort((a, b) => scoreFontRecord(b) - scoreFontRecord(a));
+    const sorted = [...group].sort(compareFontDedupePreference);
     const best = sorted[0];
     const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
     deduped.push({
@@ -1968,8 +2023,8 @@ var isJunkFontLabel = (value) => {
   if (/^[0-9a-f]{8,}$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
   const compact = raw.replace(/[\s.-]+/g, "");
-  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open)/i.test(raw);
-  if (/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) || !hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact)) return true;
+  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|compressed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open|nexon|shilia)/i.test(raw);
+  if (!hasFamilyWord && /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) || !hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact)) return true;
   if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
   if (/^(?=[a-z0-9 ._-]*\d)[a-z0-9_-]{16,}(?:[ ._-]+[a-z0-9_-]{3,})+$/i.test(base)) return true;
   return false;
@@ -1979,6 +2034,7 @@ var scoreFontFamilyLabel = (value) => {
   if (!trimmed) return 0;
   if (isJunkFontLabel(trimmed)) return 1;
   if (/^https?:\/\//i.test(trimmed)) return 1;
+  if (/[._-][0-9a-f]{8,}$/i.test(trimmed)) return 2;
   const words = trimmed.split(/\s+/).filter(Boolean).length;
   return 10 + Math.min(words, 4) + Math.min(trimmed.length, 48);
 };
@@ -3563,8 +3619,8 @@ var normalizeAssetVersion = (version) => {
 };
 var buildDmgAssetName = (productName, version) => {
   const cleanVersion = normalizeAssetVersion(version);
-  const slug = String(productName || "app").trim().replace(/\s+/g, "-");
-  return `${slug}-${cleanVersion}-arm64.dmg`;
+  const displayName = String(productName || "Creative Asset Extractor").trim() || "Creative Asset Extractor";
+  return `${displayName}-${cleanVersion}-arm64.dmg`;
 };
 var buildExeAssetName = (version) => {
   const cleanVersion = normalizeAssetVersion(version);
@@ -3781,7 +3837,7 @@ var PAGE_FETCH_USER_AGENTS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ];
-var BOT_WALL_HTML_PATTERN = /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai|waf challenge|bot detection/i;
+var BOT_WALL_HTML_PATTERN = /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai(?:.*(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
 var htmlLooksLikeBotWall = (html) => {
   const sample = String(html || "").slice(0, 16e4);
   if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(sample)) {
@@ -4185,7 +4241,7 @@ var fetchSiteHtmlViaBrowser = async (siteUrl) => {
 var DEFAULT_ASSET_STATUS = "path-only";
 var withAssetStatus = (asset, status = DEFAULT_ASSET_STATUS) => asset?.url ? { ...asset, status: asset.status || status } : asset;
 var normalizeCssFontFamilyName = (family) => {
-  const raw = String(family || "").trim().replace(/^["']+|["']+$/g, "");
+  const raw = String(family || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\\s*/g, " ").replace(/\s+/g, " ").trim();
   const nextFont = raw.match(/^__([A-Za-z0-9_]+?)_[a-f0-9]+$/i);
   if (nextFont?.[1]) {
     return nextFont[1].replace(/_/g, " ").replace(/\s+/g, " ").trim();
@@ -4203,31 +4259,33 @@ var extractFontsFromCss = (cssText, baseUrl) => {
   while ((match = fontFaceRegex.exec(cssText)) !== null) {
     const block = match[1];
     const fontFamilyMatch = block.match(/font-family\s*:\s*['"]?([^'";]+)['"]?/i);
-    const srcMatch = block.match(/src\s*:\s*([^;]+)/i);
-    if (fontFamilyMatch && srcMatch) {
+    const srcMatches = Array.from(block.matchAll(/src\s*:\s*([^;]+)/gi));
+    if (fontFamilyMatch && srcMatches.length > 0) {
       const fontFamily = normalizeCssFontFamilyName(fontFamilyMatch[1]);
       const fontWeightMatch = block.match(/font-weight\s*:\s*([^;]+)/i);
       const fontStyleMatch = block.match(/font-style\s*:\s*([^;]+)/i);
       const candidates = [];
-      const srcPartRegex = /url\(\s*['"]?([^'")]+?)['"]?\s*\)\s*(?:format\(\s*['"]?([^'")]+?)['"]?\s*\))?/gi;
-      let srcPart;
-      while ((srcPart = srcPartRegex.exec(srcMatch[1])) !== null) {
-        const urlStr = srcPart[1];
-        const formatHint = srcPart[2] || "";
-        const absoluteUrl = resolveUrl(baseUrl, urlStr);
-        if (!absoluteUrl || absoluteUrl.startsWith("data:")) continue;
-        const format = inferFontFormatFromCssSrc(absoluteUrl, formatHint);
-        if (!isSupportedFontFormat(format)) continue;
-        candidates.push({
-          family: fontFamily,
-          url: absoluteUrl,
-          format,
-          cssSource: baseUrl,
-          weight: fontWeightMatch?.[1]?.trim() || void 0,
-          style: fontStyleMatch?.[1]?.trim() || void 0,
-          source: "@font-face",
-          status: DEFAULT_ASSET_STATUS
-        });
+      for (const srcMatch of srcMatches) {
+        const srcPartRegex = /url\(\s*['"]?([^'")]+?)['"]?\s*\)\s*(?:format\(\s*['"]?([^'")]+?)['"]?\s*\))?/gi;
+        let srcPart;
+        while ((srcPart = srcPartRegex.exec(srcMatch[1])) !== null) {
+          const urlStr = srcPart[1];
+          const formatHint = srcPart[2] || "";
+          const absoluteUrl = resolveUrl(baseUrl, urlStr);
+          if (!absoluteUrl || absoluteUrl.startsWith("data:")) continue;
+          const format = inferFontFormatFromCssSrc(absoluteUrl, formatHint);
+          if (!isSupportedFontFormat(format)) continue;
+          candidates.push({
+            family: fontFamily,
+            url: absoluteUrl,
+            format,
+            cssSource: baseUrl,
+            weight: fontWeightMatch?.[1]?.trim() || void 0,
+            style: fontStyleMatch?.[1]?.trim() || void 0,
+            source: "@font-face",
+            status: DEFAULT_ASSET_STATUS
+          });
+        }
       }
       if (candidates.length > 0) {
         const gstatic = candidates.find((candidate) => /fonts\.gstatic\.com/i.test(String(candidate?.url || "")));
@@ -4604,10 +4662,13 @@ var decodeCssUrlValue = (value) => String(value || "").trim().replace(/^['"]|['"
 var PRESERVE_IMAGE_QUERY_KEYS = /[?&](?:context|id|mediaid|assetid|uuid|hash|token|sig|signature|expires|exp|key)=/i;
 var sanitizeExtractedImageUrl = (value) => {
   const cleaned = decodeCssUrlValue(value).trim();
-  const extMatch = cleaned.match(/^(.*?\.(?:svg|png|jpe?g|webp|gif|avif))(\?[^"'()\s;>]*)?/i);
+  const extMatch = cleaned.match(/^([^"'()<>\s;]+(?:\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'()<>\s;?]+)*)?)(\?[^"'()\s;>]*)?/i);
   if (extMatch?.[1]) {
     const base = extMatch[1];
     const query = extMatch[2] || "";
+    if (!/\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[/?#])/i.test(base)) {
+      return cleaned.replace(/[);,\s]+$/g, "");
+    }
     if (query && PRESERVE_IMAGE_QUERY_KEYS.test(query)) {
       return `${base}${query}`;
     }
@@ -4938,11 +4999,11 @@ var extractImagesFromDom = ($, targetUrl, options = {}) => {
 var extractImagesFromHtmlString = (html, targetUrl) => {
   const images = [];
   const searchText = html.replace(/\\/g, "").replace(/&amp;/g, "&");
-  const absoluteRegex = /https?:\/\/[^"'<>\s\\]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s\\]*)?/gi;
+  const absoluteRegex = /https?:\/\/[^"'<>\s\\)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s\\)]*)?(?:\?[^"'<>\s\\)]*)?/gi;
   (searchText.match(absoluteRegex) || []).slice(0, 200).forEach((raw) => addImageCandidate(images, raw, targetUrl));
-  const wpUploadsRegex = /(?:https?:\/\/[^"'<>\s]+)?\/wp-content\/uploads\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s)]*)?/gi;
+  const wpUploadsRegex = /(?:https?:\/\/[^"'<>\s]+)?\/wp-content\/uploads\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s)]*)?(?:\?[^"'<>\s)]*)?/gi;
   (searchText.match(wpUploadsRegex) || []).slice(0, 200).forEach((raw) => addImageCandidate(images, raw, targetUrl));
-  const commerceMediasRegex = /(?:https?:\/\/[^"'<>\s]+)?\/medias\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s)]*)?/gi;
+  const commerceMediasRegex = /(?:https?:\/\/[^"'<>\s]+)?\/medias\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s)]*)?(?:\?[^"'<>\s)]*)?/gi;
   (searchText.match(commerceMediasRegex) || []).slice(0, 300).forEach((raw) => addImageCandidate(images, raw, targetUrl));
   const bgImageRegex = /background-image\s*:\s*url\(\s*['"]?([^'")]+?)['"]?\s*\)/gi;
   let bgMatch;

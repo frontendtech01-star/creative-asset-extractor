@@ -1850,10 +1850,8 @@ const normalizeAssetVersion = (version: string) => {
 
 const buildDmgAssetName = (productName: string, version: string) => {
   const cleanVersion = normalizeAssetVersion(version);
-  const slug = String(productName || 'app')
-    .trim()
-    .replace(/\s+/g, '-');
-  return `${slug}-${cleanVersion}-arm64.dmg`;
+  const displayName = String(productName || 'Creative Asset Extractor').trim() || 'Creative Asset Extractor';
+  return `${displayName}-${cleanVersion}-arm64.dmg`;
 };
 
 const buildExeAssetName = (version: string) => {
@@ -2096,7 +2094,7 @@ const PAGE_FETCH_USER_AGENTS = [
 ];
 
 const BOT_WALL_HTML_PATTERN =
-  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai|waf challenge|bot detection/i;
+  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai(?:.*(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
 
 const htmlLooksLikeBotWall = (html: string) => {
   const sample = String(html || '').slice(0, 160000);
@@ -2607,7 +2605,12 @@ const withAssetStatus = (asset: any, status = DEFAULT_ASSET_STATUS) =>
   asset?.url ? { ...asset, status: asset.status || status } : asset;
 
 const normalizeCssFontFamilyName = (family: string) => {
-  const raw = String(family || '').trim().replace(/^["']+|["']+$/g, '');
+  const raw = String(family || '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\\\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   const nextFont = raw.match(/^__([A-Za-z0-9_]+?)_[a-f0-9]+$/i);
   if (nextFont?.[1]) {
     return nextFont[1].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
@@ -2627,32 +2630,34 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
   while ((match = fontFaceRegex.exec(cssText)) !== null) {
     const block = match[1];
     const fontFamilyMatch = block.match(/font-family\s*:\s*['"]?([^'";]+)['"]?/i);
-    const srcMatch = block.match(/src\s*:\s*([^;]+)/i);
+    const srcMatches = Array.from(block.matchAll(/src\s*:\s*([^;]+)/gi));
 
-    if (fontFamilyMatch && srcMatch) {
+    if (fontFamilyMatch && srcMatches.length > 0) {
       const fontFamily = normalizeCssFontFamilyName(fontFamilyMatch[1]);
       const fontWeightMatch = block.match(/font-weight\s*:\s*([^;]+)/i);
       const fontStyleMatch = block.match(/font-style\s*:\s*([^;]+)/i);
       const candidates: any[] = [];
-      const srcPartRegex = /url\(\s*['"]?([^'")]+?)['"]?\s*\)\s*(?:format\(\s*['"]?([^'")]+?)['"]?\s*\))?/gi;
-      let srcPart: RegExpExecArray | null;
-      while ((srcPart = srcPartRegex.exec(srcMatch[1])) !== null) {
-        const urlStr = srcPart[1];
-        const formatHint = srcPart[2] || '';
-        const absoluteUrl = resolveUrl(baseUrl, urlStr);
-        if (!absoluteUrl || absoluteUrl.startsWith('data:')) continue;
-        const format = inferFontFormatFromCssSrc(absoluteUrl, formatHint);
-        if (!isSupportedFontFormat(format)) continue;
-        candidates.push({
-          family: fontFamily,
-          url: absoluteUrl,
-          format,
-          cssSource: baseUrl,
-          weight: fontWeightMatch?.[1]?.trim() || undefined,
-          style: fontStyleMatch?.[1]?.trim() || undefined,
-          source: '@font-face',
-          status: DEFAULT_ASSET_STATUS,
-        });
+      for (const srcMatch of srcMatches) {
+        const srcPartRegex = /url\(\s*['"]?([^'")]+?)['"]?\s*\)\s*(?:format\(\s*['"]?([^'")]+?)['"]?\s*\))?/gi;
+        let srcPart: RegExpExecArray | null;
+        while ((srcPart = srcPartRegex.exec(srcMatch[1])) !== null) {
+          const urlStr = srcPart[1];
+          const formatHint = srcPart[2] || '';
+          const absoluteUrl = resolveUrl(baseUrl, urlStr);
+          if (!absoluteUrl || absoluteUrl.startsWith('data:')) continue;
+          const format = inferFontFormatFromCssSrc(absoluteUrl, formatHint);
+          if (!isSupportedFontFormat(format)) continue;
+          candidates.push({
+            family: fontFamily,
+            url: absoluteUrl,
+            format,
+            cssSource: baseUrl,
+            weight: fontWeightMatch?.[1]?.trim() || undefined,
+            style: fontStyleMatch?.[1]?.trim() || undefined,
+            source: '@font-face',
+            status: DEFAULT_ASSET_STATUS,
+          });
+        }
       }
       if (candidates.length > 0) {
         const gstatic = candidates.find((candidate) => /fonts\.gstatic\.com/i.test(String(candidate?.url || '')));
@@ -3110,10 +3115,13 @@ const PRESERVE_IMAGE_QUERY_KEYS = /[?&](?:context|id|mediaid|assetid|uuid|hash|t
 
 const sanitizeExtractedImageUrl = (value: string) => {
   const cleaned = decodeCssUrlValue(value).trim();
-  const extMatch = cleaned.match(/^(.*?\.(?:svg|png|jpe?g|webp|gif|avif))(\?[^"'()\s;>]*)?/i);
+  const extMatch = cleaned.match(/^([^"'()<>\s;]+(?:\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'()<>\s;?]+)*)?)(\?[^"'()\s;>]*)?/i);
   if (extMatch?.[1]) {
     const base = extMatch[1];
     const query = extMatch[2] || '';
+    if (!/\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[/?#])/i.test(base)) {
+      return cleaned.replace(/[);,\s]+$/g, '');
+    }
     if (query && PRESERVE_IMAGE_QUERY_KEYS.test(query)) {
       return `${base}${query}`;
     }
@@ -3547,14 +3555,14 @@ const extractImagesFromHtmlString = (html: string, targetUrl: string) => {
   const images: any[] = [];
   const searchText = html.replace(/\\/g, '').replace(/&amp;/g, '&');
 
-  const absoluteRegex = /https?:\/\/[^"'<>\s\\]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s\\]*)?/gi;
+  const absoluteRegex = /https?:\/\/[^"'<>\s\\)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s\\)]*)?(?:\?[^"'<>\s\\)]*)?/gi;
   (searchText.match(absoluteRegex) || []).slice(0, 200).forEach((raw) => addImageCandidate(images, raw, targetUrl));
 
-  const wpUploadsRegex = /(?:https?:\/\/[^"'<>\s]+)?\/wp-content\/uploads\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s)]*)?/gi;
+  const wpUploadsRegex = /(?:https?:\/\/[^"'<>\s]+)?\/wp-content\/uploads\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s)]*)?(?:\?[^"'<>\s)]*)?/gi;
   (searchText.match(wpUploadsRegex) || []).slice(0, 200).forEach((raw) => addImageCandidate(images, raw, targetUrl));
 
   const commerceMediasRegex =
-    /(?:https?:\/\/[^"'<>\s]+)?\/medias\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\?[^"'<>\s)]*)?/gi;
+    /(?:https?:\/\/[^"'<>\s]+)?\/medias\/[^"'<>\s)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s)]*)?(?:\?[^"'<>\s)]*)?/gi;
   (searchText.match(commerceMediasRegex) || []).slice(0, 300).forEach((raw) => addImageCandidate(images, raw, targetUrl));
 
   const bgImageRegex = /background-image\s*:\s*url\(\s*['"]?([^'")]+?)['"]?\s*\)/gi;

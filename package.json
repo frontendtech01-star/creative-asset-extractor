@@ -16,6 +16,7 @@
     "build:desktop:server": "node scripts/build-server-bundle.mjs",
     "build:desktop": "node scripts/build-dmg.mjs",
     "dist:win": "node scripts/build-windows.mjs",
+    "exe": "npm run dist:win",
     "dist:mac": "node scripts/build-dmg.mjs",
     "dmg": "node scripts/build-dmg.mjs",
     "qc:dmg": "node scripts/qc-dmg.mjs",

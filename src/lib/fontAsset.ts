@@ -150,9 +150,71 @@ export const scoreFontRecord = (font: {
   return score;
 };
 
+const isPreferredExtractedFontFormat = (font: { url?: string; cachedUrl?: string; format?: string }) => {
+  const format = resolveFontSourceFormat(font);
+  return format === 'woff' || format === 'woff2';
+};
+
+const fontDedupeFormatPriority = (font: { url?: string; cachedUrl?: string; format?: string }) => {
+  const format = resolveFontSourceFormat(font);
+  if (format === 'woff') return 50;
+  if (format === 'woff2') return 40;
+  return 0;
+};
+
+const compareFontDedupePreference = (a: any, b: any) => {
+  const formatDelta = fontDedupeFormatPriority(b) - fontDedupeFormatPriority(a);
+  if (formatDelta !== 0) return formatDelta;
+  return scoreFontRecord(b) - scoreFontRecord(a);
+};
+
+const getFontFileVariantKey = (font: { url?: string; cachedUrl?: string }) => {
+  const candidate = String(font?.url || font?.cachedUrl || '').trim();
+  if (!candidate || candidate.startsWith('data:')) return '';
+  try {
+    const parsed = new URL(candidate);
+    const pathWithoutExt = parsed.pathname.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '');
+    if (pathWithoutExt === parsed.pathname) return '';
+    return `${parsed.hostname.replace(/^www\./i, '').toLowerCase()}${decodeURIComponent(pathWithoutExt).toLowerCase()}`;
+  } catch {
+    const pathWithoutExt = candidate.split(/[?#]/)[0].replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '');
+    if (!pathWithoutExt || pathWithoutExt === candidate.split(/[?#]/)[0]) return '';
+    return pathWithoutExt.toLowerCase();
+  }
+};
+
+const preferSingleFontFormatPerFileStem = (fonts: any[]) => {
+  const groups = new Map<string, any[]>();
+  const passthrough: any[] = [];
+  for (const font of fonts) {
+    const key = getFontFileVariantKey(font);
+    if (!key) {
+      passthrough.push(font);
+      continue;
+    }
+    const bucket = groups.get(key) || [];
+    bucket.push(font);
+    groups.set(key, bucket);
+  }
+
+  const preferred = Array.from(groups.values()).map((group) => {
+    const sorted = [...group].sort(compareFontDedupePreference);
+    const best = sorted[0];
+    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null as any) || best;
+    return {
+      ...merged,
+      url: best.url,
+      format: best.format || merged.format,
+      cachedUrl: best.cachedUrl || merged.cachedUrl,
+    };
+  });
+
+  return [...passthrough, ...preferred];
+};
+
 export const dedupeFontsByLogicalKey = (fonts: any[]) => {
   const groups = new Map<string, any[]>();
-  for (const font of fonts) {
+  for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
     if (!font?.url || String(font.url).startsWith('data:')) continue;
     const key = getFontLogicalKey(font);
     if (!key) continue;
@@ -163,7 +225,7 @@ export const dedupeFontsByLogicalKey = (fonts: any[]) => {
 
   const deduped: any[] = [];
   for (const group of groups.values()) {
-    const sorted = [...group].sort((a, b) => scoreFontRecord(b) - scoreFontRecord(a));
+    const sorted = [...group].sort(compareFontDedupePreference);
     const best = sorted[0];
     const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null as any) || best;
     deduped.push({
@@ -205,9 +267,9 @@ export const isJunkFontLabel = (value: string) => {
   if (/^[0-9a-f]{8,}$/i.test(base)) return true;
   if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
   const compact = raw.replace(/[\s.-]+/g, '');
-  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open)/i.test(raw);
+  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|compressed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open|nexon|shilia)/i.test(raw);
   if (
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) ||
+    (!hasFamilyWord && /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact)) ||
     (!hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact))
   ) return true;
   if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
@@ -220,6 +282,7 @@ export const scoreFontFamilyLabel = (value: string) => {
   if (!trimmed) return 0;
   if (isJunkFontLabel(trimmed)) return 1;
   if (/^https?:\/\//i.test(trimmed)) return 1;
+  if (/[._-][0-9a-f]{8,}$/i.test(trimmed)) return 2;
   const words = trimmed.split(/\s+/).filter(Boolean).length;
   return 10 + Math.min(words, 4) + Math.min(trimmed.length, 48);
 };
