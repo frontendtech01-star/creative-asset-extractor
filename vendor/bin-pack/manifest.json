@@ -1,7 +1,7 @@
 {
   "platform": "darwin",
   "arch": "arm64",
-  "updatedAt": "2026-06-25T15:17:37.593Z",
+  "updatedAt": "2026-06-25T15:29:05.913Z",
   "binaries": {
     "ffmpeg": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/ffmpeg",
     "ffprobe": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/ffprobe",
