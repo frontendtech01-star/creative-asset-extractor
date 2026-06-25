@@ -3073,10 +3073,11 @@ const getPrimaryExtractedColors = (colors: string[]) => {
     return selected;
   };
 
-  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 4, 52);
-  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 2, 48);
+  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 7, 52);
+  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 3, 48);
   return [...chromatic, ...neutrals]
     .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
     .map((color) => color.hex);
 };
 

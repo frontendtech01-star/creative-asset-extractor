@@ -4634,9 +4634,9 @@ var getPrimaryExtractedColors = (colors) => {
     }
     return selected;
   };
-  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 4, 52);
-  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 2, 48);
-  return [...chromatic, ...neutrals].sort((a, b) => b.score - a.score).map((color) => color.hex);
+  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 7, 52);
+  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 3, 48);
+  return [...chromatic, ...neutrals].sort((a, b) => b.score - a.score).slice(0, 10).map((color) => color.hex);
 };
 var SUPPORTED_IMAGE_EXTENSIONS = ["svg", "png", "jpg", "jpeg", "webp", "gif", "avif"];
 var IMAGE_CONTENT_TYPE_TO_EXT = {

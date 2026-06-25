@@ -36,7 +36,7 @@ for (const name of releaseEntries) {
 
 console.log(`\nPackaging ${packArch} DMG...`);
 
-await run(electronBuilder, ['--mac', 'dmg', archArg], {
+await run(electronBuilder, ['--mac', 'dmg', archArg, '--publish', 'never'], {
   stdio: 'inherit',
   cwd: projectRoot,
   env: { ...process.env, DMG_PACK_ARCH: packArch },

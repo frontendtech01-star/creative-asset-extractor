@@ -31,7 +31,7 @@ for (const name of releaseEntries) {
 
 const electronBuilder = path.join(projectRoot, 'node_modules', '.bin', 'electron-builder.cmd');
 console.log('\nPackaging Windows EXE...');
-await run(electronBuilder, ['--win', 'nsis', '--x64'], {
+await run(electronBuilder, ['--win', 'nsis', '--x64', '--publish', 'never'], {
   stdio: 'inherit',
   cwd: projectRoot,
   env: { ...process.env, DESKTOP_PACK_PLATFORM: 'win32', DESKTOP_PACK_ARCH: 'x64' },

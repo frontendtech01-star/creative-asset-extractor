@@ -205,7 +205,7 @@ const hasExtractedAssets = (data: any) => {
 };
 
 const normalizeExtractColors = (colors: unknown) =>
-  Array.from(new Set(Array.isArray(colors) ? colors.map((color) => String(color || '').trim()).filter(Boolean) : [])).slice(0, 6);
+  Array.from(new Set(Array.isArray(colors) ? colors.map((color) => String(color || '').trim()).filter(Boolean) : [])).slice(0, 10);
 
 type PreviewCapturedAsset = {
   url: string;
