@@ -174,21 +174,26 @@ const logYouTubeMerge = (stage: string, details: Record<string, unknown> = {}) =
 const findBundledChromiumExecutable = () => {
   const chromeCacheRoot = path.join(getResourcesPath(), 'chromium', 'chrome');
   if (!fs.existsSync(chromeCacheRoot)) return '';
-  const platformPrefix = process.arch === 'arm64' ? 'mac_arm-' : 'mac-';
-  const bundleDir = process.arch === 'arm64' ? 'chrome-mac-arm64' : 'chrome-mac-x64';
+  const variants =
+    process.platform === 'win32'
+      ? [{ prefix: 'win64-', segments: ['chrome-win64', 'chrome.exe'] }]
+      : process.platform === 'linux'
+        ? [{ prefix: 'linux-', segments: ['chrome-linux64', 'chrome'] }]
+        : process.arch === 'arm64'
+          ? [{ prefix: 'mac_arm-', segments: ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'] }]
+          : [{ prefix: 'mac-', segments: ['chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'] }];
   try {
-    const versionDir = fs.readdirSync(chromeCacheRoot).find((name) => name.startsWith(platformPrefix));
-    if (!versionDir) return '';
-    const executable = path.join(
-      chromeCacheRoot,
-      versionDir,
-      bundleDir,
-      'Google Chrome for Testing.app',
-      'Contents',
-      'MacOS',
-      'Google Chrome for Testing'
-    );
-    return fs.existsSync(executable) ? executable : '';
+    const entries = fs.readdirSync(chromeCacheRoot);
+    for (const variant of variants) {
+      const versionDir = entries.find((name) => {
+        if (variant.prefix === 'mac-') return name.startsWith('mac-') && !name.startsWith('mac_arm-');
+        return name.startsWith(variant.prefix);
+      });
+      if (!versionDir) continue;
+      const executable = path.join(chromeCacheRoot, versionDir, ...variant.segments);
+      if (fs.existsSync(executable)) return executable;
+    }
+    return '';
   } catch {
     return '';
   }
@@ -1838,12 +1843,22 @@ const normalizeReleaseTag = (version: string) => {
   return trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
 };
 
-const buildDmgAssetName = (productName: string, version: string) => {
+const normalizeAssetVersion = (version: string) => {
   const cleanVersion = String(version || '').replace(/^v/i, '');
+  return /^\d+\.\d+$/.test(cleanVersion) ? `${cleanVersion}.0` : cleanVersion;
+};
+
+const buildDmgAssetName = (productName: string, version: string) => {
+  const cleanVersion = normalizeAssetVersion(version);
   const slug = String(productName || 'app')
     .trim()
     .replace(/\s+/g, '-');
   return `${slug}-${cleanVersion}-arm64.dmg`;
+};
+
+const buildExeAssetName = (version: string) => {
+  const cleanVersion = normalizeAssetVersion(version);
+  return `Creative.Asset.Extractor-Setup-${cleanVersion}-x64.exe`;
 };
 
 const buildGithubReleaseLinks = (
@@ -1854,6 +1869,7 @@ const buildGithubReleaseLinks = (
 ) => {
   const tagName = normalizeReleaseTag(version);
   const dmgName = buildDmgAssetName(productName, version);
+  const exeName = buildExeAssetName(version);
   const repoUrl = `https://github.com/${githubOwner}/${githubRepo}`;
   return {
     tagName,
@@ -1864,6 +1880,8 @@ const buildGithubReleaseLinks = (
     packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
     dmgAssetName: dmgName,
+    exeDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(exeName)}`,
+    exeAssetName: exeName,
   };
 };
 
@@ -1884,6 +1902,7 @@ const parseGithubReleasePayload = (data: any) => {
     packageAssetName: String(dmgAsset?.name || packageAsset?.name || 'Latest Release'),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
     exeDownloadUrl: String(exeAsset?.browser_download_url || ''),
+    exeAssetName: String(exeAsset?.name || ''),
     dmgAssetName: String(dmgAsset?.name || ''),
   };
 };
@@ -1947,6 +1966,8 @@ app.get('/api/github-latest-release', async (_req, res) => {
         packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || 'Latest Release',
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
         dmgAssetName: release.dmgAssetName || links.dmgAssetName,
+        exeDownloadUrl: release.exeDownloadUrl || links.exeDownloadUrl,
+        exeAssetName: release.exeAssetName || links.exeAssetName,
       },
     });
   } catch (error: any) {
@@ -1978,7 +1999,8 @@ app.get('/api/release-notes', async (_req, res) => {
     packageAssetName: links.packageAssetName,
     dmgDownloadUrl: '',
     dmgAssetName: '',
-    exeDownloadUrl: '',
+    exeDownloadUrl: links.exeDownloadUrl,
+    exeAssetName: links.exeAssetName,
     source: 'local' as 'local' | 'github',
   };
 
@@ -1999,7 +2021,8 @@ app.get('/api/release-notes', async (_req, res) => {
       packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
       dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
-      exeDownloadUrl: githubRelease.exeDownloadUrl || '',
+      exeDownloadUrl: githubRelease.exeDownloadUrl || links.exeDownloadUrl,
+      exeAssetName: githubRelease.exeAssetName || links.exeAssetName,
       source: 'github',
     };
   } catch (error: any) {
@@ -2188,6 +2211,12 @@ const SYSTEM_CHROME_PATHS = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env['PROGRAMFILES(X86)'] || process.env['ProgramFiles(x86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  path.join(process.env['PROGRAMFILES(X86)'] || process.env['ProgramFiles(x86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   '/usr/bin/google-chrome',
   '/usr/bin/google-chrome-stable',
   '/usr/bin/chromium',

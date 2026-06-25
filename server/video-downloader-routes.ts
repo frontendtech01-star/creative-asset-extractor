@@ -1057,6 +1057,8 @@ type ListedFile = {
   zipPath?: string;
   zipDisplayPath?: string;
   zipRelativePath?: string;
+  sourcePageUrl?: string;
+  saveToWebsiteAssets?: boolean;
 };
 
 const sidecarPathFor = (filePath: string) => `${filePath}.creative-assets.json`;
@@ -1146,6 +1148,8 @@ const listFilesRecursive = async (root: string): Promise<ListedFile[]> => {
         zipPath: metadata.zipPath || '',
         zipDisplayPath: metadata.zipDisplayPath || '',
         zipRelativePath: metadata.zipRelativePath || '',
+        sourcePageUrl: metadata.sourcePageUrl || '',
+        saveToWebsiteAssets: metadata.saveToWebsiteAssets === true,
       });
     }
   };
@@ -1159,7 +1163,49 @@ const listDownloaderFiles = async () => {
     const videosDir = resolvePlatformVideoAssetsDir(platform);
     output.push(...(await listFilesRecursive(videosDir)));
   }
-  return output.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  output.push(...(await listCompletedJobFiles()));
+  const seen = new Set<string>();
+  return output
+    .filter((item) => {
+      const key = path.resolve(item.path);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.modifiedAt - a.modifiedAt);
+};
+
+const listCompletedJobFiles = async () => {
+  const downloadsRoot = path.join(os.homedir(), 'Downloads');
+  const output: ListedFile[] = [];
+  for (const job of jobs.values()) {
+    if (job.status !== 'completed') continue;
+    const result: any = job.result || {};
+    const filePath = String(result.filePath || '');
+    if (!filePath || !isPathInside(filePath, downloadsRoot)) continue;
+    const stat = await fsp.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) continue;
+    const metadata: any = await readSidecar(filePath);
+    output.push({
+      name: path.basename(filePath),
+      title: metadata.title || result.title || job.title || path.basename(filePath, path.extname(filePath)),
+      thumbnail: metadata.thumbnail || result.thumbnail || '',
+      platform: metadata.platform || result.platform || job.platform,
+      status: metadata.status || 'completed',
+      size: stat.size,
+      modifiedAt: stat.mtimeMs,
+      path: filePath,
+      displayPath: metadata.displayPath || result.displayPath || toDisplayPath(filePath),
+      relativePath: path.relative(downloadsRoot, filePath),
+      quality: metadata.quality || result.quality || job.quality,
+      zipPath: metadata.zipPath || '',
+      zipDisplayPath: metadata.zipDisplayPath || '',
+      zipRelativePath: metadata.zipRelativePath || '',
+      sourcePageUrl: metadata.sourcePageUrl || job.sourcePageUrl || '',
+      saveToWebsiteAssets: metadata.saveToWebsiteAssets === true || job.saveToWebsiteAssets === true,
+    });
+  }
+  return output;
 };
 
 const removeEmptyParents = async (directory: string, stopAt: string) => {
@@ -1172,6 +1218,17 @@ const removeEmptyParents = async (directory: string, stopAt: string) => {
   }
 };
 
+const removeDirectoryIfEmpty = async (directory: string) => {
+  const entries = await fsp.readdir(directory).catch(() => null);
+  if (!entries) return;
+  for (const entry of entries) {
+    if (entry === '.DS_Store') {
+      await fsp.unlink(path.join(directory, entry)).catch(() => undefined);
+    }
+  }
+  await fsp.rmdir(directory).catch(() => undefined);
+};
+
 const removePlatformDownloadFolder = async (platform: string) => {
   const videosDir = resolvePlatformVideoAssetsDir(platform);
   const platformRoot = path.dirname(videosDir);
@@ -1179,6 +1236,19 @@ const removePlatformDownloadFolder = async (platform: string) => {
   // complete managed root also clears ZIPs, sidecars, .DS_Store files and
   // abandoned empty subfolders that would otherwise leave the main folder.
   await fsp.rm(platformRoot, { recursive: true, force: true });
+};
+
+const cleanupListedDownloadParents = async (item: ListedFile) => {
+  if (item.saveToWebsiteAssets && item.sourcePageUrl) {
+    const websiteVideosDir = resolveCreativeAssetsDir(item.sourcePageUrl, 'Videos');
+    const websiteRoot = resolveCreativeAssetsDir(item.sourcePageUrl);
+    await removeEmptyParents(path.dirname(item.path), websiteVideosDir);
+    await removeEmptyParents(websiteVideosDir, websiteRoot);
+    await removeDirectoryIfEmpty(websiteRoot);
+    return;
+  }
+  const root = resolvePlatformVideoAssetsDir(item.platform);
+  await removeEmptyParents(path.dirname(item.path), root);
 };
 
 const completeJob = async (
@@ -1218,6 +1288,8 @@ const completeJob = async (
     size: stat.size,
     completedAt: new Date().toISOString(),
     sourceUrl: job.url,
+    sourcePageUrl: job.sourcePageUrl || '',
+    saveToWebsiteAssets: job.saveToWebsiteAssets === true,
   };
   // Mark complete immediately
   updateJob(job, {
@@ -1484,8 +1556,7 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         if (item.zipPath && isPathInside(item.zipPath, path.join(os.homedir(), 'Downloads'))) {
           await fsp.unlink(item.zipPath).catch(() => undefined);
         }
-        const root = resolvePlatformVideoAssetsDir(item.platform);
-        await removeEmptyParents(path.dirname(item.path), root);
+        await cleanupListedDownloadParents(item);
       }
       for (const platform of SUPPORTED_PLATFORMS) {
         await removePlatformDownloadFolder(platform);

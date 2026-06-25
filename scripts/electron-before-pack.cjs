@@ -1,6 +1,5 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const KEEP_LOCALES = new Set(['en.lproj', 'en_GB.lproj']);
 const CHROMIUM_LIBRARY_STRIP = new Set([
@@ -55,26 +54,43 @@ const pruneBundledChromiumTree = (rootDir) => {
   }
 };
 
-const resolvePackArch = () => {
-  const raw = String(process.env.DMG_PACK_ARCH || '').trim().toLowerCase();
+const resolvePackArch = (context) => {
+  const raw = String(process.env.DESKTOP_PACK_ARCH || process.env.DMG_PACK_ARCH || '').trim().toLowerCase();
   if (raw === 'universal' || raw === 'arm64' || raw === 'x64') return raw;
+  if (context?.arch === 1 || context?.arch === 'x64') return 'x64';
+  if (context?.arch === 3 || context?.arch === 'arm64') return 'arm64';
   return process.arch === 'arm64' ? 'arm64' : 'x64';
 };
 
-const shouldIncludeChromiumVersionDir = (versionDir, packArch) => {
-  const isArm = versionDir.startsWith('mac_arm-');
-  const isIntel = versionDir.startsWith('mac-') && !isArm;
-  if (packArch === 'universal') return isArm || isIntel;
-  if (packArch === 'arm64') return isArm;
-  return isIntel;
+const chromiumPrefixForPack = (platformName, packArch) => {
+  if (platformName === 'darwin' || platformName === 'mac') {
+    if (packArch === 'universal') return ['mac_arm-', 'mac-'];
+    return packArch === 'arm64' ? ['mac_arm-'] : ['mac-'];
+  }
+  if (platformName === 'win32' || platformName === 'windows' || platformName === 'win') {
+    return ['win64-'];
+  }
+  if (platformName === 'linux') {
+    return ['linux-'];
+  }
+  return [];
 };
 
-module.exports = async function beforePack() {
+const shouldIncludeChromiumVersionDir = (versionDir, prefixes) => (
+  prefixes.some((prefix) => {
+    if (prefix === 'mac-') return versionDir.startsWith('mac-') && !versionDir.startsWith('mac_arm-');
+    return versionDir.startsWith(prefix);
+  })
+);
+
+module.exports = async function beforePack(context = {}) {
   const projectRoot = path.join(__dirname, '..');
   const sourceRoot = path.join(projectRoot, 'vendor', 'chromium', 'chrome');
   const packRoot = path.join(projectRoot, 'vendor', 'chromium-pack');
   const packChromeDir = path.join(packRoot, 'chrome');
-  const packArch = resolvePackArch();
+  const packArch = resolvePackArch(context);
+  const packPlatform = String(context.electronPlatformName || process.platform || '').toLowerCase();
+  const chromiumPrefixes = chromiumPrefixForPack(packPlatform, packArch);
 
   fs.rmSync(packRoot, { recursive: true, force: true });
   fs.mkdirSync(packChromeDir, { recursive: true });
@@ -82,20 +98,19 @@ module.exports = async function beforePack() {
   if (!fs.existsSync(sourceRoot)) return;
 
   const entries = fs.readdirSync(sourceRoot);
-  const versionDirs = entries.filter(
-    (name) => name.startsWith('mac_arm-') || (name.startsWith('mac-') && !name.startsWith('mac_arm-'))
-  );
+  const versionDirs = entries.filter((name) => shouldIncludeChromiumVersionDir(name, chromiumPrefixes));
 
   for (const versionDir of versionDirs) {
-    if (!shouldIncludeChromiumVersionDir(versionDir, packArch)) continue;
     const src = path.join(sourceRoot, versionDir);
     const dest = path.join(packChromeDir, versionDir);
     // Preserve Chromium's framework symlinks. Dereferencing them turns the
     // framework root into a second physical bundle and makes codesign report
     // "bundle format is ambiguous" on another Mac.
-    execFileSync('cp', ['-R', src, dest]);
-    const bundleFolder = versionDir.startsWith('mac_arm-') ? 'chrome-mac-arm64' : 'chrome-mac-x64';
-    const chromeApp = path.join(dest, bundleFolder, 'Google Chrome for Testing.app');
-    pruneBundledChromiumTree(chromeApp);
+    fs.cpSync(src, dest, { recursive: true, dereference: false, verbatimSymlinks: true });
+    if (packPlatform === 'darwin' || packPlatform === 'mac') {
+      const bundleFolder = versionDir.startsWith('mac_arm-') ? 'chrome-mac-arm64' : 'chrome-mac-x64';
+      const chromeApp = path.join(dest, bundleFolder, 'Google Chrome for Testing.app');
+      pruneBundledChromiumTree(chromeApp);
+    }
   }
 };

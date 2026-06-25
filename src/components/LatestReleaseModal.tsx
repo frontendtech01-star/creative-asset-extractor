@@ -6,6 +6,8 @@ import { openExternalUrl } from '../lib/openExternal';
 
 const BETA_DMG_URL =
   'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg';
+const BETA_EXE_URL =
+  'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-Setup-2.0.0-x64.exe';
 const REMOVE_QUARANTINE_COMMAND = 'xattr -dr com.apple.quarantine "/Applications/Creative Asset Extractor.app"';
 const OPEN_APP_COMMAND = 'open "/Applications/Creative Asset Extractor.app"';
 
@@ -33,6 +35,7 @@ export function LatestReleaseModal({
   const downloadUrl = resolveReleaseDownloadUrl(release);
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
   const notesDownloadUrl = release?.dmgDownloadUrl || BETA_DMG_URL;
+  const notesWindowsDownloadUrl = release?.exeDownloadUrl || BETA_EXE_URL;
   const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
 
   return (
@@ -84,16 +87,26 @@ export function LatestReleaseModal({
                     <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.</li>
                     <li>Save fast, Mac-compatible 1080p H.264 video files.</li>
                     <li>Cancel active downloads and clear downloaded platform folders.</li>
-                    <li>Run locally with bundled Node.js, Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
+                    <li>Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
                   </ul>
-                  <button
-                    type="button"
-                    onClick={() => void openExternalUrl(notesDownloadUrl)}
-                    className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700"
-                  >
-                    <Download className="h-4 w-4" />
-                    Download DMG for Apple Silicon Mac
-                  </button>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => void openExternalUrl(notesDownloadUrl)}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white hover:bg-blue-700"
+                    >
+                      <Download className="h-4 w-4" />
+                      Download Mac DMG
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void openExternalUrl(notesWindowsDownloadUrl)}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-4 py-2.5 font-semibold text-zinc-900 hover:bg-zinc-100"
+                    >
+                      <Download className="h-4 w-4" />
+                      Download Windows EXE
+                    </button>
+                  </div>
                 </div>
               ) : null}
 

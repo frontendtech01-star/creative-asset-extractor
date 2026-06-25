@@ -1055,7 +1055,9 @@ var listFilesRecursive = async (root) => {
         quality: metadata.quality || (/audio|\.m4a$|\.mp3$/i.test(fullPath) ? "Audio" : /1080|fhd/i.test(fullPath) ? "FHD" : /720|hd/i.test(fullPath) ? "HD" : "Video"),
         zipPath: metadata.zipPath || "",
         zipDisplayPath: metadata.zipDisplayPath || "",
-        zipRelativePath: metadata.zipRelativePath || ""
+        zipRelativePath: metadata.zipRelativePath || "",
+        sourcePageUrl: metadata.sourcePageUrl || "",
+        saveToWebsiteAssets: metadata.saveToWebsiteAssets === true
       });
     }
   };
@@ -1068,7 +1070,46 @@ var listDownloaderFiles = async () => {
     const videosDir = resolvePlatformVideoAssetsDir(platform);
     output.push(...await listFilesRecursive(videosDir));
   }
-  return output.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  output.push(...await listCompletedJobFiles());
+  const seen = /* @__PURE__ */ new Set();
+  return output.filter((item) => {
+    const key = path2.resolve(item.path);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => b.modifiedAt - a.modifiedAt);
+};
+var listCompletedJobFiles = async () => {
+  const downloadsRoot = path2.join(os2.homedir(), "Downloads");
+  const output = [];
+  for (const job of jobs.values()) {
+    if (job.status !== "completed") continue;
+    const result = job.result || {};
+    const filePath = String(result.filePath || "");
+    if (!filePath || !isPathInside(filePath, downloadsRoot)) continue;
+    const stat = await fsp2.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) continue;
+    const metadata = await readSidecar(filePath);
+    output.push({
+      name: path2.basename(filePath),
+      title: metadata.title || result.title || job.title || path2.basename(filePath, path2.extname(filePath)),
+      thumbnail: metadata.thumbnail || result.thumbnail || "",
+      platform: metadata.platform || result.platform || job.platform,
+      status: metadata.status || "completed",
+      size: stat.size,
+      modifiedAt: stat.mtimeMs,
+      path: filePath,
+      displayPath: metadata.displayPath || result.displayPath || toDisplayPath(filePath),
+      relativePath: path2.relative(downloadsRoot, filePath),
+      quality: metadata.quality || result.quality || job.quality,
+      zipPath: metadata.zipPath || "",
+      zipDisplayPath: metadata.zipDisplayPath || "",
+      zipRelativePath: metadata.zipRelativePath || "",
+      sourcePageUrl: metadata.sourcePageUrl || job.sourcePageUrl || "",
+      saveToWebsiteAssets: metadata.saveToWebsiteAssets === true || job.saveToWebsiteAssets === true
+    });
+  }
+  return output;
 };
 var removeEmptyParents = async (directory, stopAt) => {
   let current = directory;
@@ -1079,10 +1120,32 @@ var removeEmptyParents = async (directory, stopAt) => {
     current = path2.dirname(current);
   }
 };
+var removeDirectoryIfEmpty = async (directory) => {
+  const entries = await fsp2.readdir(directory).catch(() => null);
+  if (!entries) return;
+  for (const entry of entries) {
+    if (entry === ".DS_Store") {
+      await fsp2.unlink(path2.join(directory, entry)).catch(() => void 0);
+    }
+  }
+  await fsp2.rmdir(directory).catch(() => void 0);
+};
 var removePlatformDownloadFolder = async (platform) => {
   const videosDir = resolvePlatformVideoAssetsDir(platform);
   const platformRoot = path2.dirname(videosDir);
   await fsp2.rm(platformRoot, { recursive: true, force: true });
+};
+var cleanupListedDownloadParents = async (item) => {
+  if (item.saveToWebsiteAssets && item.sourcePageUrl) {
+    const websiteVideosDir = resolveCreativeAssetsDir(item.sourcePageUrl, "Videos");
+    const websiteRoot = resolveCreativeAssetsDir(item.sourcePageUrl);
+    await removeEmptyParents(path2.dirname(item.path), websiteVideosDir);
+    await removeEmptyParents(websiteVideosDir, websiteRoot);
+    await removeDirectoryIfEmpty(websiteRoot);
+    return;
+  }
+  const root = resolvePlatformVideoAssetsDir(item.platform);
+  await removeEmptyParents(path2.dirname(item.path), root);
 };
 var completeJob = async (options, job, downloaded) => {
   const initialPath = String(downloaded?.filePath || downloaded?.downloadPath || downloaded?.localPath || "");
@@ -1111,7 +1174,9 @@ var completeJob = async (options, job, downloaded) => {
     relativePath: path2.relative(downloadsRoot, filePath),
     size: stat.size,
     completedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    sourceUrl: job.url
+    sourceUrl: job.url,
+    sourcePageUrl: job.sourcePageUrl || "",
+    saveToWebsiteAssets: job.saveToWebsiteAssets === true
   };
   updateJob(job, {
     status: "completed",
@@ -1347,8 +1412,7 @@ var registerVideoDownloaderRoutes = (app2, options) => {
         if (item.zipPath && isPathInside(item.zipPath, path2.join(os2.homedir(), "Downloads"))) {
           await fsp2.unlink(item.zipPath).catch(() => void 0);
         }
-        const root = resolvePlatformVideoAssetsDir(item.platform);
-        await removeEmptyParents(path2.dirname(item.path), root);
+        await cleanupListedDownloadParents(item);
       }
       for (const platform of SUPPORTED_PLATFORMS) {
         await removePlatformDownloadFolder(platform);
@@ -2079,21 +2143,19 @@ var logYouTubeMerge = (stage, details = {}) => {
 var findBundledChromiumExecutable = () => {
   const chromeCacheRoot = path3.join(getResourcesPath(), "chromium", "chrome");
   if (!fs2.existsSync(chromeCacheRoot)) return "";
-  const platformPrefix = process.arch === "arm64" ? "mac_arm-" : "mac-";
-  const bundleDir = process.arch === "arm64" ? "chrome-mac-arm64" : "chrome-mac-x64";
+  const variants = process.platform === "win32" ? [{ prefix: "win64-", segments: ["chrome-win64", "chrome.exe"] }] : process.platform === "linux" ? [{ prefix: "linux-", segments: ["chrome-linux64", "chrome"] }] : process.arch === "arm64" ? [{ prefix: "mac_arm-", segments: ["chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"] }] : [{ prefix: "mac-", segments: ["chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"] }];
   try {
-    const versionDir = fs2.readdirSync(chromeCacheRoot).find((name) => name.startsWith(platformPrefix));
-    if (!versionDir) return "";
-    const executable = path3.join(
-      chromeCacheRoot,
-      versionDir,
-      bundleDir,
-      "Google Chrome for Testing.app",
-      "Contents",
-      "MacOS",
-      "Google Chrome for Testing"
-    );
-    return fs2.existsSync(executable) ? executable : "";
+    const entries = fs2.readdirSync(chromeCacheRoot);
+    for (const variant of variants) {
+      const versionDir = entries.find((name) => {
+        if (variant.prefix === "mac-") return name.startsWith("mac-") && !name.startsWith("mac_arm-");
+        return name.startsWith(variant.prefix);
+      });
+      if (!versionDir) continue;
+      const executable = path3.join(chromeCacheRoot, versionDir, ...variant.segments);
+      if (fs2.existsSync(executable)) return executable;
+    }
+    return "";
   } catch {
     return "";
   }
@@ -3495,14 +3557,23 @@ var normalizeReleaseTag = (version) => {
   const trimmed = String(version || "").trim();
   return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
 };
-var buildDmgAssetName = (productName, version) => {
+var normalizeAssetVersion = (version) => {
   const cleanVersion = String(version || "").replace(/^v/i, "");
+  return /^\d+\.\d+$/.test(cleanVersion) ? `${cleanVersion}.0` : cleanVersion;
+};
+var buildDmgAssetName = (productName, version) => {
+  const cleanVersion = normalizeAssetVersion(version);
   const slug = String(productName || "app").trim().replace(/\s+/g, "-");
   return `${slug}-${cleanVersion}-arm64.dmg`;
+};
+var buildExeAssetName = (version) => {
+  const cleanVersion = normalizeAssetVersion(version);
+  return `Creative.Asset.Extractor-Setup-${cleanVersion}-x64.exe`;
 };
 var buildGithubReleaseLinks = (githubOwner, githubRepo, version, productName) => {
   const tagName = normalizeReleaseTag(version);
   const dmgName = buildDmgAssetName(productName, version);
+  const exeName = buildExeAssetName(version);
   const repoUrl = `https://github.com/${githubOwner}/${githubRepo}`;
   return {
     tagName,
@@ -3512,7 +3583,9 @@ var buildGithubReleaseLinks = (githubOwner, githubRepo, version, productName) =>
     packageDownloadUrl: `https://codeload.github.com/${githubOwner}/${githubRepo}/zip/refs/heads/v2.0`,
     packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
-    dmgAssetName: dmgName
+    dmgAssetName: dmgName,
+    exeDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(exeName)}`,
+    exeAssetName: exeName
   };
 };
 var parseGithubReleasePayload = (data) => {
@@ -3530,6 +3603,7 @@ var parseGithubReleasePayload = (data) => {
     packageAssetName: String(dmgAsset?.name || packageAsset?.name || "Latest Release"),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ""),
     exeDownloadUrl: String(exeAsset?.browser_download_url || ""),
+    exeAssetName: String(exeAsset?.name || ""),
     dmgAssetName: String(dmgAsset?.name || "")
   };
 };
@@ -3587,7 +3661,9 @@ app.get("/api/github-latest-release", async (_req, res) => {
         packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl || release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
         packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || "Latest Release",
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
-        dmgAssetName: release.dmgAssetName || links.dmgAssetName
+        dmgAssetName: release.dmgAssetName || links.dmgAssetName,
+        exeDownloadUrl: release.exeDownloadUrl || links.exeDownloadUrl,
+        exeAssetName: release.exeAssetName || links.exeAssetName
       }
     });
   } catch (error) {
@@ -3617,7 +3693,8 @@ app.get("/api/release-notes", async (_req, res) => {
     packageAssetName: links.packageAssetName,
     dmgDownloadUrl: "",
     dmgAssetName: "",
-    exeDownloadUrl: "",
+    exeDownloadUrl: links.exeDownloadUrl,
+    exeAssetName: links.exeAssetName,
     source: "local"
   };
   try {
@@ -3637,7 +3714,8 @@ app.get("/api/release-notes", async (_req, res) => {
       packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
       dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
-      exeDownloadUrl: githubRelease.exeDownloadUrl || "",
+      exeDownloadUrl: githubRelease.exeDownloadUrl || links.exeDownloadUrl,
+      exeAssetName: githubRelease.exeAssetName || links.exeAssetName,
       source: "github"
     };
   } catch (error) {
@@ -3803,6 +3881,12 @@ var SYSTEM_CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  path3.join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path3.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path3.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path3.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  path3.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  path3.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "Application", "msedge.exe"),
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",

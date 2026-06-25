@@ -15,7 +15,7 @@
     "build:server": "tsc --noEmit",
     "build:desktop:server": "node scripts/build-server-bundle.mjs",
     "build:desktop": "node scripts/build-dmg.mjs",
-    "dist:win": "npm run build && npm run build:desktop:server && electron-builder --win nsis",
+    "dist:win": "node scripts/build-windows.mjs",
     "dist:mac": "node scripts/build-dmg.mjs",
     "dmg": "node scripts/build-dmg.mjs",
     "qc:dmg": "node scripts/qc-dmg.mjs",
@@ -87,7 +87,15 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Creative.Asset.Extractor-Setup-${version}-${arch}.${ext}"
     },
     "compression": "maximum",
     "dmg": {

@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Start Creative Asset Extractor</title>
+  <title>Creative Asset Extractor — Beta Release</title>
   <style>
     body { margin: 0; background: #f4f4f5; color: #18181b; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { max-width: 680px; margin: 48px auto; padding: 32px; background: white; border: 1px solid #e4e4e7; border-radius: 20px; box-shadow: 0 12px 35px #00000012; }
-    h1 { margin-top: 0; font-size: 28px; }
-    .step { margin: 22px 0; padding: 18px; border-radius: 14px; background: #f8fafc; }
+    main { max-width: 760px; margin: 48px auto; padding: 32px; background: white; border: 1px solid #e4e4e7; border-radius: 20px; box-shadow: 0 12px 35px #00000012; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    .step { margin: 22px 0; padding: 18px; border-radius: 14px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
     a, button { display: inline-block; border: 0; border-radius: 10px; padding: 11px 16px; background: #2563eb; color: white; font-weight: 700; text-decoration: none; cursor: pointer; }
+    a.secondary { background: #18181b; }
     code { display: block; margin: 12px 0; padding: 14px; overflow-wrap: anywhere; border-radius: 10px; background: #18181b; color: #f4f4f5; }
     small { color: #52525b; }
   </style>
@@ -17,34 +19,34 @@
 <body>
   <main>
     <h1>Creative Asset Extractor — Beta Release</h1>
-    <p>Lightweight localhost package for macOS and Windows.</p>
+    <p>Install the desktop app for website assets and social video extraction.</p>
+
     <div class="step">
-      <strong>What’s included</strong>
+      <strong>Features and capabilities</strong>
       <ul>
-        <li>Fast Mac-compatible 1080p H.264 video downloads by default.</li>
-        <li>YouTube downloads no longer wait at 35% before using the working download path.</li>
-        <li>Blank and tracking-only Vimeo players are filtered.</li>
-        <li>Cancel controls remain available during video downloads.</li>
-        <li>MP3 download options are removed.</li>
+        <li>Extract images, fonts, colors and videos from websites.</li>
+        <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.</li>
+        <li>Save fast, Mac-compatible 1080p H.264 videos.</li>
+        <li>Cancel active downloads and clear downloaded files with their platform folders.</li>
+        <li>Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
       </ul>
     </div>
+
     <div class="step">
-      <strong>1. Download Beta Release</strong>
-      <p><a href="https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative-Asset-Extractor-Localhost.zip">Download Beta Release package</a></p>
-      <p>ZIP download path:</p>
-      <code id="zipPath">https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative-Asset-Extractor-Localhost.zip</code>
-      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('zipPath').textContent).then(() => this.textContent='ZIP path copied')">Copy ZIP path</button>
+      <strong>Download installers</strong>
+      <div class="buttons">
+        <a href="https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg">Download Mac DMG</a>
+        <a class="secondary" href="https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-Setup-2.0.0-x64.exe">Download Windows EXE</a>
+      </div>
     </div>
+
     <div class="step">
-      <strong>2. macOS installation — Installation guide.md</strong>
-      <p>Right-click the downloaded and extracted folder, select <strong>Open Folder in Terminal</strong>, paste the command below, and press Return:</p>
-      <code id="launch">xattr -dr com.apple.quarantine . &amp;&amp; chmod +x "Run Localhost.command" &amp;&amp; ./"Run Localhost.command"</code>
-      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('launch').textContent).then(() => this.textContent='Copied')">Copy launch command</button>
-      <p><small>The launcher downloads a private Node.js LTS runtime inside this folder—no administrator password or system installation—then installs dependencies, starts localhost, and opens Chrome.</small></p>
-    </div>
-    <div class="step">
-      <strong>Windows installation</strong>
-      <p>Extract the ZIP and double-click <code>Run Localhost.cmd</code>.</p>
+      <strong>macOS security command</strong>
+      <p>After dragging the app into Applications, open Terminal and run:</p>
+      <code id="macCommand">xattr -dr com.apple.quarantine "/Applications/Creative Asset Extractor.app"
+open "/Applications/Creative Asset Extractor.app"</code>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('macCommand').textContent).then(() => this.textContent='Copied')">Copy Mac command</button>
+      <p><small>Use this only for the app installed from the DMG.</small></p>
     </div>
   </main>
 </body>

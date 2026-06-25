@@ -14,6 +14,7 @@ export type GithubReleaseInfo = {
   dmgDownloadUrl?: string;
   dmgAssetName?: string;
   exeDownloadUrl?: string;
+  exeAssetName?: string;
   source?: 'local' | 'github';
 };
 

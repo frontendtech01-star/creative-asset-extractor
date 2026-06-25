@@ -2,7 +2,8 @@
 
 ## Download
 
-[Download Creative Asset Extractor for Apple Silicon Mac](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg)
+- [Download Mac DMG](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg)
+- [Download Windows EXE](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-Setup-2.0.0-x64.exe)
 
 ## Features and capabilities
 
@@ -10,8 +11,8 @@
 - Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.
 - Save fast, Mac-compatible 1080p H.264 videos.
 - Cancel active downloads and clear downloaded files with their platform folders.
-- Includes Node.js, Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.
-- Runs locally without installing Node.js on the Mac.
+- Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.
+- Windows users can install with the EXE; Mac users can install with the DMG.
 
 ## Open on macOS
 

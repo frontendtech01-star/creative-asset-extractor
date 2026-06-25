@@ -1,0 +1,50 @@
+name: Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub release tag to upload the EXE to
+        required: true
+        default: v2.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows EXE
+        env:
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+        run: npm run dist:win
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: release/*.exe
+          if-no-files-found: error
+
+      - name: Attach EXE to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path release -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "No Windows EXE found in release folder." }
+          gh release upload "${{ inputs.release_tag }}" $exe.FullName --clobber
