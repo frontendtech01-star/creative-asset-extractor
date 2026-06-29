@@ -2,7 +2,7 @@
 
 ## Download
 
-- [Download Mac DMG](https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg)
+- [Download Mac DMG](https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative.Asset.Extractor-2.0.0-arm64.dmg)
 
 ## Features and capabilities
 

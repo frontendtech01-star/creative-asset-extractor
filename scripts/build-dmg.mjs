@@ -18,6 +18,8 @@ await run('npm', ['run', 'build:desktop:server'], { stdio: 'inherit', cwd: proje
 
 const electronBuilder = path.join(projectRoot, 'node_modules', '.bin', 'electron-builder');
 const releaseDir = path.join(projectRoot, 'release');
+const packageJson = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+const packageVersion = String(packageJson.version || '2.0.0').replace(/^v/i, '');
 const requestedArch = String(process.env.DMG_PACK_ARCH || '').trim().toLowerCase();
 const packArch = ['universal', 'arm64', 'x64'].includes(requestedArch)
   ? requestedArch
@@ -43,9 +45,9 @@ await run(electronBuilder, ['--mac', 'dmg', archArg, '--publish', 'never'], {
 });
 
 const candidates = [
-  `Creative Asset Extractor-1.0.0-${packArch}.dmg`,
-  'Creative Asset Extractor-1.0.0-universal.dmg',
-  'Creative Asset Extractor-1.0.0.dmg',
+  `Creative Asset Extractor-${packageVersion}-${packArch}.dmg`,
+  `Creative Asset Extractor-${packageVersion}-universal.dmg`,
+  `Creative Asset Extractor-${packageVersion}.dmg`,
 ];
 let dmgPath = '';
 for (const name of candidates) {

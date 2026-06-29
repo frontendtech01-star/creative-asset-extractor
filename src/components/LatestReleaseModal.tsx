@@ -5,7 +5,7 @@ import { releaseDownloadLabel, resolveReleaseDownloadUrl } from '../lib/githubRe
 import { openExternalUrl } from '../lib/openExternal';
 
 const BETA_DMG_URL =
-  'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg';
+  'https://github.com/frontendtech01-star/creative-asset-extractor/releases/latest/download/Creative.Asset.Extractor-2.0.0-arm64.dmg';
 const REMOVE_QUARANTINE_COMMAND = 'xattr -dr com.apple.quarantine "/Applications/Creative Asset Extractor.app"';
 const OPEN_APP_COMMAND = 'open "/Applications/Creative Asset Extractor.app"';
 

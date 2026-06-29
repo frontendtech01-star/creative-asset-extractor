@@ -1428,7 +1428,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void openReleaseNotes()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 min-w-[9.5rem]"
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-blue-700 bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700 min-w-[9.5rem]"
               >
                 <FileText className="h-3.5 w-3.5" />
                 Release Notes

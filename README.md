@@ -51,9 +51,7 @@ Running `npm install` installs the packages in `package-lock.json` and prepares:
 - Standalone `yt-dlp` for supported platform metadata and downloads
 - aria2 download acceleration when available
 
-See [INSTALLATION.md](./INSTALLATION.md) for the complete dependency list,
-platform-specific setup, environment variables, build commands, verification,
-and troubleshooting.
+Install from the Mac DMG linked in [RELEASE_NOTES.md](./RELEASE_NOTES.md).
 
 ## macOS Gatekeeper
 

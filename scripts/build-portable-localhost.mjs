@@ -22,7 +22,7 @@ const root = 'Creative Asset Extractor Localhost';
 for (const entry of ['dist', 'server', 'scripts', 'src']) {
   archive.directory(path.join(projectRoot, entry), path.join(root, entry));
 }
-for (const entry of ['server.ts', 'package.json', 'package-lock.json', 'START HERE.html', 'Release Notes.md', 'Installation guide.md', 'Run Localhost.command', 'Run Localhost.cmd']) {
+for (const entry of ['server.ts', 'package.json', 'package-lock.json', 'RELEASE_NOTES.md']) {
   archive.file(path.join(projectRoot, entry), { name: path.join(root, entry) });
 }
 await archive.finalize();
