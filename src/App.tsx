@@ -33,8 +33,11 @@ import { clearDownloaderJobs } from './lib/videoDownloader';
 import {
   fetchLatestGithubRelease,
   fetchReleaseNotes,
+  getReleaseNotificationKey,
+  getSeenReleaseNotification,
   getSessionDismissedRelease,
   resolveReleaseDownloadUrl,
+  setSeenReleaseNotification,
   setSessionDismissedRelease,
   shouldPromptForRelease,
   type GithubReleaseInfo,
@@ -490,6 +493,7 @@ export default function App() {
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [releaseViewMode, setReleaseViewMode] = useState<'update' | 'notes'>('update');
   const [latestRelease, setLatestRelease] = useState<GithubReleaseInfo | null>(null);
+  const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [productName, setProductName] = useState('Creative Asset Extractor');
   const [videoDownloaderAutoStart, setVideoDownloaderAutoStart] = useState<{ id: number; url: string } | null>(null);
@@ -700,8 +704,10 @@ export default function App() {
         const release = await fetchLatestGithubRelease();
         if (!release?.tagName) return;
         const dismissed = getSessionDismissedRelease();
-        if (!shouldPromptForRelease(release.tagName, meta.version, dismissed)) return;
         setLatestRelease(release);
+        const shouldNotify = shouldPromptForRelease(release, meta.version, dismissed, getSeenReleaseNotification());
+        setReleaseUpdateAvailable(shouldNotify);
+        if (!shouldNotify) return;
         setReleaseViewMode('update');
         setReleaseOpen(true);
       } catch {
@@ -774,6 +780,8 @@ export default function App() {
     try {
       const release = await fetchReleaseNotes();
       setLatestRelease(release);
+      setSeenReleaseNotification(release);
+      setReleaseUpdateAvailable(false);
     } catch {
       // Release notes are best-effort.
     }
@@ -1428,10 +1436,20 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void openReleaseNotes()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-blue-700 bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700 min-w-[9.5rem]"
+                className={cn(
+                  'relative inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition min-w-[9.5rem]',
+                  releaseUpdateAvailable
+                    ? 'border border-blue-800 bg-blue-700 text-white ring-2 ring-blue-200 hover:bg-blue-800'
+                    : 'border border-blue-700 bg-blue-600 text-white hover:bg-blue-700'
+                )}
               >
                 <FileText className="h-3.5 w-3.5" />
-                Release Notes
+                {releaseUpdateAvailable ? 'New DMG' : 'Release Notes'}
+                {releaseUpdateAvailable ? (
+                  <span className="absolute -right-1.5 -top-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700 shadow">
+                    New
+                  </span>
+                ) : null}
               </button>
             </nav>
           </div>
@@ -1671,11 +1689,15 @@ export default function App() {
         onDownload={() => {
           const downloadUrl = resolveReleaseDownloadUrl(latestRelease);
           if (downloadUrl) void openExternalUrl(downloadUrl);
+          setSeenReleaseNotification(latestRelease);
+          setReleaseUpdateAvailable(false);
           setReleaseOpen(false);
         }}
         onLater={() => {
           if (releaseViewMode === 'update' && latestRelease?.tagName) {
-            setSessionDismissedRelease(latestRelease.tagName);
+            setSessionDismissedRelease(getReleaseNotificationKey(latestRelease) || latestRelease.tagName);
+            setSeenReleaseNotification(latestRelease);
+            setReleaseUpdateAvailable(false);
           }
           setReleaseOpen(false);
         }}

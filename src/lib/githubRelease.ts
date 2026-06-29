@@ -13,6 +13,9 @@ export type GithubReleaseInfo = {
   packageAssetName?: string;
   dmgDownloadUrl?: string;
   dmgAssetName?: string;
+  dmgAssetUpdatedAt?: string;
+  dmgAssetSize?: number;
+  dmgAssetDigest?: string;
   source?: 'local' | 'github';
 };
 
@@ -28,6 +31,18 @@ export const releaseDownloadLabel = (release: GithubReleaseInfo | null | undefin
 };
 
 const RELEASE_DISMISS_SESSION_KEY = 'vdx.release.dismissedVersion';
+const RELEASE_SEEN_ASSET_KEY = 'vdx.release.seenAssetIdentity.v1';
+
+export const getReleaseNotificationKey = (release: GithubReleaseInfo | null | undefined) => {
+  if (!release?.tagName) return '';
+  return [
+    release.tagName,
+    release.dmgAssetName || '',
+    release.dmgAssetUpdatedAt || '',
+    release.dmgAssetSize ? String(release.dmgAssetSize) : '',
+    release.dmgAssetDigest || '',
+  ].filter(Boolean).join('|');
+};
 
 export const getSessionDismissedRelease = () => {
   try {
@@ -40,6 +55,24 @@ export const getSessionDismissedRelease = () => {
 export const setSessionDismissedRelease = (tagName: string) => {
   try {
     window.sessionStorage.setItem(RELEASE_DISMISS_SESSION_KEY, tagName);
+  } catch {
+    // best-effort
+  }
+};
+
+export const getSeenReleaseNotification = () => {
+  try {
+    return window.localStorage.getItem(RELEASE_SEEN_ASSET_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+
+export const setSeenReleaseNotification = (release: GithubReleaseInfo | null | undefined) => {
+  const notificationKey = getReleaseNotificationKey(release);
+  if (!notificationKey) return;
+  try {
+    window.localStorage.setItem(RELEASE_SEEN_ASSET_KEY, notificationKey);
   } catch {
     // best-effort
   }
@@ -59,8 +92,16 @@ export const fetchReleaseNotes = async (): Promise<GithubReleaseInfo | null> => 
   return data.release as GithubReleaseInfo;
 };
 
-export const shouldPromptForRelease = (latestTag: string, currentVersion: string, dismissedTag = '') => {
+export const shouldPromptForRelease = (
+  release: GithubReleaseInfo | null | undefined,
+  currentVersion: string,
+  dismissedKey = '',
+  seenKey = ''
+) => {
+  const latestTag = release?.tagName || '';
   if (!latestTag || !currentVersion) return false;
-  if (dismissedTag && dismissedTag === latestTag) return false;
-  return isNewerVersion(latestTag, currentVersion);
+  const notificationKey = getReleaseNotificationKey(release);
+  if (dismissedKey && (dismissedKey === latestTag || dismissedKey === notificationKey)) return false;
+  if (isNewerVersion(latestTag, currentVersion)) return true;
+  return Boolean(notificationKey && seenKey !== notificationKey);
 };

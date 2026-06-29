@@ -1927,6 +1927,9 @@ const parseGithubReleasePayload = (data: any) => {
     packageAssetName: String(dmgAsset?.name || 'Mac DMG'),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
     dmgAssetName: String(dmgAsset?.name || ''),
+    dmgAssetUpdatedAt: String(dmgAsset?.updated_at || ''),
+    dmgAssetSize: Number(dmgAsset?.size || 0),
+    dmgAssetDigest: String(dmgAsset?.digest || ''),
   };
 };
 
@@ -1989,6 +1992,9 @@ app.get('/api/github-latest-release', async (_req, res) => {
         packageAssetName: release.dmgAssetName || links.dmgAssetName || 'Mac DMG',
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
         dmgAssetName: release.dmgAssetName || links.dmgAssetName,
+        dmgAssetUpdatedAt: release.dmgAssetUpdatedAt || '',
+        dmgAssetSize: release.dmgAssetSize || 0,
+        dmgAssetDigest: release.dmgAssetDigest || '',
       },
     });
   } catch (error: any) {
@@ -2020,6 +2026,9 @@ app.get('/api/release-notes', async (_req, res) => {
     packageAssetName: links.dmgAssetName,
     dmgDownloadUrl: links.dmgDownloadUrl,
     dmgAssetName: links.dmgAssetName,
+    dmgAssetUpdatedAt: '',
+    dmgAssetSize: 0,
+    dmgAssetDigest: '',
     source: 'local' as 'local' | 'github',
   };
 
@@ -2040,6 +2049,9 @@ app.get('/api/release-notes', async (_req, res) => {
       packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
       dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
+      dmgAssetUpdatedAt: githubRelease.dmgAssetUpdatedAt || '',
+      dmgAssetSize: githubRelease.dmgAssetSize || 0,
+      dmgAssetDigest: githubRelease.dmgAssetDigest || '',
       source: 'github',
     };
   } catch (error: any) {

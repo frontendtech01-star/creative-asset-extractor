@@ -34,6 +34,7 @@ export function LatestReleaseModal({
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
   const notesDownloadUrl = release?.dmgDownloadUrl || BETA_DMG_URL;
   const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
+  const sameVersionRefresh = releaseTag === versionLabel;
 
   return (
     <div
@@ -55,7 +56,9 @@ export function LatestReleaseModal({
               <p className="mt-1 text-sm text-zinc-500">
                 {isNotesView
                   ? productName
-                  : `${productName} v${releaseTag} is available (you have v${versionLabel}).`}
+                  : sameVersionRefresh
+                    ? 'A newer Mac DMG has been published with the latest fixes.'
+                    : `${productName} v${releaseTag} is available (you have v${versionLabel}).`}
               </p>
             </div>
           </div>
