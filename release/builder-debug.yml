@@ -21,6 +21,7 @@ arm64:
     - node_modules/normalize-path/**/*
     - node_modules/readdir-glob/**/*
     - node_modules/graceful-fs/**/*
+    - node_modules/fonteditor-core/**/*
     - node_modules/sharp/**/*
     - node_modules/@img/**/*
     - '!**/*.{iml,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,suo,xproj,cc,d.ts,mk,a,o,forge-meta,pdb}'
@@ -50,5 +51,6 @@ arm64:
     - node_modules/normalize-path/**/*
     - node_modules/readdir-glob/**/*
     - node_modules/graceful-fs/**/*
+    - node_modules/fonteditor-core/**/*
     - node_modules/sharp/**/*
     - node_modules/@img/**/*

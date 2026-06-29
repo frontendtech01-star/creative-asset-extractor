@@ -11,6 +11,7 @@ files:
       - desktop/**/*
       - electron/**/*
       - scripts/insights-page-evaluate.cjs
+      - server/**/*
       - server.ts
       - src/lib/streamUrl.ts
       - package.json
@@ -24,6 +25,7 @@ files:
       - node_modules/normalize-path/**/*
       - node_modules/readdir-glob/**/*
       - node_modules/graceful-fs/**/*
+      - node_modules/fonteditor-core/**/*
       - node_modules/sharp/**/*
       - node_modules/@img/**/*
 asarUnpack:
@@ -36,8 +38,16 @@ extraResources:
     to: chromium
     filter:
       - '**/*'
+  - from: vendor/bin-pack
+    to: bin
+    filter:
+      - '**/*'
 win:
-  target: nsis
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Creative.Asset.Extractor-Setup-${version}-${arch}.${ext}
 compression: maximum
 dmg:
   format: UDZO
