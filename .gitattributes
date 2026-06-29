@@ -1,0 +1,2 @@
+release/*.dmg filter=lfs diff=lfs merge=lfs -text
+release/*.dmg.zip filter=lfs diff=lfs merge=lfs -text

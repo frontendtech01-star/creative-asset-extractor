@@ -1,0 +1,53 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.creativeassetextractor.desktop
+productName: Creative Asset Extractor
+beforePack: scripts/electron-before-pack.cjs
+afterPack: scripts/electron-after-pack.cjs
+files:
+  - filter:
+      - dist/**/*
+      - desktop/**/*
+      - electron/**/*
+      - scripts/insights-page-evaluate.cjs
+      - server.ts
+      - src/lib/streamUrl.ts
+      - package.json
+      - node_modules/archiver/**/*
+      - node_modules/archiver-utils/**/*
+      - node_modules/zip-stream/**/*
+      - node_modules/compress-commons/**/*
+      - node_modules/crc32-stream/**/*
+      - node_modules/async/**/*
+      - node_modules/lazystream/**/*
+      - node_modules/normalize-path/**/*
+      - node_modules/readdir-glob/**/*
+      - node_modules/graceful-fs/**/*
+      - node_modules/sharp/**/*
+      - node_modules/@img/**/*
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+  - node_modules/youtube-dl-exec/bin/**
+  - node_modules/sharp/**
+  - node_modules/@img/**
+extraResources:
+  - from: vendor/chromium-pack
+    to: chromium
+    filter:
+      - '**/*'
+win:
+  target: nsis
+compression: maximum
+dmg:
+  format: UDZO
+mac:
+  target: dmg
+  category: public.app-category.video
+  minimumSystemVersion: '10.15'
+  mergeASARs: true
+  x64ArchFiles: '**/chromium/**'
+linux:
+  target: AppImage
+  category: AudioVideo
+electronVersion: 33.4.11

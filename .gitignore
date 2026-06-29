@@ -1,0 +1,4 @@
+release/mac-arm64/
+release/mac-universal/
+
+.DS_Store
