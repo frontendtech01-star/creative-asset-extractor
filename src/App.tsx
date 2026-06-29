@@ -1,12 +1,12 @@
 import React, { Suspense, lazy, useState } from 'react';
-import { FileText, MessageSquare, Image as ImageIcon, Type, Palette, Sparkles, Download, Globe, Video } from 'lucide-react';
+import { CheckCircle2, FileText, MessageSquare, Image as ImageIcon, Type, Palette, Sparkles, Download, Globe, Video, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { WebsiteExtracterToolbar } from './components/WebsitePreviewPanel';
 import VideoDownloaderPage from './components/VideoDownloaderPage';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { apiFetch } from './lib/api';
 import { type DownloadProgress } from './lib/download';
-import { CompletionCard, FriendlyError, SmartProgressPanel, downloadMessages } from './components/ProgressExperience';
+import { FriendlyError, SmartProgressPanel, downloadMessages } from './components/ProgressExperience';
 import {
   WebsiteExtractProgressPanel,
   type WebsiteCrawlMode,
@@ -20,6 +20,7 @@ import {
   isUsableExtractedVideo,
   isYouTubeExtractUrl,
 } from './lib/visibleVideos';
+import { detectVideoPlatform, isDirectVideoPlatformUrl } from './lib/videoPlatform';
 import { buildCreativeAssetsFolderName, creativeAssetsFolderLabel } from './lib/creativeAssetsFolder';
 import {
   clearPersistedClipboardUrl,
@@ -28,6 +29,7 @@ import {
 import { getDesktopBridge } from './lib/desktopBridge';
 import { resolveWebsitePreviewUrl } from './lib/websitePreview';
 import { fetchAppMeta } from './lib/appVersion';
+import { clearDownloaderJobs } from './lib/videoDownloader';
 import {
   fetchLatestGithubRelease,
   fetchReleaseNotes,
@@ -43,6 +45,7 @@ import { logActivity, reportOperationFailure } from './lib/activityLog';
 import { consumeFeedbackDraft, type FeedbackDraft } from './lib/feedbackContext';
 import { LatestReleaseModal } from './components/LatestReleaseModal';
 import {
+  clearAppSessionState,
   readMainSection,
   writeMainSection,
   type MainSection,
@@ -76,6 +79,13 @@ type ExtractSession = {
   activeTab?: 'fonts' | 'images' | 'icons' | 'videos' | 'colors' | 'insights';
   completion?: { title: string; detail?: string; size?: number; folderTarget?: string } | null;
   savedAt: number;
+};
+
+type DownloadReadyNotice = {
+  title: string;
+  detail?: string;
+  target: string;
+  sourcePageUrl?: string;
 };
 
 const readExtractSession = (): ExtractSession | null => {
@@ -460,6 +470,7 @@ export default function App() {
   const wsProgressRef = React.useRef(wsProgress);
   wsProgressRef.current = wsProgress;
   const [completion, setCompletion] = useState<{ title: string; detail?: string; size?: number; folderTarget?: string } | null>(null);
+  const [downloadReadyNotice, setDownloadReadyNotice] = useState<DownloadReadyNotice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assets, setAssets] = useState<{
     fonts: any[];
@@ -481,11 +492,13 @@ export default function App() {
   const [latestRelease, setLatestRelease] = useState<GithubReleaseInfo | null>(null);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [productName, setProductName] = useState('Creative Asset Extractor');
+  const [videoDownloaderAutoStart, setVideoDownloaderAutoStart] = useState<{ id: number; url: string } | null>(null);
   const releaseCheckedRef = React.useRef(false);
   const extractJobSeq = React.useRef(0);
   const extractAbortRef = React.useRef<AbortController | null>(null);
   const userEditedUrlRef = React.useRef(false);
   const lastAutoFilledUrlRef = React.useRef(initialUrl.trim());
+  const videoDownloaderAutoStartSeq = React.useRef(0);
 
   React.useEffect(() => {
     if (!assets?.videos?.length) return;
@@ -569,6 +582,28 @@ export default function App() {
   };
 
   const handleExtractFromOpenWebsite = async () => {
+    const rawTarget = String(url || '').trim();
+    let directVideoTarget = '';
+    try {
+      directVideoTarget = new URL(rawTarget).href;
+    } catch {
+      directVideoTarget = '';
+    }
+    if (directVideoTarget && detectVideoPlatform(directVideoTarget) && isDirectVideoPlatformUrl(directVideoTarget)) {
+      setUrl(directVideoTarget);
+      lastAutoFilledUrlRef.current = directVideoTarget;
+      userEditedUrlRef.current = false;
+      setPendingClipboardUrl(null);
+      setError(null);
+      setCompletion(null);
+      setLoading(false);
+      setPreviewCapturing(false);
+      setMainNav('video-downloader');
+      videoDownloaderAutoStartSeq.current += 1;
+      setVideoDownloaderAutoStart({ id: videoDownloaderAutoStartSeq.current, url: directVideoTarget });
+      return;
+    }
+
     const target = resolveWebsitePreviewUrl(url);
     if (!target) {
       setError('Enter a public website URL to extract.');
@@ -638,6 +673,20 @@ export default function App() {
       setProductName(meta.productName);
     });
   }, [refreshClipboardUrl]);
+
+  React.useEffect(() => {
+    const resetOnClose = () => {
+      clearAppSessionState();
+      clearExtractSession();
+      clearPersistedClipboardUrl();
+    };
+    window.addEventListener('pagehide', resetOnClose);
+    window.addEventListener('beforeunload', resetOnClose);
+    return () => {
+      window.removeEventListener('pagehide', resetOnClose);
+      window.removeEventListener('beforeunload', resetOnClose);
+    };
+  }, []);
 
   React.useEffect(() => {
     if (releaseCheckedRef.current) return;
@@ -777,6 +826,18 @@ export default function App() {
     }
   };
 
+  const openDownloadsFromNotice = async (notice: DownloadReadyNotice) => {
+    setDownloadReadyNotice(null);
+    await openFolder(notice.target, notice.sourcePageUrl || extractedUrl || url);
+  };
+
+  const showDownloadReadyNotice = (notice: DownloadReadyNotice) => {
+    setDownloadReadyNotice({
+      ...notice,
+      sourcePageUrl: notice.sourcePageUrl || extractedUrl || url || undefined,
+    });
+  };
+
   const handleNewExtraction = () => {
     extractAbortRef.current?.abort();
     extractJobSeq.current += 1;
@@ -808,6 +869,19 @@ export default function App() {
     clearExtractSession();
     clearPersistedClipboardUrl();
     void refreshClipboardUrl();
+  };
+
+  const handleResetApp = async () => {
+    handleNewExtraction();
+    setMainSection('website-extraction');
+    setActiveTab('images');
+    setValidImageCount(0);
+    setDownloadReadyNotice(null);
+    clearAppSessionState();
+    clearExtractSession();
+    clearPersistedClipboardUrl();
+    await clearDownloaderJobs().catch(() => undefined);
+    window.setTimeout(() => window.location.reload(), 50);
   };
 
   const handleClearWebsiteDownloads = async () => {
@@ -1266,11 +1340,18 @@ export default function App() {
       if (!saved?.downloadPath && !saved?.localPath) {
         throw new Error('ZIP was created but the app did not return a Downloads path.');
       }
-      setCompletion({
+      const nextCompletion = {
         title: 'Download package ready',
         detail: `All assets saved to ${creativeAssetsFolderLabel(extractedUrl, 'Images')} as ${saved.filename || 'all-assets.zip'}.`,
         size: saved.size,
         folderTarget: 'downloads',
+      };
+      setCompletion(nextCompletion);
+      showDownloadReadyNotice({
+        title: nextCompletion.title,
+        detail: nextCompletion.detail,
+        target: nextCompletion.folderTarget,
+        sourcePageUrl: extractedUrl || url,
       });
     } catch (error: any) {
       console.error('Download all error:', error);
@@ -1330,6 +1411,14 @@ export default function App() {
               </button>
               <button
                 type="button"
+                onClick={() => void handleResetApp()}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 min-w-[9.5rem]"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset
+              </button>
+              <button
+                type="button"
                 onClick={() => openFeedback()}
                 className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 min-w-[9.5rem]"
               >
@@ -1350,7 +1439,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {mainSection === 'video-downloader' ? <VideoDownloaderPage /> : null}
+        {mainSection === 'video-downloader' ? <VideoDownloaderPage autoStartRequest={videoDownloaderAutoStart} /> : null}
 
         {mainSection === 'website-extraction' ? (
         <>
@@ -1415,14 +1504,6 @@ export default function App() {
               speedBps={downloadAllProgress?.speedBps}
               etaSeconds={downloadAllProgress?.etaSeconds}
             />
-            {completion && completion.title !== 'Extract complete' ? (
-              <CompletionCard
-                title={completion.title}
-                detail={completion.detail}
-                size={completion.size}
-                onOpenFolder={() => void openFolder(completion.folderTarget || 'downloads', extractedUrl || url)}
-              />
-            ) : null}
           </div>
 
           {error && (
@@ -1499,13 +1580,25 @@ export default function App() {
                     sourcePageUrl={extractedUrl}
                     title="Images"
                     onValidCountChange={setValidImageCount}
+                    onDownloadReady={showDownloadReadyNotice}
                   />
                 </div>
                 <div className={activeTab === 'fonts' ? '' : 'hidden'}>
-                  <FontExtractor key={`fonts-${assetStateVersion}`} fonts={assets.fonts} sourcePageUrl={extractedUrl} />
+                  <FontExtractor
+                    key={`fonts-${assetStateVersion}`}
+                    fonts={assets.fonts}
+                    sourcePageUrl={extractedUrl}
+                    onDownloadReady={showDownloadReadyNotice}
+                  />
                 </div>
                 <div className={activeTab === 'videos' ? '' : 'hidden'}>
-                  <VideoExtractor key={`videos-${assetStateVersion}`} videos={assets.videos} seedUrl={extractedUrl} hideManualSearch />
+                  <VideoExtractor
+                    key={`videos-${assetStateVersion}`}
+                    videos={assets.videos}
+                    seedUrl={extractedUrl}
+                    hideManualSearch
+                    onDownloadReady={showDownloadReadyNotice}
+                  />
                 </div>
                 <div className={activeTab === 'colors' ? '' : 'hidden'}>
                   <ColorExtractor key={`colors-${assetStateVersion}`} colors={assets.colors} sourcePageUrl={extractedUrl} />
@@ -1526,6 +1619,38 @@ export default function App() {
         </>
         ) : null}
       </main>
+
+      {downloadReadyNotice ? (
+        <div className="fixed bottom-5 right-5 z-50 w-[calc(100vw-2.5rem)] max-w-sm rounded-xl border border-emerald-200 bg-white p-4 text-zinc-900 shadow-2xl">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-full bg-emerald-600 p-1.5 text-white">
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">{downloadReadyNotice.title}</p>
+              {downloadReadyNotice.detail ? (
+                <p className="mt-1 text-xs leading-5 text-zinc-600">{downloadReadyNotice.detail}</p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void openDownloadsFromNotice(downloadReadyNotice)}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                Open Downloads
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDownloadReadyNotice(null)}
+              className="rounded-lg p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700"
+              aria-label="Dismiss download notice"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <FeedbackModal
         open={feedbackOpen}

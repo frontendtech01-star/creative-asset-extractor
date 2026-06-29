@@ -28,9 +28,9 @@ const writeLog = async (jobId: string | undefined, data: Record<string, unknown>
   }
 };
 
-type DownloaderPlatform = 'youtube' | 'vimeo' | 'instagram' | 'facebook' | 'x' | 'tiktok' | 'ispot' | 'direct' | 'unknown';
+type DownloaderPlatform = 'youtube' | 'vimeo' | 'instagram' | 'facebook' | 'x' | 'tiktok' | 'ispot' | 'brightcove' | 'direct' | 'unknown';
 type DownloadQuality = '4k' | 'fhd' | 'hd' | 'audio';
-type JobStatus = 'queued' | 'running' | 'completed' | 'error' | 'cancelled';
+type JobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled';
 
 type DownloaderCard = {
   id: string;
@@ -81,6 +81,8 @@ type DownloadJob = {
   quality: DownloadQuality;
   sourcePageUrl?: string;
   saveToWebsiteAssets?: boolean;
+  startTime?: string;
+  endTime?: string;
   status: JobStatus;
   progress: number;
   downloadedBytes: number;
@@ -113,16 +115,18 @@ export type VideoDownloaderRouteOptions = {
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'tiktok', 'ispot', 'direct'] as const;
+const SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'tiktok', 'ispot', 'brightcove', 'direct'] as const;
 const jobs = new Map<string, DownloadJob>();
 const pendingJobs: string[] = [];
 const cancelledJobs = new Set<string>();
 const activeDownloadProcesses = new Map<string, ReturnType<typeof spawn>>();
+const inspectCache = new Map<string, { expiresAt: number; payload: any }>();
 let activeJobs = 0;
 let updatePromise: Promise<boolean> | null = null;
 let lastUpdateAttemptAt = 0;
 
 const now = () => Date.now();
+const INSPECT_CACHE_TTL_MS = 10 * 60 * 1000;
 const binaryName = (name: string) => (process.platform === 'win32' ? `${name}.exe` : name);
 
 const sanitizeFilenamePart = (value: string, fallback = 'video') =>
@@ -132,6 +136,45 @@ const sanitizeFilenamePart = (value: string, fallback = 'video') =>
     .replace(/^\.+/, '')
     .trim()
     .slice(0, 140) || fallback;
+
+const normalizeTrimTime = (value: unknown) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return raw;
+  const parts = raw.split(':');
+  if (parts.length > 3 || parts.some((part) => !/^\d{1,2}(?:\.\d+)?$/.test(part))) return '';
+  const normalized = parts.map((part, index) => {
+    if (index === parts.length - 1 && part.includes('.')) return part.padStart(2, '0');
+    return String(Number(part)).padStart(2, '0');
+  });
+  return normalized.join(':');
+};
+
+const trimSeconds = (value = '') => {
+  if (!value) return null;
+  if (/^\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  const parts = value.split(':').map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+};
+
+const normalizeTrimRange = (startInput: unknown, endInput: unknown) => {
+  const startTime = normalizeTrimTime(startInput);
+  const endTime = normalizeTrimTime(endInput);
+  const startSeconds = trimSeconds(startTime);
+  const endSeconds = trimSeconds(endTime);
+  if (startTime && startSeconds !== null && startSeconds < 0) return { startTime: '', endTime: '' };
+  if (endTime && endSeconds !== null && endSeconds <= 0) return { startTime: '', endTime: '' };
+  if (startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds) return { startTime: '', endTime: '' };
+  return { startTime, endTime };
+};
+
+const trimSectionArgs = (job: Pick<DownloadJob, 'startTime' | 'endTime'>) => {
+  const start = normalizeTrimTime(job.startTime);
+  const end = normalizeTrimTime(job.endTime);
+  if (!start && !end) return [];
+  return ['--download-sections', `*${start || '0'}-${end || 'inf'}`];
+};
 
 const toDisplayPath = (filePath: string) => {
   const home = os.homedir();
@@ -155,6 +198,7 @@ export const detectDownloaderPlatform = (rawUrl: string): DownloaderPlatform => 
     if (host === 'x.com' || host.includes('twitter.com') || host.includes('twimg.com')) return 'x';
     if (host.includes('tiktok.com') || host.includes('tiktokcdn.com')) return 'tiktok';
     if (host === 'ispot.tv' || host.endsWith('.ispot.tv')) return 'ispot';
+    if (host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net') || host.includes('brightcove.net')) return 'brightcove';
     if (/\.(?:mp4|m3u8|mpd|webm|mov)(?:$|\?)/i.test(parsed.href)) return 'direct';
     return 'unknown';
   } catch {
@@ -177,7 +221,7 @@ const normalizeDownloaderUrl = (rawUrl: string, platform = detectDownloaderPlatf
   if (platform === 'facebook' && parsed.searchParams.get('v')) {
     return `https://www.facebook.com/watch/?v=${parsed.searchParams.get('v')}`;
   }
-  if (!['direct', 'youtube', 'facebook'].includes(platform)) parsed.search = '';
+  if (!['direct', 'youtube', 'facebook', 'brightcove'].includes(platform)) parsed.search = '';
   return parsed.href;
 };
 
@@ -190,7 +234,7 @@ const validateDownloaderUrl = (rawUrl: string, validateUrl?: (url: string) => un
   validateUrl?.(parsed.href);
   const platform = detectDownloaderPlatform(parsed.href);
   if (platform === 'unknown') {
-    throw new Error('Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, and iSpot.tv.');
+    throw new Error('Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, Brightcove, and iSpot.tv.');
   }
   return { url: normalizeDownloaderUrl(parsed.href, platform), platform };
 };
@@ -255,19 +299,23 @@ const ytDlpDownloadAccelerationArgs = (options: VideoDownloaderRouteOptions, qua
   const args: string[] = [];
   if (aria2) {
     args.push('--downloader', 'aria2c');
-    args.push('--downloader-args', 'aria2c:-x 16 -s 16 -k 1M');
+    args.push('--downloader-args', 'aria2c:-x 32 -s 32 -k 2M');
   }
-  args.push('--concurrent-fragments', '16');
-  args.push('--buffer-size', '64K');
+  args.push('--concurrent-fragments', '32');
+  args.push('--buffer-size', '128K');
   return args;
 };
 
 const toolPathEnv = (options: VideoDownloaderRouteOptions) => {
-  const dirs = ['ffmpeg', 'ffprobe', 'yt-dlp', 'aria2c']
+  const dirs = ['ffmpeg', 'ffprobe', 'yt-dlp', 'aria2c', 'deno']
     .map((tool) => resolveTool(options, tool))
     .filter(Boolean)
     .map((toolPath) => path.dirname(toolPath));
-  return Array.from(new Set(dirs)).join(path.delimiter);
+  const commonToolDirs =
+    process.platform === 'win32'
+      ? []
+      : ['/opt/homebrew/bin', '/usr/local/bin'];
+  return Array.from(new Set([...dirs, ...commonToolDirs])).join(path.delimiter);
 };
 
 const cookieAttempts = (platform: DownloaderPlatform) => {
@@ -623,7 +671,7 @@ const formatSelector = (platform: DownloaderPlatform, quality: DownloadQuality, 
     }
     return `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
   }
-  if (platform === 'vimeo') {
+  if (platform === 'vimeo' || platform === 'brightcove') {
     return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
   }
   if (platform === 'instagram' || platform === 'facebook' || platform === 'x' || platform === 'tiktok') {
@@ -807,9 +855,10 @@ const runDownloadAttempt = async (
     outputTemplate,
     '--format',
     formatSelector(job.platform, job.quality, Boolean(extraArgs.includes('--quality-fallback'))),
-    ...(hasAria2 ? ['--downloader', 'aria2c', '--downloader-args', 'aria2c:-x 16 -s 16 -k 1M'] : []),
-    '--concurrent-fragments', '16',
-    '--buffer-size', '64K',
+    ...(hasAria2 ? ['--downloader', 'aria2c', '--downloader-args', 'aria2c:-x 32 -s 32 -k 2M'] : []),
+    '--concurrent-fragments', '32',
+    '--buffer-size', '128K',
+    ...trimSectionArgs(job),
     ...(job.quality === 'audio'
       ? ['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K', '--postprocessor-args', 'ffmpeg:-t 120']
       : ['--merge-output-format', 'mp4', '--remux-video', 'mp4', '--postprocessor-args', 'ffmpeg:-c copy -movflags +faststart']),
@@ -840,6 +889,7 @@ const runDownloadAttempt = async (
     const softProgressForElapsed = () =>
       Math.min(35, Math.max(job.progress, 6 + Math.floor((Date.now() - attemptStart) / 4000) * 2));
     const watchdogInterval = setInterval(() => {
+      if (job.status === 'paused') return;
       if (lastProgressTime === null) {
         if (Date.now() - attemptStart > 4000 && job.status === 'running' && job.progress < 35) {
           updateJob(job, {
@@ -1381,12 +1431,20 @@ const pumpQueue = (options: VideoDownloaderRouteOptions) => {
   }
 };
 
-const runningJobKey = (platform: string, url: string, quality: string, sourcePageUrl = '') =>
-  `${platform}:${url}:${quality}:${sourcePageUrl}`;
+const runningJobKey = (platform: string, url: string, quality: string, sourcePageUrl = '', startTime = '', endTime = '') =>
+  `${platform}:${url}:${quality}:${sourcePageUrl}:${startTime}-${endTime}`;
 
 const createJob = (
   options: VideoDownloaderRouteOptions,
-  input: { url: string; quality?: string; title?: string; sourcePageUrl?: string; saveToWebsiteAssets?: boolean }
+  input: {
+    url: string;
+    quality?: string;
+    title?: string;
+    sourcePageUrl?: string;
+    saveToWebsiteAssets?: boolean;
+    startTime?: string;
+    endTime?: string;
+  }
 ) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality: DownloadQuality = input.quality === 'audio'
@@ -1399,14 +1457,17 @@ const createJob = (
   // Dedup: if same platform+url+quality is already running or completed, return existing
   const sourcePageUrl = String(input.sourcePageUrl || '').trim();
   const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
-  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : '');
+  const { startTime, endTime } = normalizeTrimRange(input.startTime, input.endTime);
+  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : '', startTime, endTime);
   for (const existing of jobs.values()) {
     if (existing.status === 'queued' || existing.status === 'running') {
       if (runningJobKey(
         existing.platform,
         existing.url,
         existing.quality,
-        existing.saveToWebsiteAssets ? existing.sourcePageUrl : ''
+        existing.saveToWebsiteAssets ? existing.sourcePageUrl : '',
+        existing.startTime,
+        existing.endTime
       ) === key) {
         return existing;
       }
@@ -1420,6 +1481,8 @@ const createJob = (
     quality,
     sourcePageUrl,
     saveToWebsiteAssets,
+    startTime,
+    endTime,
     status: 'queued',
     progress: 0,
     downloadedBytes: 0,
@@ -1451,10 +1514,23 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         const videos = specialPayloadToCards(payload, validated.url, validated.platform);
         return res.json({ ok: true, platform: validated.platform, videos, count: videos.length });
       }
+      const cacheKey = `${validated.platform}:${validated.url}`;
+      const cached = inspectCache.get(cacheKey);
+      if (cached && cached.expiresAt > now()) {
+        return res.json(cached.payload);
+      }
       const info = await inspectWithFallbacks(options, validated.url, validated.platform);
       const videos = infoToCards(info, validated.url, validated.platform);
       if (videos.length === 0) throw new Error('No downloadable video was found for this URL.');
-      return res.json({ ok: true, platform: validated.platform, videos, count: videos.length });
+      const payload = { ok: true, platform: validated.platform, videos, count: videos.length };
+      inspectCache.set(cacheKey, { expiresAt: now() + INSPECT_CACHE_TTL_MS, payload });
+      if (inspectCache.size > 60) {
+        const expiredOrOldest = Array.from(inspectCache.entries())
+          .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+          .slice(0, 20);
+        expiredOrOldest.forEach(([key]) => inspectCache.delete(key));
+      }
+      return res.json(payload);
     } catch (error: any) {
       const platform = detectDownloaderPlatform(rawUrl);
       return res.status(400).json({ error: friendlyDownloaderError(platform, errorText(error)) });
@@ -1469,6 +1545,8 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         title: String(req.body?.title || '').trim(),
         sourcePageUrl: String(req.body?.sourcePageUrl || '').trim(),
         saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
+        startTime: String(req.body?.startTime || '').trim(),
+        endTime: String(req.body?.endTime || '').trim(),
       });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
@@ -1483,12 +1561,13 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
       new Set<string>(rawUrls.map((value: unknown) => String(value || '').trim()).filter(Boolean))
     ).slice(0, 20);
     const quality = String(req.body?.quality || 'fhd').toLowerCase();
+    const trimRange = normalizeTrimRange(req.body?.startTime, req.body?.endTime);
     if (urls.length === 0) return res.status(400).json({ error: 'Enter at least one video URL.' });
     const created: DownloadJob[] = [];
     const errors: Array<{ url: string; error: string }> = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality }));
+        created.push(createJob(options, { url, quality, ...trimRange }));
       } catch (error: any) {
         errors.push({ url, error: error?.message || 'Invalid URL' });
       }
@@ -1513,7 +1592,11 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     cancelledJobs.add(id);
     const pendingIndex = pendingJobs.indexOf(id);
     if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
-    activeDownloadProcesses.get(id)?.kill('SIGTERM');
+    const child = activeDownloadProcesses.get(id);
+    if (child && job.status === 'paused' && process.platform !== 'win32') {
+      child.kill('SIGCONT');
+    }
+    child?.kill('SIGTERM');
     updateJob(job, {
       status: 'cancelled',
       progress: 0,
@@ -1523,9 +1606,91 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     return res.json({ ok: true, job: publicJob(job) });
   });
 
+  app.post('/api/downloader/jobs/:id/pause', (req, res) => {
+    const id = String(req.params.id || '');
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: 'Download job was not found.' });
+    if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    if (job.status === 'paused') {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+
+    const pendingIndex = pendingJobs.indexOf(id);
+    if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
+
+    const child = activeDownloadProcesses.get(id);
+    if (child && process.platform !== 'win32') {
+      try {
+        child.kill('SIGSTOP');
+      } catch (error: any) {
+        return res.status(500).json({ error: error?.message || 'Could not pause download.' });
+      }
+    } else if (child && process.platform === 'win32') {
+      return res.status(400).json({ error: 'Pause is not supported for active downloads on Windows. Cancel and restart the selected time range instead.' });
+    }
+
+    updateJob(job, {
+      status: 'paused',
+      message: 'Download paused',
+    });
+    return res.json({ ok: true, job: publicJob(job) });
+  });
+
+  app.post('/api/downloader/jobs/:id/resume', (req, res) => {
+    const id = String(req.params.id || '');
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: 'Download job was not found.' });
+    if (job.status !== 'paused') {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+
+    const child = activeDownloadProcesses.get(id);
+    if (child && process.platform !== 'win32') {
+      try {
+        child.kill('SIGCONT');
+        updateJob(job, {
+          status: 'running',
+          message: 'Download resumed',
+        });
+      } catch (error: any) {
+        return res.status(500).json({ error: error?.message || 'Could not resume download.' });
+      }
+    } else {
+      updateJob(job, {
+        status: 'queued',
+        message: 'Queued',
+      });
+      if (!pendingJobs.includes(id)) pendingJobs.push(id);
+      pumpQueue(options);
+    }
+
+    return res.json({ ok: true, job: publicJob(job) });
+  });
+
   app.get('/api/downloader/jobs', (_req, res) => {
     const items = Array.from(jobs.values()).sort((a, b) => b.updatedAt - a.updatedAt).map(publicJob);
     return res.json({ items, count: items.length });
+  });
+
+  app.delete('/api/downloader/jobs', (_req, res) => {
+    for (const id of pendingJobs.splice(0)) {
+      cancelledJobs.add(id);
+    }
+    for (const [id, child] of activeDownloadProcesses.entries()) {
+      const job = jobs.get(id);
+      cancelledJobs.add(id);
+      if (job?.status === 'paused' && process.platform !== 'win32') {
+        child.kill('SIGCONT');
+      }
+      child.kill('SIGTERM');
+    }
+    const removed = jobs.size;
+    jobs.clear();
+    activeDownloadProcesses.clear();
+    cancelledJobs.clear();
+    return res.json({ ok: true, removed });
   });
 
   app.get('/api/downloader/downloads', async (_req, res) => {

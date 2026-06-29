@@ -1,7 +1,7 @@
 import { apiFetch } from './api';
 
 export type DownloaderQuality = '4k' | 'fhd' | 'hd' | 'audio';
-export type DownloaderJobStatus = 'queued' | 'running' | 'completed' | 'error' | 'cancelled';
+export type DownloaderJobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled';
 
 export type DownloaderVideo = {
   id: string;
@@ -60,6 +60,8 @@ export type DownloaderJob = {
   updatedAt: number;
   result?: DownloaderResult;
   error?: string;
+  startTime?: string;
+  endTime?: string;
 };
 
 export type DownloaderFile = {
@@ -105,6 +107,8 @@ export const startDownloaderJob = async (input: {
   title?: string;
   sourcePageUrl?: string;
   saveToWebsiteAssets?: boolean;
+  startTime?: string;
+  endTime?: string;
 }) => {
   const response = await apiFetch('/api/downloader/download', {
     method: 'POST',
@@ -116,11 +120,15 @@ export const startDownloaderJob = async (input: {
   return data.job as DownloaderJob;
 };
 
-export const startBulkDownloaderJobs = async (urls: string[], quality: DownloaderQuality = '4k') => {
+export const startBulkDownloaderJobs = async (
+  urls: string[],
+  quality: DownloaderQuality = '4k',
+  options: { startTime?: string; endTime?: string } = {}
+) => {
   const response = await apiFetch('/api/downloader/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ urls, quality }),
+    body: JSON.stringify({ urls, quality, ...options }),
   });
   const data = await readJson(response);
   if (!response.ok) throw new Error(data?.error || 'Could not start bulk download.');
@@ -143,11 +151,38 @@ export const cancelDownloaderJob = async (id: string) => {
   return data.job as DownloaderJob;
 };
 
+export const pauseDownloaderJob = async (id: string) => {
+  const response = await apiFetch(`/api/downloader/jobs/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not pause download.');
+  return data.job as DownloaderJob;
+};
+
+export const resumeDownloaderJob = async (id: string) => {
+  const response = await apiFetch(`/api/downloader/jobs/${encodeURIComponent(id)}/resume`, {
+    method: 'POST',
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not resume download.');
+  return data.job as DownloaderJob;
+};
+
 export const listDownloaderJobs = async () => {
   const response = await apiFetch('/api/downloader/jobs');
   const data = await readJson(response);
   if (!response.ok) throw new Error(data?.error || 'Could not load downloader jobs.');
   return (Array.isArray(data?.items) ? data.items : []) as DownloaderJob[];
+};
+
+export const clearDownloaderJobs = async () => {
+  const response = await apiFetch('/api/downloader/jobs', {
+    method: 'DELETE',
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not clear downloader jobs.');
+  return data as { ok: true; removed: number };
 };
 
 export const waitForDownloaderJob = async (
@@ -156,7 +191,7 @@ export const waitForDownloaderJob = async (
 ) => {
   let job = initial;
   onProgress?.(job);
-  while (job.status === 'queued' || job.status === 'running') {
+  while (job.status === 'queued' || job.status === 'running' || job.status === 'paused') {
     await new Promise((resolve) => window.setTimeout(resolve, 700));
     job = await readDownloaderJob(job.id);
     onProgress?.(job);

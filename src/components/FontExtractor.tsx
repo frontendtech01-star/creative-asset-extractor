@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Download, FolderOpen, Search, Type } from 'lucide-react';
+import { Check, Download, Search, Type } from 'lucide-react';
 import { apiFetch, apiUrl } from '../lib/api';
 import {
   buildFontDisplayName,
-  buildFontZipItem,
+  buildFontZipItems,
+  getAvailableFontDownloadFormats,
   getFontFamilyFolderName,
   getFontFilenameBase,
+  getFontOutputFormat,
   getFontSelectionKey,
   isJunkFontLabel,
   normalizeFontStyleKey,
@@ -13,6 +15,8 @@ import {
   resolveFontIdentityFields,
   resolveFontAssetUrl,
   resolveFontSourceFormat,
+  resolveFontTargetFormat,
+  type FontDownloadFormat,
 } from '../lib/fontAsset';
 
 const DEFAULT_PREVIEW_TEXT = "Rome wasn't built in a day, but they were laying bricks every hour";
@@ -66,6 +70,16 @@ const getFontVariantKey = (font: any) => {
     normalizeFontStyleKey(String(identity.style || '')),
     resolveFontSourceFormat(font),
   ].join('|').toLowerCase();
+};
+
+const getInstallableFontFormat = (font: any, selectedFormats: Record<string, FontDownloadFormat>) => {
+  const explicit = getFontOutputFormat(font, selectedFormats);
+  const key = getFontSelectionKey(font);
+  if (selectedFormats[key]) return explicit;
+  const available = getAvailableFontDownloadFormats(font);
+  if (available.includes('ttf')) return 'ttf';
+  if (available.includes('otf')) return 'otf';
+  return explicit;
 };
 
 function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; sourcePageUrl?: string }) {
@@ -123,38 +137,34 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
   );
 }
 
-export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: any[]; sourcePageUrl?: string }) {
+export default function FontExtractor({
+  fonts,
+  sourcePageUrl = '',
+  onDownloadReady,
+}: {
+  fonts: any[];
+  sourcePageUrl?: string;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
+}) {
   const [searchTerm, setSearchTerm] = useState('');
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedFormats, setSelectedFormats] = useState<Record<string, FontDownloadFormat>>({});
 
   useEffect(() => {
     setSelected(new Set());
+    setSelectedFormats({});
   }, [fonts, sourcePageUrl]);
-
-  const openDownloadFolder = async () => {
-    try {
-      await apiFetch('/api/open-folder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target: 'fonts',
-          sourcePageUrl: sourcePageUrl || undefined,
-        }),
-      });
-    } catch {
-      // best-effort local shortcut
-    }
-  };
 
   const handleDownload = async (font: any) => {
     const url = getFontSelectionKey(font);
     setDownloading(url);
     const originalFormat = resolveFontSourceFormat(font);
-    const toFormat = originalFormat === 'woff2' ? 'woff2' : 'woff';
+    const formatChoice = getInstallableFontFormat(font, selectedFormats);
+    const toFormat = resolveFontTargetFormat(font, formatChoice);
     setDownloadResult(null);
 
     try {
@@ -172,7 +182,15 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
       const response = await apiFetch(`/api/convert-font?${params.toString()}`);
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font save failed');
-      setDownloadResult({ ok: true, message: `${getReadableFontLabel(font)} saved to Fonts.` });
+      const label = getReadableFontLabel(font);
+      const formatLabel = formatChoice === 'original' ? 'original' : toFormat.toUpperCase();
+      setDownloadResult({ ok: true, message: `${label} saved to Fonts as ${formatLabel}.` });
+      onDownloadReady?.({
+        title: 'Font saved',
+        detail: `${label} ${formatLabel} is ready in Downloads.`,
+        target: 'fonts',
+        sourcePageUrl: sourcePageUrl || undefined,
+      });
     } catch (error: any) {
       console.error('Download error:', error);
       setDownloadResult({ ok: false, message: error?.message || 'Failed to download or convert font.' });
@@ -196,7 +214,7 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
     const filename = getOriginalFontFilename(font);
     const matchesSearch = `${label} ${filename}`.toLowerCase().includes(searchTerm.toLowerCase());
     const format = resolveFontSourceFormat(font);
-    return matchesSearch && (format === 'woff' || format === 'woff2');
+    return matchesSearch && ['woff', 'woff2', 'ttf', 'otf'].includes(format);
   });
 
   const selectedFonts = filteredFonts.filter((font) => selected.has(getFontSelectionKey(font)));
@@ -211,13 +229,18 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
     });
   };
 
+  const setFontFormat = (font: any, format: FontDownloadFormat) => {
+    const key = getFontSelectionKey(font);
+    setSelectedFormats((current) => ({ ...current, [key]: format }));
+  };
+
   const handleDownloadAll = async () => {
     if (selectedFonts.length === 0) return;
     setDownloadingZip(true);
     setDownloadResult(null);
     try {
       const items = selectedFonts.flatMap((font) =>
-        [buildFontZipItem(font, resolveFontSourceFormat(font) === 'woff2' ? 'woff2' : 'woff', getFontFilenameBase(font))]
+        buildFontZipItems(font, getFontFilenameBase(font))
       );
       const response = await apiFetch('/api/download-zip', {
         method: 'POST',
@@ -231,7 +254,14 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font ZIP save failed');
-      setDownloadResult({ ok: true, message: `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as ${result.filename || 'fonts.zip'}.` });
+      const message = `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as TTF and WOFF in ${result.filename || 'fonts.zip'}.`;
+      setDownloadResult({ ok: true, message });
+      onDownloadReady?.({
+        title: 'Fonts saved',
+        detail: message,
+        target: 'fonts',
+        sourcePageUrl: sourcePageUrl || undefined,
+      });
       setSelected(new Set());
     } catch (error: any) {
       console.error('Download all error:', error);
@@ -320,16 +350,6 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
           }`}
         >
           <p>{downloadResult.message}</p>
-          {downloadResult.ok ? (
-            <button
-              type="button"
-              onClick={() => void openDownloadFolder()}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Open Folder
-            </button>
-          ) : null}
         </div>
       ) : null}
 
@@ -342,6 +362,9 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
           const weight = normalizeFontWeightKey(identity.weight);
           const style = normalizeFontStyleKey(String(identity.style || ''));
           const isSelected = selected.has(selectionKey);
+          const availableFormats = getAvailableFontDownloadFormats(font);
+          const selectedFormat = getInstallableFontFormat(font, selectedFormats);
+          const selectedTargetFormat = resolveFontTargetFormat(font, selectedFormat);
           return (
             <div
               key={`${selectionKey}-${idx}`}
@@ -382,6 +405,31 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
                 <div className="block w-full overflow-hidden rounded-xl text-left">
                   <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
                 </div>
+                <div onClick={(event) => event.stopPropagation()} className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Font converter
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {availableFormats.map((option) => {
+                      const optionTarget = resolveFontTargetFormat(font, option);
+                      const optionLabel = option === 'original' ? `Original ${resolveFontSourceFormat(font).toUpperCase()}` : optionTarget.toUpperCase();
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => setFontFormat(font, option)}
+                          className={`rounded-lg border px-2.5 py-2 text-xs font-semibold transition ${
+                            selectedFormat === option
+                              ? 'border-indigo-600 bg-indigo-600 text-white'
+                              : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100'
+                          }`}
+                        >
+                          {optionLabel}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div className="flex gap-2 w-full">
                   <button
                     onClick={(event) => {
@@ -396,7 +444,7 @@ export default function FontExtractor({ fonts, sourcePageUrl = '' }: { fonts: an
                     ) : (
                       <>
                         <Download className="w-4 h-4" />
-                        Download
+                        Download {selectedFormat === 'original' ? 'Original' : selectedTargetFormat.toUpperCase()}
                       </>
                     )}
                   </button>

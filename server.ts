@@ -44,6 +44,7 @@ import {
   getFontConversionOutputs,
   isJunkFontLabel,
   pickBestFontForUrl,
+  resolveFontIdentityFields,
 } from './src/lib/fontAsset';
 import {
   CREATIVE_ASSET_SUBFOLDERS,
@@ -1478,7 +1479,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
@@ -1541,6 +1542,46 @@ app.get('/api/browser-tabs/chrome/active', async (_req, res) => {
   }
 });
 
+const normalizeFontFamilyForStaticBackfill = (value = '') => {
+  const family = String(value || '')
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!family) return '';
+  const lower = family.toLowerCase();
+  if (
+    !lower ||
+    isJunkFontLabel(lower) ||
+    ['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui'].includes(lower)
+  ) {
+    return '';
+  }
+  return lower;
+};
+
+const getFontCardFamilyForStaticBackfill = (font: any) => {
+  const identity = resolveFontIdentityFields(font || {});
+  return normalizeFontFamilyForStaticBackfill(
+    identity.family || font?.family || font?.title || font?.name || buildFontDisplayName(font || {})
+  );
+};
+
+const hasRenderedFontFamilyWithoutCard = (extracted: any) => {
+  const renderedFamilies = new Set(
+    (Array.isArray(extracted?.fontUsage) ? extracted.fontUsage : [])
+      .map((font: any) => normalizeFontFamilyForStaticBackfill(font?.family))
+      .filter(Boolean)
+  );
+  if (!renderedFamilies.size) return false;
+
+  const cardFamilies = new Set(
+    (Array.isArray(extracted?.fonts) ? extracted.fonts : [])
+      .map((font: any) => getFontCardFamilyForStaticBackfill(font))
+      .filter(Boolean)
+  );
+  return Array.from(renderedFamilies).some((family) => !cardFamilies.has(family));
+};
+
 async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl: string) {
   const hasAssets =
     (extracted?.images?.length || 0) ||
@@ -1548,7 +1589,8 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
     (extracted?.fonts?.length || 0) ||
     (extracted?.videos?.length || 0);
   const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
-  if ((hasAssets && hasDownloadableFonts) || !fallbackUrl) return extracted;
+  const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
+  if ((hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill) || !fallbackUrl) return extracted;
 
   const staticAssets = await withTimeout(
     extractStaticAssets(fallbackUrl, '', { fast: true }),
@@ -1575,7 +1617,7 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
     colors: Array.from(new Set([...(extracted?.colors || []), ...(staticAssets?.colors || [])])),
     extractionMeta: {
       ...extracted?.extractionMeta,
-      mode: hasAssets ? 'browser-static-font-fallback' : 'browser-static-fallback',
+      mode: hasAssets || needsRenderedFontBackfill ? 'browser-static-font-fallback' : 'browser-static-fallback',
       sectionLabel: extracted?.title || 'Static fallback',
     },
     pageUrl: extracted?.pageUrl || fallbackUrl,
@@ -1853,11 +1895,6 @@ const buildDmgAssetName = (productName: string, version: string) => {
   return `Creative.Asset.Extractor-${cleanVersion}-arm64.dmg`;
 };
 
-const buildExeAssetName = (version: string) => {
-  const cleanVersion = normalizeAssetVersion(version);
-  return `Creative.Asset.Extractor-Setup-${cleanVersion}-x64.exe`;
-};
-
 const buildGithubReleaseLinks = (
   githubOwner: string,
   githubRepo: string,
@@ -1866,40 +1903,29 @@ const buildGithubReleaseLinks = (
 ) => {
   const tagName = normalizeReleaseTag(version);
   const dmgName = buildDmgAssetName(productName, version);
-  const exeName = buildExeAssetName(version);
   const repoUrl = `https://github.com/${githubOwner}/${githubRepo}`;
   return {
     tagName,
     htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
     releasesUrl: `${repoUrl}/releases`,
     repoUrl,
-    packageDownloadUrl: `https://codeload.github.com/${githubOwner}/${githubRepo}/zip/refs/heads/v2.0`,
-    packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
     dmgAssetName: dmgName,
-    exeDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(exeName)}`,
-    exeAssetName: exeName,
   };
 };
 
 const parseGithubReleasePayload = (data: any) => {
   const assets = Array.isArray(data?.assets) ? data.assets : [];
   const dmgAsset = assets.find((asset: any) => /\.dmg$/i.test(String(asset?.name || '')));
-  const exeAsset = assets.find((asset: any) => /\.exe$/i.test(String(asset?.name || '')));
-  const packageAsset =
-    assets.find((asset: any) => /\.(?:dmg|exe|msi|appimage|deb|rpm|pkg|zip)$/i.test(String(asset?.name || ''))) ||
-    assets[0];
   return {
     tagName: String(data?.tag_name || ''),
     name: String(data?.name || data?.tag_name || 'Latest release'),
     body: String(data?.body || ''),
     publishedAt: String(data?.published_at || ''),
     htmlUrl: String(data?.html_url || ''),
-    packageDownloadUrl: String(dmgAsset?.browser_download_url || packageAsset?.browser_download_url || data?.html_url || ''),
-    packageAssetName: String(dmgAsset?.name || packageAsset?.name || 'Latest Release'),
+    packageDownloadUrl: String(dmgAsset?.browser_download_url || ''),
+    packageAssetName: String(dmgAsset?.name || 'Mac DMG'),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ''),
-    exeDownloadUrl: String(exeAsset?.browser_download_url || ''),
-    exeAssetName: String(exeAsset?.name || ''),
     dmgAssetName: String(dmgAsset?.name || ''),
   };
 };
@@ -1959,12 +1985,10 @@ app.get('/api/github-latest-release', async (_req, res) => {
         ...release,
         repoUrl: links.repoUrl,
         releasesUrl: links.releasesUrl,
-        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl || release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
-        packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || 'Latest Release',
+        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
+        packageAssetName: release.dmgAssetName || links.dmgAssetName || 'Mac DMG',
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
         dmgAssetName: release.dmgAssetName || links.dmgAssetName,
-        exeDownloadUrl: release.exeDownloadUrl || links.exeDownloadUrl,
-        exeAssetName: release.exeAssetName || links.exeAssetName,
       },
     });
   } catch (error: any) {
@@ -1992,12 +2016,10 @@ app.get('/api/release-notes', async (_req, res) => {
     htmlUrl: links.htmlUrl,
     repoUrl: links.repoUrl,
     releasesUrl: links.releasesUrl,
-    packageDownloadUrl: links.packageDownloadUrl,
-    packageAssetName: links.packageAssetName,
-    dmgDownloadUrl: '',
-    dmgAssetName: '',
-    exeDownloadUrl: links.exeDownloadUrl,
-    exeAssetName: links.exeAssetName,
+    packageDownloadUrl: links.dmgDownloadUrl,
+    packageAssetName: links.dmgAssetName,
+    dmgDownloadUrl: links.dmgDownloadUrl,
+    dmgAssetName: links.dmgAssetName,
     source: 'local' as 'local' | 'github',
   };
 
@@ -2018,8 +2040,6 @@ app.get('/api/release-notes', async (_req, res) => {
       packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
       dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
-      exeDownloadUrl: githubRelease.exeDownloadUrl || links.exeDownloadUrl,
-      exeAssetName: githubRelease.exeAssetName || links.exeAssetName,
       source: 'github',
     };
   } catch (error: any) {
@@ -2388,6 +2408,34 @@ const releaseSharedPuppeteerBrowser = async (options: { forceClose?: boolean } =
 
 const launchPuppeteerBrowser = async () => acquireSharedPuppeteerBrowser();
 
+const acquireSingleWebsitePage = async (browser: any) => {
+  const pages = await browser.pages().catch(() => []);
+  const page = pages.find((candidate: any) => {
+    try {
+      const url = String(candidate.url?.() || '');
+      return !url || url === 'about:blank';
+    } catch {
+      return false;
+    }
+  }) || await browser.newPage();
+
+  await Promise.all(
+    pages
+      .filter((candidate: any) => candidate !== page)
+      .filter((candidate: any) => {
+        try {
+          const url = String(candidate.url?.() || '');
+          return !url || url === 'about:blank';
+        } catch {
+          return false;
+        }
+      })
+      .map((candidate: any) => candidate.close().catch(() => undefined))
+  );
+
+  return page;
+};
+
 const prewarmPuppeteerBrowser = () => {
   if (sharedPuppeteerBrowser?.connected || puppeteerWarmupInFlight) return puppeteerWarmupInFlight;
   const executablePath = resolvePuppeteerExecutablePath();
@@ -2588,7 +2636,7 @@ const fetchSiteHtmlViaBrowser = async (siteUrl: string) => {
   let page: Awaited<ReturnType<Awaited<ReturnType<typeof launchPuppeteerBrowser>>['newPage']>> | null = null;
   try {
     browser = await launchPuppeteerBrowser();
-    page = await browser.newPage();
+    page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     await page.goto(siteUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => undefined);
     return await waitForRenderedSiteHtml(page);
@@ -3648,7 +3696,8 @@ const isUnsupportedVideoResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith('data:') || value.startsWith('blob:')) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#@]|$)/i.test(value)) return true;
+  if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL(value);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
@@ -4102,6 +4151,34 @@ const isWistiaUrl = (url: string) => {
 
 const buildWistiaEmbedUrl = (hashedId: string) => `https://fast.wistia.com/embed/medias/${hashedId}`;
 
+const isWistiaSwatchUrl = (rawUrl = '') => {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    return (host.includes('wistia.com') || host.includes('wistia.net')) &&
+      /\/embed\/medias\/[a-z0-9]{8,12}\/swatch\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+};
+
+const isWistiaHelperResourceUrl = (rawUrl = '') => {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    if (!host.includes('wistia.com') && !host.includes('wistia.net')) return false;
+    const path = parsed.pathname.toLowerCase();
+    if (isWistiaSwatchUrl(parsed.href)) return true;
+    if (/\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)(?:\.js)?(?:@|\/|$)/i.test(path)) {
+      return true;
+    }
+    if (/\/(?:mput|jsonp|iframe_shim)(?:\/|$)/i.test(path)) return true;
+    return /\/embed\/medias\/[a-z0-9]{8,12}\/(?:swatch|seo|jsonp)(?:\/|$)/i.test(path);
+  } catch {
+    return false;
+  }
+};
+
 const extractWistiaIdsFromText = (text: string, baseUrl: string) => {
   const ids = new Set<string>();
   const normalizedText = text
@@ -4130,8 +4207,18 @@ const extractWistiaIdsFromText = (text: string, baseUrl: string) => {
     addId(match[1]);
   }
 
+  const mediaIdRegex = /(?:media-id|media_id|hashedId|hashed_id|wistiaHashedId|wistia_hashed_id)["'\s:=]+["']?([a-z0-9]{8,12})/gi;
+  while ((match = mediaIdRegex.exec(normalizedText)) !== null) {
+    addId(match[1]);
+  }
+
   const mediasRegex = /wistia\.com\/medias\/([a-z0-9]{8,12})/gi;
   while ((match = mediasRegex.exec(normalizedText)) !== null) {
+    addId(match[1]);
+  }
+
+  const embedIframeRegex = /(?:fast\.)?wistia\.(?:com|net)\/embed\/iframe\/([a-z0-9]{8,12})/gi;
+  while ((match = embedIframeRegex.exec(normalizedText)) !== null) {
     addId(match[1]);
   }
 
@@ -4550,7 +4637,7 @@ const fetchRemoteFontBufferViaBrowser = async (url: string, refererPage = '') =>
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     const landing =
       String(refererPage || '').trim() ||
@@ -4985,7 +5072,7 @@ const fetchRemoteImageBufferViaBrowser = async (url: string, refererPageUrl = ''
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     let landing = String(refererPageUrl || '').trim();
     if (!landing.startsWith('http')) {
@@ -5183,7 +5270,7 @@ const fetchRemoteImageBuffersViaBrowserBatch = async (urls: string[], refererPag
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     await page.goto(landing, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -6684,6 +6771,12 @@ const extractAssetsFromRawText = (text: string, baseUrl: string) => {
     const cleaned = cleanRawAssetUrl(match[0]);
     const resolved = resolveUrl(baseUrl, cleaned);
     if (!resolved || resolved.startsWith('data:') || resolved.startsWith('blob:')) continue;
+    if (isWistiaHelperResourceUrl(resolved)) {
+      if (isWistiaSwatchUrl(resolved)) {
+        addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS, type: 'webp' }, { permissive: true });
+      }
+      continue;
+    }
 
     if (/\.(?:jpe?g|png|webp|gif|avif|svg)(?:[?#]|$)/i.test(resolved)) {
       addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS }, { permissive: true });
@@ -6717,6 +6810,14 @@ const extractAssetsFromRawText = (text: string, baseUrl: string) => {
         cssSource: baseUrl,
         status: DEFAULT_ASSET_STATUS,
       });
+    }
+  }
+
+  const wistiaSwatchRegex = /https?:\/\/fast\.wistia\.(?:com|net)\/embed\/medias\/[a-z0-9]{8,12}\/swatch(?:[?#][^"'`<>\s\\)]*)?/gi;
+  while ((match = wistiaSwatchRegex.exec(raw)) !== null) {
+    const resolved = resolveUrl(baseUrl, cleanRawAssetUrl(match[0]));
+    if (resolved && isWistiaSwatchUrl(resolved)) {
+      addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS, type: 'webp' }, { permissive: true });
     }
   }
 
@@ -7075,6 +7176,10 @@ const staticExtractHasUnresolvedEmbeds = (
   const videos = assets?.videos || [];
   const vimeoHints = /vimeo\.com|data-vimeo-id/i.test(text);
   if (vimeoHints && !videos.some((video: any) => video?.isVimeoDirect)) return true;
+  const wistiaHints = /wistia|<wistia-player\b|fast\.wistia\.(?:com|net)/i.test(text);
+  if (wistiaHints && !videos.some((video: any) => video?.provider === 'wistia' && (video?.isWistiaDirect || /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(String(video?.url || ''))))) {
+    return true;
+  }
   const brightcoveHints = /brightcove|gb-video-brightcove|data-account-id|players\.brightcove\.net/i.test(text);
   if (brightcoveHints && !videos.some((video: any) => video?.provider === 'brightcove' && (video?.isDirect || video?.brightcoveManifestUrl || /\.mp4|m3u8/i.test(String(video?.url || ''))))) {
     return true;
@@ -7630,6 +7735,45 @@ const filterUnavailableSitecoreFonts = async (fonts: any[], pageUrl = '') => {
     });
 };
 
+const isLikelyEncodedVideoPlaceholderTitle = (value = '') =>
+  /^[A-Za-z0-9+/_=-]{24,}\.*$/.test(String(value || '').trim()) && !/\s/.test(String(value || '').trim());
+
+const isDirectVideoCandidateUrl = (rawUrl = '') =>
+  /\.(?:mp4|webm|mov|mkv|m4v|m3u8|mpd)(?:[?#]|$)/i.test(String(rawUrl || '')) ||
+  /\/(?:videoplayback|progressive_redirect\/download)\b|vimeocdn\.com|vod-adaptive\.akamaized\.net|wistia\.com\/deliveries\//i.test(String(rawUrl || ''));
+
+const isLikelyBlankEmbeddedVideoCard = (video: any, targetUrl = '') => {
+  const candidates = [
+    video?.url,
+    video?.sourceStreamUrl,
+    video?.downloadUrl,
+    video?.originalUrl,
+    video?.embedUrl,
+    video?.sourceUrl,
+    video?.pageUrl,
+    targetUrl,
+  ].map((candidate) => String(candidate || '').trim()).filter(Boolean);
+  if (candidates.some(isWistiaHelperResourceUrl)) return true;
+  if (
+    candidates.some((candidate) => /(?:wistia\.com|wistia\.net)\/deliveries\//i.test(candidate)) &&
+    !video?.isWistiaDirect &&
+    !video?.height &&
+    !video?.width &&
+    !/\b(?:mp4|m3u8|hls)\b/i.test(String(video?.type || video?.format || video?.resolution || ''))
+  ) {
+    return true;
+  }
+  if (candidates.some(isDirectVideoCandidateUrl)) return false;
+  const title = String(video?.title || video?.name || video?.label || '').trim();
+  const hasPreview = /^https?:\/\//i.test(String(video?.thumbnail || video?.poster || '').trim());
+  if (hasPreview) return false;
+  const hasHttpCandidate = candidates.some((candidate) => /^https?:\/\//i.test(candidate));
+  if (!hasHttpCandidate) return true;
+  if (isLikelyEncodedVideoPlaceholderTitle(title)) return true;
+  return /(?:embedded\s+player|video\s+player)/i.test(String(video?.type || video?.provider || video?.label || '')) &&
+    !candidates.some((candidate) => /youtube\.com|youtu\.be|vimeo\.com|wistia\.com|brightcove|facebook\.com|instagram\.com|x\.com|twitter\.com|tiktok\.com/i.test(candidate));
+};
+
 const dedupeExtractedAssets = async (
   images: any[],
   videos: any[],
@@ -7715,9 +7859,11 @@ const dedupeExtractedAssets = async (
   const videoByKey = new Map<string, any>();
   collapseVimeoVideosForClient(videos).forEach((video) => {
     if (!video?.url) return;
+    if (isLikelyBlankEmbeddedVideoCard(video, targetUrl)) return;
     if (isUnsupportedVideoResourceUrl(String(video.url || video.sourceStreamUrl || video.sourceUrl || ''))) return;
     const sanitized = sanitizeVideoForClient(video, targetUrl);
     if (!sanitized?.url) return;
+    if (isLikelyBlankEmbeddedVideoCard(sanitized, targetUrl)) return;
     if (isUnsupportedVideoResourceUrl(String(sanitized.url || sanitized.sourceStreamUrl || sanitized.sourceUrl || ''))) return;
     const key = videoKey(sanitized);
     const normalizedVideo = !sanitized.thumbnail && fallbackThumb ? { ...sanitized, thumbnail: fallbackThumb } : sanitized;
@@ -8166,6 +8312,22 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
     }
   };
 
+  const resolveWistiaCandidateVideos = async (timeoutMs: number, label: string) => {
+    if (wistiaCandidateIds.size === 0) return;
+    try {
+      const wistiaAssets = await withTimeout(
+        extractWistiaVideos(Array.from(wistiaCandidateIds), 'fhd'),
+        timeoutMs,
+        label
+      );
+      videos.push(...(wistiaAssets.videos || []));
+      if (!options.videosOnly) images.push(...(wistiaAssets.images || []));
+    } catch (error: any) {
+      console.warn(`${label} failed, using placeholders:`, error?.message || error);
+      videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
+    }
+  };
+
   const deferVimeoHomepageStreamUpgrade = !options.videosOnly && isPlatformMarketingHomepage(targetUrl);
   if (vimeoCandidateUrls.size > 0 && deferVimeoHomepageStreamUpgrade) {
     videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
@@ -8187,6 +8349,11 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
       console.warn('Quick Vimeo upgrade skipped:', error?.message || error);
     }
   }
+
+  await resolveWistiaCandidateVideos(
+    options.fast ? 8000 : 12000,
+    options.fast ? `Fast static Wistia extraction for ${targetUrl}` : `Static Wistia extraction for ${targetUrl}`
+  );
 
   if (videos.length === 0 && html) {
     videos.push(...buildWebsiteVideoPlayersFromHtml(html, targetUrl));
@@ -8253,23 +8420,6 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
     fonts = fonts.concat(rawAssets.fonts);
     colors = colors.concat(extractColorsFromCss(css));
   });
-
-  if (!options.fast && wistiaCandidateIds.size > 0) {
-    try {
-      const wistiaAssets = await withTimeout(
-        extractWistiaVideos(Array.from(wistiaCandidateIds), 'fhd'),
-        8000,
-        `Static Wistia extraction for ${targetUrl}`
-      );
-      videos.push(...(wistiaAssets.videos || []));
-      images.push(...(wistiaAssets.images || []));
-    } catch (error: any) {
-      console.warn('Static Wistia extraction failed, using placeholders:', error?.message || error);
-      videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
-    }
-  } else if (options.fast && wistiaCandidateIds.size > 0) {
-    videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
-  }
 
   return dedupeExtractedAssets(images, await resolveBrightcoveCandidateVideos(videos, `Static Brightcove extraction for ${targetUrl}`), fonts, colors, targetUrl, resolvedPagePrimaryThumb, { fast: options.fast });
 };
@@ -9449,7 +9599,7 @@ const captureVimeoNetworkManifests = async (vimeoId: string, sourcePageUrl = '')
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
     browser = await acquireSharedPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     if (sourcePageUrl) {
       await page.setExtraHTTPHeaders({ Referer: `${sourcePageUrl.replace(/\/+$/, '')}/` });
@@ -10645,7 +10795,7 @@ const captureIspotNetworkManifest = async (targetUrl: string) => {
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
     browser = await acquireSharedPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     page.on('response', (response) => {
       const url = response.url();
@@ -13709,7 +13859,7 @@ const extractSectionAssets = async (targetUrl: string, sectionSelector: string, 
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent(
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
@@ -14187,7 +14337,7 @@ app.post('/api/extract', async (req, res) => {
       lastNewAssetAt = Date.now();
     };
     
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setViewport({ width: 1440, height: 1100 });
     await applyPuppeteerStealth(page);
     
@@ -14924,7 +15074,7 @@ app.post('/api/extract', async (req, res) => {
     await mapWithConcurrency(Array.from(embeddedPageUrls).slice(0, 2), 2, async (embeddedUrl) => {
       let embeddedPage: any;
       try {
-        embeddedPage = await browser.newPage();
+        embeddedPage = await acquireSingleWebsitePage(browser);
         embeddedPage.on('response', handlePageResponse);
         await embeddedPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         await embeddedPage.setRequestInterception(true);
@@ -16572,7 +16722,7 @@ app.get('/api/download', async (req, res) => {
     const base = sourceName.replace(/\.[a-z0-9]+$/i, '') || 'download';
     const requestedName = typeof filename === 'string' ? filename.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') : '';
     const preferredName = requestedName || `${base}.mp4`;
-    const contentType = response.headers['content-type'] || 'video/mp4';
+    const contentType = String(response.headers['content-type'] || 'video/mp4');
     const forceTranscode = needsMp4Transcode(downloadUrl, contentType);
 
     res.setHeader('Content-Disposition', `attachment; filename="${preferredName}"`);
@@ -17768,7 +17918,7 @@ app.post('/api/insights', async (req, res) => {
       if (visited.has(current.url) || current.depth > maxDepth) continue;
       visited.add(current.url);
 
-      const page = await browser.newPage();
+      const page = await acquireSingleWebsitePage(browser);
       try {
         await withTimeout(
           (async () => {

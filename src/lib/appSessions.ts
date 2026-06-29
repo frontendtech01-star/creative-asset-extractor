@@ -86,3 +86,10 @@ export const readMainSection = (): MainSection => {
 };
 
 export const writeMainSection = (section: MainSection) => writeJson(MAIN_SECTION_KEY, { section });
+export const clearMainSection = () => removeJson(MAIN_SECTION_KEY);
+
+export const clearAppSessionState = () => {
+  clearVideoDownloaderSession();
+  clearWebsiteExtractionSession();
+  clearMainSection();
+};

@@ -1,6 +1,7 @@
 import { copyFile, chmod, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { createWriteStream, existsSync } from 'node:fs';
 import https from 'node:https';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -73,6 +74,14 @@ const copyExecutable = async (source, destination) => {
   return true;
 };
 
+const copyStandaloneYtDlp = async (source, destination) => {
+  if (!source || !existsSync(source)) return false;
+  await assertStandaloneBinary(source, 'yt-dlp');
+  await copyExecutable(source, destination);
+  await assertStandaloneBinary(destination, 'yt-dlp');
+  return true;
+};
+
 const downloadStandaloneYtDlp = async (destination) => {
   const url = YTDLP_RELEASE_URLS[process.platform] || YTDLP_RELEASE_URLS.linux;
   console.log(`Downloading standalone yt-dlp from ${url}`);
@@ -112,6 +121,44 @@ const stageAria2 = async (destination) => {
   return false;
 };
 
+const stageDeno = async (destination) => {
+  const localCandidates = [
+    path.join(projectRoot, 'vendor', 'deno', process.platform === 'win32' ? 'deno.exe' : 'deno'),
+    path.join(projectRoot, 'vendor', 'deno', 'deno'),
+  ];
+  for (const candidate of localCandidates) {
+    if (existsSync(candidate)) {
+      await copyExecutable(candidate, destination);
+      return true;
+    }
+  }
+
+  try {
+    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [process.platform === 'win32' ? 'deno.exe' : 'deno']);
+    const systemPath = String(stdout || '').trim().split('\n')[0];
+    if (systemPath && existsSync(systemPath)) {
+      await copyExecutable(systemPath, destination);
+      return true;
+    }
+  } catch {
+    // Optional YouTube challenge solver. yt-dlp works for many videos without it.
+  }
+  return false;
+};
+
+const ytdlpFileName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+const existingYtDlp = path.join(binPackDir, ytdlpFileName);
+const ytdlpBackup = path.join(os.tmpdir(), `creative-asset-extractor-ytdlp-${process.pid}-${ytdlpFileName}`);
+let reusableYtDlp = '';
+if (existsSync(existingYtDlp)) {
+  try {
+    await copyStandaloneYtDlp(existingYtDlp, ytdlpBackup);
+    reusableYtDlp = ytdlpBackup;
+  } catch {
+    reusableYtDlp = '';
+  }
+}
+
 await rm(binPackDir, { recursive: true, force: true });
 await mkdir(binPackDir, { recursive: true });
 
@@ -132,14 +179,16 @@ try {
 
 const ffmpegDest = path.join(binPackDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
 const ffprobeDest = path.join(binPackDir, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-const ytdlpDest = path.join(binPackDir, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const ytdlpDest = path.join(binPackDir, ytdlpFileName);
 const aria2Dest = path.join(binPackDir, process.platform === 'win32' ? 'aria2c.exe' : 'aria2c');
+const denoDest = path.join(binPackDir, process.platform === 'win32' ? 'deno.exe' : 'deno');
 
 const copied = {
   ffmpeg: await copyExecutable(ffmpegSource, ffmpegDest),
   ffprobe: await copyExecutable(ffprobeSource, ffprobeDest),
-  ytdlp: await downloadStandaloneYtDlp(ytdlpDest),
+  ytdlp: await copyStandaloneYtDlp(reusableYtDlp, ytdlpDest).catch(() => false) || await downloadStandaloneYtDlp(ytdlpDest),
   aria2: await stageAria2(aria2Dest),
+  deno: await stageDeno(denoDest),
 };
 
 if (!copied.ffmpeg || !copied.ytdlp) {
@@ -155,6 +204,7 @@ const manifest = {
     ffprobe: ffprobeDest,
     ytdlp: ytdlpDest,
     aria2: copied.aria2 ? aria2Dest : '',
+    deno: copied.deno ? denoDest : '',
   },
   standaloneYtDlp: true,
 };

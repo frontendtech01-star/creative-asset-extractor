@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe, XCircle } from 'lucide-react';
 import { apiFetchWithTimeout, MERGE_PREP_TIMEOUT_MS } from '../lib/api';
 import { getDesktopBridge } from '../lib/desktopBridge';
-import { isDirectVideoAssetUrl, isPlatformHostedUrl, isUsableExtractedVideo } from '../lib/visibleVideos';
+import { isDirectVideoAssetUrl, isPlatformHostedUrl, isUsableExtractedVideo, isWistiaHelperResourceUrl } from '../lib/visibleVideos';
 import {
   cancelDownloaderJob,
   startDownloaderJob,
@@ -35,6 +35,9 @@ const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
       host === 'fb.watch' ||
       host === 'x.com' ||
       host.includes('twitter.com') ||
+      host === 'players.brightcove.net' ||
+      host.endsWith('.players.brightcove.net') ||
+      host.includes('brightcove.net') ||
       host === 'ispot.tv' ||
       host.endsWith('.ispot.tv')
     );
@@ -46,7 +49,8 @@ const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
 const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
   if (!value) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#@]|$)/i.test(value)) return true;
+  if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL(value);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
@@ -256,10 +260,12 @@ export default function VideoExtractor({
   videos,
   seedUrl = '',
   hideManualSearch = false,
+  onDownloadReady,
 }: {
   videos: any[];
   seedUrl?: string;
   hideManualSearch?: boolean;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
 }) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [activeCardJob, setActiveCardJob] = useState<{ cardUrl: string; job: DownloaderJob } | null>(null);
@@ -435,6 +441,14 @@ export default function VideoExtractor({
           : `${succeeded} MP4 download${succeeded === 1 ? '' : 's'} saved to this website's CreativeAssets/Videos folder.`,
         error: failed > 0 && succeeded === 0,
       });
+      if (succeeded > 0) {
+        onDownloadReady?.({
+          title: 'Videos saved',
+          detail: `${succeeded} MP4 download${succeeded === 1 ? '' : 's'} ready in Downloads.`,
+          target: 'videos',
+          sourcePageUrl: seedUrl || undefined,
+        });
+      }
     } catch (error: any) {
       setBulkMessage({ text: error?.message || 'Bulk MP4 download failed.', error: true });
     } finally {
@@ -664,9 +678,16 @@ export default function VideoExtractor({
             const embedPreviewUrl = embedded ? resolveEmbedPreviewUrl(video) : '';
             const embeddedThumbnail = embedded ? resolveEmbeddedThumbnail(video) : '';
             const showLiveEmbed = Boolean(embedPreviewUrl && providerAllowsLocalEmbed(video));
+            const showCardDownloadButton = embedded;
 
             return (
-              <div key={idx} className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col">
+              <div
+                key={idx}
+                data-testid="video-card"
+                data-video-title={displayTitle}
+                data-video-embedded={embedded ? 'true' : 'false'}
+                className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col"
+              >
                 <div className="aspect-video bg-zinc-900 relative group">
                   {showLiveEmbed ? (
                     <iframe
@@ -740,7 +761,7 @@ export default function VideoExtractor({
                       )}
                     </div>
                   </div>
-                  {embedded ? (
+                  {showCardDownloadButton ? (
                     <div className="space-y-2">
                       <button
                         type="button"
@@ -790,24 +811,7 @@ export default function VideoExtractor({
                         </button>
                       </div>
                     </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <button
-                        onClick={() => handleDownload(video, displayTitle)}
-                        disabled={downloading === video.url}
-                        className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {downloading === video.url ? (
-                          <span className="animate-pulse">Downloading Video...</span>
-                        ) : (
-                          <>
-                            <Download className="w-4 h-4" />
-                            Download Video
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  )}
+                  ) : null}
                   {downloading === video.url && activeCardJob ? (
                     <button
                       type="button"

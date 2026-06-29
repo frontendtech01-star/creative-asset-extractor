@@ -45,6 +45,21 @@ export const isYouTubeExtractUrl = (rawUrl: string) => {
 };
 
 /** True when the URL points at a single video on a supported platform (Direct Video default). */
+const VIMEO_WEBSITE_PAGE_PREFIXES = new Set([
+  'blog',
+  'features',
+  'for',
+  'help',
+  'solutions',
+  'upgrade',
+  'watch',
+]);
+
+const isVimeoWebsitePagePath = (path: string) => {
+  const [firstSegment = ''] = path.split('/').filter(Boolean);
+  return VIMEO_WEBSITE_PAGE_PREFIXES.has(firstSegment.toLowerCase());
+};
+
 export const isDirectVideoPlatformUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim();
   if (!value) return false;
@@ -64,6 +79,7 @@ export const isDirectVideoPlatformUrl = (rawUrl: string) => {
       if (/\/progressive_redirect\/download\/\d+/.test(path)) return true;
       if (/^\/\d+(?:\/|$)/.test(path)) return true;
       if (/\.(ico|js|css|json)(\?|$)/i.test(path)) return false;
+      if (isVimeoWebsitePagePath(path)) return false;
       if (/^\/(?:api|add|ablincoln|favicon|channels|groups|ondemand|categories)\b/.test(path)) return false;
       const segments = path.split('/').filter(Boolean);
       return segments.length >= 2;
@@ -167,6 +183,54 @@ export const isPlatformHostedUrl = (rawUrl: string) => {
   }
 };
 
+export const isWistiaHelperResourceUrl = (rawUrl: string) => {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    if (!host.includes('wistia.com') && !host.includes('wistia.net')) return false;
+    const path = parsed.pathname.toLowerCase();
+    if (/\/embed\/medias\/[a-z0-9]{8,12}\/swatch\/?$/i.test(path)) return true;
+    if (/\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)(?:\.js)?(?:@|\/|$)/i.test(path)) {
+      return true;
+    }
+    if (/\/(?:mput|jsonp|iframe_shim)(?:\/|$)/i.test(path)) return true;
+    return /\/embed\/medias\/[a-z0-9]{8,12}\/(?:swatch|seo|jsonp)(?:\/|$)/i.test(path);
+  } catch {
+    return /fast\.wistia\.(?:com|net)\/embed\/medias\/[a-z0-9]{8,12}\/swatch|wistia\.(?:com|net).*\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)|wistia\.(?:com|net).*\/mput\b/i.test(String(rawUrl || ''));
+  }
+};
+
+const isBareWistiaDeliveryResource = (item: any) => {
+  const candidates = [
+    item?.sourceStreamUrl,
+    item?.downloadUrl,
+    item?.originalUrl,
+    item?.embedUrl,
+    item?.url,
+  ].map((candidate) => String(candidate || '').trim()).filter(Boolean);
+  const hasWistiaDelivery = candidates.some((candidate) => /(?:wistia\.com|wistia\.net)\/deliveries\//i.test(candidate));
+  if (!hasWistiaDelivery) return false;
+  if (item?.isWistiaDirect || item?.height || item?.width || item?.resolution || item?.displayQualityKey) return false;
+  if (/^video|mp4$/i.test(String(item?.type || item?.format || ''))) return false;
+  return true;
+};
+
+const isBareWistiaManifestResource = (item: any) => {
+  const candidates = [
+    item?.sourceStreamUrl,
+    item?.downloadUrl,
+    item?.originalUrl,
+    item?.embedUrl,
+    item?.url,
+  ].map((candidate) => String(candidate || '').trim()).filter(Boolean);
+  const hasWistiaManifest = candidates.some((candidate) =>
+    /(?:wistia\.com|wistia\.net)/i.test(candidate) && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(candidate)
+  );
+  if (!hasWistiaManifest) return false;
+  if (item?.isWistiaDirect || item?.height || item?.width || item?.resolution || item?.displayQualityKey) return false;
+  return true;
+};
+
 export const isPlatformWatchPlaceholder = (item: any) => {
   const url = String(item?.url || '').trim();
   if (!url || isDirectVideoAssetUrl(url)) return false;
@@ -246,11 +310,14 @@ export const toCanonicalVideoKey = (item: any, seedUrl = '') => {
 };
 
 export const isDirectVideoAssetUrl = (rawUrl: string) =>
-  /\/api\/(?:youtube-merged-stream|download|download-local-video)(?:\?|$)/i.test(String(rawUrl || '')) ||
-  /\/converted-videos\//i.test(String(rawUrl || '')) ||
-  /\.(mp4|webm|mov|mkv|m4v|m3u8|mpd)(\?|$)/i.test(String(rawUrl || '')) ||
-  /wistia\.com\/deliveries\//i.test(String(rawUrl || '')) ||
-  /vimeo\.com\/progressive_redirect|vimeocdn\.com|vod-adaptive\.akamaized\.net/i.test(String(rawUrl || ''));
+  !isWistiaHelperResourceUrl(String(rawUrl || '')) &&
+  (
+    /\/api\/(?:youtube-merged-stream|download|download-local-video)(?:\?|$)/i.test(String(rawUrl || '')) ||
+    /\/converted-videos\//i.test(String(rawUrl || '')) ||
+    /\.(mp4|webm|mov|mkv|m4v|m3u8|mpd)(\?|$)/i.test(String(rawUrl || '')) ||
+    /wistia\.com\/deliveries\//i.test(String(rawUrl || '')) ||
+    /vimeo\.com\/progressive_redirect|vimeocdn\.com|vod-adaptive\.akamaized\.net/i.test(String(rawUrl || ''))
+  );
 
 /**
  * Website crawls can observe analytics/navigation requests on video-platform
@@ -274,6 +341,9 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
     String(item?.pageUrl || '').trim(),
     String(seedUrl || '').trim(),
   ].filter(Boolean);
+  if (contextCandidates.some(isWistiaHelperResourceUrl)) return false;
+  if (isBareWistiaDeliveryResource(item)) return false;
+  if (isBareWistiaManifestResource(item)) return false;
   const isVimeoContext = contextCandidates.some((candidate) => {
     try {
       const host = new URL(candidate).hostname.replace(/^www\./, '').toLowerCase();
@@ -282,8 +352,11 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
       return false;
     }
   });
-  const title = String(item?.title || item?.name || item?.label || '').trim().toLowerCase();
+  const rawTitle = String(item?.title || item?.name || item?.label || '').trim();
+  const title = rawTitle.toLowerCase();
   const primaryUrl = String(item?.url || item?.embedUrl || '').trim();
+  const hasRealPreview = /^https?:\/\//i.test(String(item?.thumbnail || item?.poster || '').trim());
+  const titleLooksEncoded = /^[A-Za-z0-9+/_=-]{24,}\.*$/.test(rawTitle) && !/\s/.test(rawTitle);
   if (
     isVimeoContext &&
     (
@@ -308,18 +381,28 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
   }
 
   const platformUrl = candidates.find(isPlatformHostedUrl);
-  // Preserve ordinary website video candidates; this guard specifically
-  // tightens false platform-player placeholders.
-  if (!platformUrl) return true;
+  // Preserve real website video candidates, but hide generic iframe/player
+  // placeholders observed on sites like Apple where the "title" is only an
+  // encoded media-config token and there is no playable media URL/preview.
+  if (!platformUrl) {
+    const hasHttpCandidate = contextCandidates.some((candidate) => /^https?:\/\//i.test(candidate));
+    const looksLikeBlankPlayer =
+      titleLooksEncoded ||
+      (/(?:embedded\s+player|video\s+player)/i.test(String(item?.type || item?.provider || item?.label || '')) && !hasRealPreview);
+    return hasHttpCandidate && !looksLikeBlankPlayer;
+  }
 
   try {
     const parsed = new URL(platformUrl);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
     const path = parsed.pathname;
+    if (host.includes('wistia.com') || host.includes('wistia.net')) {
+      if (/^x$/i.test(rawTitle)) return false;
+      return false;
+    }
     if (host === 'vimeo.com' || host === 'player.vimeo.com' || host.endsWith('.vimeo.com')) {
       const id = String(item?.vimeoId || path.match(/\/(?:video\/|videos\/)?(\d+)(?:\/|$)/)?.[1] || '');
       const hasPlausibleId = /^\d{6,12}$/.test(id);
-      const hasRealPreview = Boolean(String(item?.thumbnail || item?.poster || '').trim());
       return hasPlausibleId && hasRealPreview && !item?.unresolvable;
     }
     return true;
@@ -416,6 +499,9 @@ export const qualityTierOptions = [
 
 export const isTechnicalStream = (item: any) => {
   const value = `${item?.url || ''} ${item?.type || ''} ${item?.formatNote || ''} ${item?.format || ''}`.toLowerCase();
+  if (isWistiaHelperResourceUrl(String(item?.url || ''))) return true;
+  if (isBareWistiaDeliveryResource(item)) return true;
+  if (isBareWistiaManifestResource(item)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(value)) return true;
   return /storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd|\.m3u8|\.mpd/.test(value);
 };

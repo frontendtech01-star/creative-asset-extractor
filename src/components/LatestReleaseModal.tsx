@@ -6,8 +6,6 @@ import { openExternalUrl } from '../lib/openExternal';
 
 const BETA_DMG_URL =
   'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-2.0.0-arm64.dmg';
-const BETA_EXE_URL =
-  'https://github.com/frontendtech01-star/creative-asset-extractor/releases/download/v2.0/Creative.Asset.Extractor-Setup-2.0.0-x64.exe';
 const REMOVE_QUARANTINE_COMMAND = 'xattr -dr com.apple.quarantine "/Applications/Creative Asset Extractor.app"';
 const OPEN_APP_COMMAND = 'open "/Applications/Creative Asset Extractor.app"';
 
@@ -35,7 +33,6 @@ export function LatestReleaseModal({
   const downloadUrl = resolveReleaseDownloadUrl(release);
   const releaseTag = release?.tagName?.replace(/^v/i, '') || versionLabel;
   const notesDownloadUrl = release?.dmgDownloadUrl || BETA_DMG_URL;
-  const notesWindowsDownloadUrl = release?.exeDownloadUrl || BETA_EXE_URL;
   const updateDownloadLabel = releaseDownloadLabel(release, viewMode);
 
   return (
@@ -86,6 +83,9 @@ export function LatestReleaseModal({
                     <li>Extract images, fonts, colors and videos from websites.</li>
                     <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.</li>
                     <li>Save fast, Mac-compatible 1080p H.264 video files.</li>
+                    <li>Filters blank or encoded website player cards such as Apple placeholder players.</li>
+                    <li>Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.</li>
+                    <li>Speeds up repeated video checks with cached downloader inspection results.</li>
                     <li>Cancel active downloads and clear downloaded platform folders.</li>
                     <li>Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
                   </ul>
@@ -97,14 +97,6 @@ export function LatestReleaseModal({
                     >
                       <Download className="h-4 w-4" />
                       Download Mac DMG
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void openExternalUrl(notesWindowsDownloadUrl)}
-                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-300 bg-white px-4 py-2.5 font-semibold text-zinc-900 hover:bg-zinc-100"
-                    >
-                      <Download className="h-4 w-4" />
-                      Download Windows EXE
                     </button>
                   </div>
                 </div>

@@ -1,4 +1,4 @@
-export type VideoPlatform = 'youtube' | 'vimeo' | 'instagram' | 'facebook' | 'x' | 'tiktok' | 'ispot';
+export type VideoPlatform = 'youtube' | 'vimeo' | 'instagram' | 'facebook' | 'x' | 'tiktok' | 'brightcove' | 'ispot';
 
 export const VIDEO_PLATFORMS: Array<{
   id: VideoPlatform;
@@ -10,6 +10,7 @@ export const VIDEO_PLATFORMS: Array<{
   { id: 'instagram', label: 'Instagram', exampleUrl: 'https://www.instagram.com/reel/DZK34RqhrSr/' },
   { id: 'facebook', label: 'Facebook', exampleUrl: 'https://www.facebook.com/facebook/videos/grandpas-have-the-best-life-hacks-tbh-video-by-life-with-wes-alison-comedy-sketc/454290807152360/' },
   { id: 'x', label: 'X.com', exampleUrl: 'https://x.com/LetsXOtt/status/1991751366520500536' },
+  { id: 'brightcove', label: 'Brightcove', exampleUrl: 'https://players.brightcove.net/4317630935001/default_default/index.html?videoId=6394961629112' },
   { id: 'ispot', label: 'iSpot.tv', exampleUrl: 'https://www.ispot.tv/ad/gejf/burger-king-loaded-jalapeno-whopper-you-tell-us' },
 ];
 
@@ -26,6 +27,21 @@ const parseUrlParts = (rawUrl: string) => {
   }
 };
 
+const VIMEO_WEBSITE_PAGE_PREFIXES = new Set([
+  'blog',
+  'features',
+  'for',
+  'help',
+  'solutions',
+  'upgrade',
+  'watch',
+]);
+
+const isVimeoWebsitePagePath = (path: string) => {
+  const [firstSegment = ''] = path.split('/').filter(Boolean);
+  return VIMEO_WEBSITE_PAGE_PREFIXES.has(firstSegment.toLowerCase());
+};
+
 /** True when the URL points at a single video, not a homepage/channel/catalog page. */
 export const isDirectVideoPlatformUrl = (rawUrl: string) => {
   const parts = parseUrlParts(rawUrl);
@@ -39,6 +55,7 @@ export const isDirectVideoPlatformUrl = (rawUrl: string) => {
   if (host === 'player.vimeo.com') return /\/video\/\d+/.test(path);
   if (host.includes('vimeo.com')) {
     if (/^\/\d+(?:\/|$)/.test(path)) return true;
+    if (isVimeoWebsitePagePath(path)) return false;
     if (/^\/(?:api|add|ablincoln|favicon|channels|groups|ondemand|categories)\b/.test(path)) return false;
     return path.split('/').filter(Boolean).length >= 2;
   }
@@ -48,6 +65,9 @@ export const isDirectVideoPlatformUrl = (rawUrl: string) => {
   if (host === 'x.com' || host.includes('twitter.com')) return /\/status(?:es)?\//.test(path);
   if (host.includes('tiktok.com')) return /\/video\/\d+/.test(path) || /^\/t\//.test(path);
   if (host.includes('instagram.com')) return /\/(?:reel|reels|p|tv)\//.test(path);
+  if (host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net')) {
+    return /\/index\.html$/i.test(path) && Boolean(searchParams.get('videoId'));
+  }
   if (host === 'ispot.tv' || host.endsWith('.ispot.tv')) return /^\/ad\/[^/]+\/[^/]+/.test(path);
   return false;
 };
@@ -66,6 +86,9 @@ export const describeDirectVideoPlatformUrlIssue = (rawUrl: string) => {
     if (path.startsWith('/channels/') || path.startsWith('/groups/')) {
       return 'That is a Vimeo browse page. Paste the URL of a specific video instead.';
     }
+    if (isVimeoWebsitePagePath(path)) {
+      return 'That is a Vimeo website page. Use Website Extractor for this URL.';
+    }
     if (!/^\/\d+/.test(path) && path.split('/').filter(Boolean).length < 2) {
       return 'Paste a direct Vimeo video link (e.g. https://vimeo.com/123456789).';
     }
@@ -80,6 +103,7 @@ export const isPlaceholderVideoPlatformUrl = (rawUrl: string) => {
   if ((host.includes('facebook.com') || host === 'fb.watch') && searchParams.get('v') === '123456789') return true;
   if ((host === 'x.com' || host.includes('twitter.com')) && /\/status(?:es)?\/1234567890\b/.test(path)) return true;
   if (host.includes('instagram.com') && /\/(?:reel|reels|p|tv)\/example\/?$/i.test(path)) return true;
+  if ((host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net')) && searchParams.get('videoId') === '123456789') return true;
   return false;
 };
 
@@ -92,6 +116,7 @@ export const detectVideoPlatform = (rawUrl: string): VideoPlatform | null => {
     if (host.includes('facebook.com') || host === 'fb.watch') return 'facebook';
     if (host === 'x.com' || host.includes('twitter.com')) return 'x';
     if (host.includes('tiktok.com')) return 'tiktok';
+    if (host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net') || host.includes('brightcove.net')) return 'brightcove';
     if (host === 'ispot.tv' || host.endsWith('.ispot.tv')) return 'ispot';
     return null;
   } catch {

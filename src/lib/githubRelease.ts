@@ -13,27 +13,17 @@ export type GithubReleaseInfo = {
   packageAssetName?: string;
   dmgDownloadUrl?: string;
   dmgAssetName?: string;
-  exeDownloadUrl?: string;
-  exeAssetName?: string;
   source?: 'local' | 'github';
 };
 
 export const resolveReleaseDownloadUrl = (release: GithubReleaseInfo | null | undefined) => {
   if (!release) return '';
-  const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
-  if (/win/i.test(platform) && release.exeDownloadUrl) return release.exeDownloadUrl;
   if (release.dmgDownloadUrl) return release.dmgDownloadUrl;
-  if (release.packageDownloadUrl) return release.packageDownloadUrl;
   return release.htmlUrl;
 };
 
 export const releaseDownloadLabel = (release: GithubReleaseInfo | null | undefined, viewMode: 'update' | 'notes' = 'update') => {
-  const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : '';
-  if (/win/i.test(platform) && release?.exeDownloadUrl) {
-    return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
-  }
   if (release?.dmgDownloadUrl) return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
-  if (release?.packageDownloadUrl) return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
   return viewMode === 'notes' ? 'Beta Release' : 'Download Update';
 };
 

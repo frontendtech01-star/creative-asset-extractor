@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Download, FolderOpen, Image as ImageIcon, Search, Filter } from 'lucide-react';
+import { Check, Download, Image as ImageIcon, Search, Filter } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import LazyCachedImageThumb from './LazyCachedImageThumb';
 import {
@@ -17,12 +17,14 @@ export default function ImageExtractor({
   images,
   sourcePageUrl = '',
   onValidCountChange,
+  onDownloadReady,
 }: {
   images: any[];
   sourcePageUrl?: string;
   saveKind?: 'image' | 'icon';
   title?: string;
   onValidCountChange?: (count: number) => void;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
 }) {
   React.useEffect(() => {
     onValidCountChange?.(images.length);
@@ -36,21 +38,6 @@ export default function ImageExtractor({
   const [zipResult, setZipResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [fetchedMeta, setFetchedMeta] = useState<Record<string, { format?: string; dimensions?: string; size?: string }>>({});
   const [previewState, setPreviewState] = useState<Record<string, 'ready' | 'failed'>>({});
-
-  const openDownloadFolder = async () => {
-    try {
-      await apiFetch('/api/open-folder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target: 'images',
-          sourcePageUrl: sourcePageUrl || undefined,
-        }),
-      });
-    } catch {
-      // best-effort local shortcut
-    }
-  };
 
   const saveDataImage = async (dataUrl: string, filename: string) => {
     const comma = dataUrl.indexOf(',');
@@ -114,7 +101,14 @@ export default function ImageExtractor({
       const cachedDataUrl = String(img?.cachedUrl || '').trim();
       if (key.startsWith('data:') || cachedDataUrl.startsWith('data:image/')) {
         const saved = await saveDataImage(key.startsWith('data:') ? key : cachedDataUrl, filename);
-        setDownloadResult({ ok: true, message: `${saved?.filename || filename} saved to Downloads.`, url: key });
+        const savedName = saved?.filename || filename;
+        setDownloadResult({ ok: true, message: `${savedName} saved to Downloads.`, url: key });
+        onDownloadReady?.({
+          title: 'Image saved',
+          detail: `${savedName} is ready in Downloads.`,
+          target: 'images',
+          sourcePageUrl: sourcePageUrl || undefined,
+        });
         return;
       }
 
@@ -129,6 +123,12 @@ export default function ImageExtractor({
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Image save failed');
       setDownloadResult({ ok: true, message: `${filename} saved to Downloads.`, url: key });
+      onDownloadReady?.({
+        title: 'Image saved',
+        detail: `${filename} is ready in Downloads.`,
+        target: 'images',
+        sourcePageUrl: sourcePageUrl || undefined,
+      });
     } catch (error: any) {
       console.error('Download error:', error);
       const rawMessage = String(error?.message || 'Failed to download image.');
@@ -173,6 +173,12 @@ export default function ImageExtractor({
       setZipResult({
         ok: true,
         message: `${addedCount} selected image${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'selected-images.zip'}.`,
+      });
+      onDownloadReady?.({
+        title: 'Images saved',
+        detail: `${addedCount} selected image${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'selected-images.zip'}.`,
+        target: 'images',
+        sourcePageUrl: sourcePageUrl || undefined,
       });
       setSelected(new Set());
     } catch (error: any) {
@@ -266,16 +272,6 @@ export default function ImageExtractor({
           }`}
         >
           <p>{zipResult.message}</p>
-          {zipResult.ok ? (
-            <button
-              type="button"
-              onClick={() => void openDownloadFolder()}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Open Folder
-            </button>
-          ) : null}
         </div>
       ) : null}
 
@@ -289,16 +285,6 @@ export default function ImageExtractor({
           }`}
         >
           <p>{downloadResult.message}</p>
-          {downloadResult.ok ? (
-            <button
-              type="button"
-              onClick={() => void openDownloadFolder()}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Open Folder
-            </button>
-          ) : null}
           {!downloadResult.ok && downloadResult.url ? (
             <p className="mt-1 truncate text-xs font-normal opacity-80" title={downloadResult.url}>
               {downloadResult.url}

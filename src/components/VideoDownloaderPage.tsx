@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, FolderOpen, Loader2, Play, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, FolderOpen, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
   VIDEO_PLATFORMS,
@@ -16,6 +16,8 @@ import {
   revealDownloaderFile,
   clearDownloaderFiles,
   cancelDownloaderJob,
+  pauseDownloaderJob,
+  resumeDownloaderJob,
   startBulkDownloaderJobs,
   startDownloaderJob,
   waitForDownloaderJob,
@@ -49,6 +51,7 @@ const jobStatusLabel = (job: DownloaderJob) => {
   if (job.status === 'completed') return 'Complete';
   if (job.status === 'error') return 'Failed';
   if (job.status === 'queued') return 'Queued';
+  if (job.status === 'paused') return 'Paused';
   if (job.status === 'cancelled') return 'Cancelled';
   return `${Math.round(job.progress || 0)}%`;
 };
@@ -63,9 +66,22 @@ const jobProgressWidth = (job: DownloaderJob) => {
 
 const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
 
-function DownloadJobCard({ job, compact = false, onCancel }: { job: DownloaderJob; compact?: boolean; onCancel?: (job: DownloaderJob) => void }) {
+function DownloadJobCard({
+  job,
+  compact = false,
+  onCancel,
+  onPause,
+  onResume,
+}: {
+  job: DownloaderJob;
+  compact?: boolean;
+  onCancel?: (job: DownloaderJob) => void;
+  onPause?: (job: DownloaderJob) => void;
+  onResume?: (job: DownloaderJob) => void;
+}) {
   const isComplete = job.status === 'completed';
   const isError = job.status === 'error';
+  const isPaused = job.status === 'paused';
   const title = job.title || job.result?.title || job.url;
   return (
     <div className={`rounded-xl border p-4 ${isError ? 'border-amber-200 bg-amber-50' : isComplete ? 'border-emerald-200 bg-emerald-50' : 'border-blue-100 bg-blue-50'}`}>
@@ -74,6 +90,7 @@ function DownloadJobCard({ job, compact = false, onCancel }: { job: DownloaderJo
           <p className="truncate text-sm font-semibold text-zinc-950" title={title}>{title}</p>
           <p className="mt-1 text-xs uppercase tracking-wide text-zinc-600">
             {platformLabel(job.platform)} · {job.quality === '4k' ? 'MAX QUALITY · 4K / FHD FALLBACK' : job.quality === 'fhd' ? 'FHD / HD fallback' : job.quality.toUpperCase()}
+            {job.startTime || job.endTime ? ` · ${job.startTime || '0'}-${job.endTime || 'end'}` : ''}
           </p>
         </div>
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${isError ? 'bg-amber-100 text-amber-800' : isComplete ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
@@ -97,15 +114,39 @@ function DownloadJobCard({ job, compact = false, onCancel }: { job: DownloaderJo
         {job.eta && !isComplete ? <span>ETA {job.eta}</span> : null}
       </div>
 
-      {(job.status === 'queued' || job.status === 'running') && onCancel ? (
-        <button
-          type="button"
-          onClick={() => onCancel(job)}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
-        >
-          <XCircle className="h-3.5 w-3.5" />
-          Cancel download
-        </button>
+      {(job.status === 'queued' || job.status === 'running' || job.status === 'paused') ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {job.status === 'running' && onPause ? (
+            <button
+              type="button"
+              onClick={() => onPause(job)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+            >
+              <Pause className="h-3.5 w-3.5" />
+              Pause
+            </button>
+          ) : null}
+          {isPaused && onResume ? (
+            <button
+              type="button"
+              onClick={() => onResume(job)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Resume
+            </button>
+          ) : null}
+          {onCancel ? (
+            <button
+              type="button"
+              onClick={() => onCancel(job)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              Cancel
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {isComplete && job.result && !compact ? (
@@ -208,12 +249,25 @@ function CompletedDownloadGrid({ jobs, onClearDownloads }: { jobs: DownloaderJob
   );
 }
 
-export default function VideoDownloaderPage() {
+type AutoStartRequest = {
+  id: number;
+  url: string;
+  quality?: DownloaderQuality;
+};
+
+type VideoDownloaderPageProps = {
+  autoStartRequest?: AutoStartRequest | null;
+};
+
+export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDownloaderPageProps) {
   const [urlInput, setUrlInput] = useState('');
   const [jobs, setJobs] = useState<DownloaderJob[]>([]);
   const [jobErrors, setJobErrors] = useState<Array<{ url: string; error: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [activeQuality, setActiveQuality] = useState<DownloaderQuality | null>(null);
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const handledAutoStartIdRef = React.useRef<number | null>(null);
 
   const inputUrls = useMemo(() => parseInputUrls(urlInput), [urlInput]);
   const detectedPlatform = useMemo(
@@ -221,6 +275,7 @@ export default function VideoDownloaderPage() {
     [inputUrls]
   );
   const runningCount = jobs.filter((job) => job.status === 'queued' || job.status === 'running').length;
+  const pausedCount = jobs.filter((job) => job.status === 'paused').length;
   const completeCount = jobs.filter((job) => job.status === 'completed').length;
   const failedCount = jobs.filter((job) => job.status === 'error').length;
   const completedJobs = jobs.filter((job) => job.status === 'completed' && job.result);
@@ -254,7 +309,7 @@ export default function VideoDownloaderPage() {
   }, []);
 
   useEffect(() => {
-    const activeJobs = jobs.filter((job) => job.status === 'queued' || job.status === 'running');
+    const activeJobs = jobs.filter((job) => job.status === 'queued' || job.status === 'running' || job.status === 'paused');
     if (activeJobs.length === 0) return undefined;
     const timer = window.setInterval(() => {
       void Promise.all(
@@ -305,8 +360,26 @@ export default function VideoDownloaderPage() {
     }
   };
 
-  const downloadQueue = async (quality: DownloaderQuality = 'fhd') => {
-    const urls = inputUrls;
+  const handlePauseJob = async (job: DownloaderJob) => {
+    try {
+      const paused = await pauseDownloaderJob(job.id);
+      setJobs((current) => mergeJobs(current, [paused]));
+    } catch (error: any) {
+      setJobErrors([{ url: job.url, error: error?.message || 'Could not pause download.' }]);
+    }
+  };
+
+  const handleResumeJob = async (job: DownloaderJob) => {
+    try {
+      const resumed = await resumeDownloaderJob(job.id);
+      setJobs((current) => mergeJobs(current, [resumed]));
+    } catch (error: any) {
+      setJobErrors([{ url: job.url, error: error?.message || 'Could not resume download.' }]);
+    }
+  };
+
+  const downloadQueue = async (quality: DownloaderQuality = 'fhd', overrideUrls?: string[]) => {
+    const urls = overrideUrls || inputUrls;
     if (!urls.length) {
       setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
       return;
@@ -321,18 +394,19 @@ export default function VideoDownloaderPage() {
     setActiveQuality(quality);
     setJobErrors([]);
     setJobs([]);
+    const activeDetectedPlatform = urls.length === 1 ? detectVideoPlatform(urls[0]) : null;
     void logActivity({
       kind: 'url_entered',
       url: urls[0],
-      platform: urls.length === 1 ? detectedPlatform || undefined : undefined,
+      platform: activeDetectedPlatform || undefined,
       message: urls.length === 1 ? 'Video download started' : `${urls.length} video downloads started`,
     });
 
     try {
       const started =
         urls.length === 1
-          ? { jobs: [await startDownloaderJob({ url: urls[0], quality })], errors: [] as Array<{ url: string; error: string }> }
-          : await startBulkDownloaderJobs(urls, quality);
+          ? { jobs: [await startDownloaderJob({ url: urls[0], quality, startTime, endTime })], errors: [] as Array<{ url: string; error: string }> }
+          : await startBulkDownloaderJobs(urls, quality, { startTime, endTime });
       const createdJobs = started.jobs || [];
       setJobErrors(started.errors || []);
       setJobs(createdJobs);
@@ -360,7 +434,7 @@ export default function VideoDownloaderPage() {
         operation: 'video_download_failure',
         error: message,
         videoUrl: urls[0],
-        platform: urls.length === 1 ? detectedPlatform || undefined : undefined,
+        platform: activeDetectedPlatform || undefined,
         openFeedback: false,
       });
     } finally {
@@ -368,6 +442,17 @@ export default function VideoDownloaderPage() {
       setActiveQuality(null);
     }
   };
+
+  useEffect(() => {
+    if (!autoStartRequest?.url || handledAutoStartIdRef.current === autoStartRequest.id) return;
+    handledAutoStartIdRef.current = autoStartRequest.id;
+    const nextUrl = autoStartRequest.url.trim();
+    setUrlInput(nextUrl);
+    setJobErrors([]);
+    setStartTime('');
+    setEndTime('');
+    void downloadQueue(autoStartRequest.quality || 'fhd', [nextUrl]);
+  }, [autoStartRequest]);
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -414,10 +499,35 @@ export default function VideoDownloaderPage() {
                 {runningCount || completeCount || failedCount ? (
                   <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
                     {runningCount ? `${runningCount} active` : 'No active downloads'}
+                    {pausedCount ? ` · ${pausedCount} paused` : ''}
                     {completeCount ? ` · ${completeCount} complete` : ''}
                     {failedCount ? ` · ${failedCount} failed` : ''}
                   </p>
                 ) : null}
+              </div>
+
+              <div className="grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 sm:grid-cols-2">
+                <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Start time
+                  <input
+                    value={startTime}
+                    onChange={(event) => setStartTime(event.target.value)}
+                    placeholder="0:00 or 90"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm normal-case tracking-normal text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </label>
+                <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  End time
+                  <input
+                    value={endTime}
+                    onChange={(event) => setEndTime(event.target.value)}
+                    placeholder="2:30 or leave blank"
+                    className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm normal-case tracking-normal text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </label>
+                <p className="text-xs text-zinc-500 sm:col-span-2">
+                  Optional. Downloads only this time range so users do not wait for the full video. Use seconds or hh:mm:ss.
+                </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -448,7 +558,14 @@ export default function VideoDownloaderPage() {
             {jobs.length ? (
               <div className="mt-5 space-y-3">
                 {jobs.map((job) => (
-                  <DownloadJobCard key={job.id} job={job} compact onCancel={(item) => void handleCancelJob(item)} />
+                  <DownloadJobCard
+                    key={job.id}
+                    job={job}
+                    compact
+                    onCancel={(item) => void handleCancelJob(item)}
+                    onPause={(item) => void handlePauseJob(item)}
+                    onResume={(item) => void handleResumeJob(item)}
+                  />
                 ))}
               </div>
             ) : (

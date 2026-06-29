@@ -225,17 +225,54 @@ var writeLog = async (jobId, data) => {
   }
 };
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "direct"];
+var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "brightcove", "direct"];
 var jobs = /* @__PURE__ */ new Map();
 var pendingJobs = [];
 var cancelledJobs = /* @__PURE__ */ new Set();
 var activeDownloadProcesses = /* @__PURE__ */ new Map();
+var inspectCache = /* @__PURE__ */ new Map();
 var activeJobs = 0;
 var updatePromise = null;
 var lastUpdateAttemptAt = 0;
 var now = () => Date.now();
+var INSPECT_CACHE_TTL_MS = 10 * 60 * 1e3;
 var binaryName = (name) => process.platform === "win32" ? `${name}.exe` : name;
 var sanitizeFilenamePart = (value, fallback = "video") => String(value || fallback).replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-").replace(/\s+/g, " ").replace(/^\.+/, "").trim().slice(0, 140) || fallback;
+var normalizeTrimTime = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return raw;
+  const parts = raw.split(":");
+  if (parts.length > 3 || parts.some((part) => !/^\d{1,2}(?:\.\d+)?$/.test(part))) return "";
+  const normalized = parts.map((part, index) => {
+    if (index === parts.length - 1 && part.includes(".")) return part.padStart(2, "0");
+    return String(Number(part)).padStart(2, "0");
+  });
+  return normalized.join(":");
+};
+var trimSeconds = (value = "") => {
+  if (!value) return null;
+  if (/^\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  const parts = value.split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+};
+var normalizeTrimRange = (startInput, endInput) => {
+  const startTime = normalizeTrimTime(startInput);
+  const endTime = normalizeTrimTime(endInput);
+  const startSeconds = trimSeconds(startTime);
+  const endSeconds = trimSeconds(endTime);
+  if (startTime && startSeconds !== null && startSeconds < 0) return { startTime: "", endTime: "" };
+  if (endTime && endSeconds !== null && endSeconds <= 0) return { startTime: "", endTime: "" };
+  if (startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds) return { startTime: "", endTime: "" };
+  return { startTime, endTime };
+};
+var trimSectionArgs = (job) => {
+  const start = normalizeTrimTime(job.startTime);
+  const end = normalizeTrimTime(job.endTime);
+  if (!start && !end) return [];
+  return ["--download-sections", `*${start || "0"}-${end || "inf"}`];
+};
 var toDisplayPath = (filePath) => {
   const home = os2.homedir();
   return filePath.startsWith(home) ? `~${filePath.slice(home.length)}` : filePath;
@@ -256,6 +293,7 @@ var detectDownloaderPlatform = (rawUrl) => {
     if (host === "x.com" || host.includes("twitter.com") || host.includes("twimg.com")) return "x";
     if (host.includes("tiktok.com") || host.includes("tiktokcdn.com")) return "tiktok";
     if (host === "ispot.tv" || host.endsWith(".ispot.tv")) return "ispot";
+    if (host === "players.brightcove.net" || host.endsWith(".players.brightcove.net") || host.includes("brightcove.net")) return "brightcove";
     if (/\.(?:mp4|m3u8|mpd|webm|mov)(?:$|\?)/i.test(parsed.href)) return "direct";
     return "unknown";
   } catch {
@@ -277,7 +315,7 @@ var normalizeDownloaderUrl = (rawUrl, platform = detectDownloaderPlatform(rawUrl
   if (platform === "facebook" && parsed.searchParams.get("v")) {
     return `https://www.facebook.com/watch/?v=${parsed.searchParams.get("v")}`;
   }
-  if (!["direct", "youtube", "facebook"].includes(platform)) parsed.search = "";
+  if (!["direct", "youtube", "facebook", "brightcove"].includes(platform)) parsed.search = "";
   return parsed.href;
 };
 var validateDownloaderUrl = (rawUrl, validateUrl) => {
@@ -289,7 +327,7 @@ var validateDownloaderUrl = (rawUrl, validateUrl) => {
   validateUrl?.(parsed.href);
   const platform = detectDownloaderPlatform(parsed.href);
   if (platform === "unknown") {
-    throw new Error("Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, and iSpot.tv.");
+    throw new Error("Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, Brightcove, and iSpot.tv.");
   }
   return { url: normalizeDownloaderUrl(parsed.href, platform), platform };
 };
@@ -343,8 +381,9 @@ var aria2cAvailable = (options) => {
   return aria2Path2 ? aria2Path2 : "";
 };
 var toolPathEnv = (options) => {
-  const dirs = ["ffmpeg", "ffprobe", "yt-dlp", "aria2c"].map((tool) => resolveTool(options, tool)).filter(Boolean).map((toolPath) => path2.dirname(toolPath));
-  return Array.from(new Set(dirs)).join(path2.delimiter);
+  const dirs = ["ffmpeg", "ffprobe", "yt-dlp", "aria2c", "deno"].map((tool) => resolveTool(options, tool)).filter(Boolean).map((toolPath) => path2.dirname(toolPath));
+  const commonToolDirs = process.platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin"];
+  return Array.from(/* @__PURE__ */ new Set([...dirs, ...commonToolDirs])).join(path2.delimiter);
 };
 var cookieAttempts = (platform) => {
   const attempts = [];
@@ -642,7 +681,7 @@ var formatSelector = (platform, quality, fallback = false) => {
     }
     return `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
   }
-  if (platform === "vimeo") {
+  if (platform === "vimeo" || platform === "brightcove") {
     return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
   }
   if (platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
@@ -792,11 +831,12 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     outputTemplate,
     "--format",
     formatSelector(job.platform, job.quality, Boolean(extraArgs.includes("--quality-fallback"))),
-    ...hasAria2 ? ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 16 -s 16 -k 1M"] : [],
+    ...hasAria2 ? ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 32 -s 32 -k 2M"] : [],
     "--concurrent-fragments",
-    "16",
+    "32",
     "--buffer-size",
-    "64K",
+    "128K",
+    ...trimSectionArgs(job),
     ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K", "--postprocessor-args", "ffmpeg:-t 120"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
     ...extraArgs.filter((a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback")),
     url
@@ -821,6 +861,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     let lastProgressTime = null;
     const softProgressForElapsed = () => Math.min(35, Math.max(job.progress, 6 + Math.floor((Date.now() - attemptStart) / 4e3) * 2));
     const watchdogInterval = setInterval(() => {
+      if (job.status === "paused") return;
       if (lastProgressTime === null) {
         if (Date.now() - attemptStart > 4e3 && job.status === "running" && job.progress < 35) {
           updateJob(job, {
@@ -1261,20 +1302,23 @@ var pumpQueue = (options) => {
     });
   }
 };
-var runningJobKey = (platform, url, quality, sourcePageUrl = "") => `${platform}:${url}:${quality}:${sourcePageUrl}`;
+var runningJobKey = (platform, url, quality, sourcePageUrl = "", startTime = "", endTime = "") => `${platform}:${url}:${quality}:${sourcePageUrl}:${startTime}-${endTime}`;
 var createJob = (options, input) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality = input.quality === "audio" ? "audio" : input.quality === "hd" ? "hd" : input.quality === "fhd" ? "fhd" : "4k";
   const sourcePageUrl = String(input.sourcePageUrl || "").trim();
   const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
-  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : "");
+  const { startTime, endTime } = normalizeTrimRange(input.startTime, input.endTime);
+  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : "", startTime, endTime);
   for (const existing of jobs.values()) {
     if (existing.status === "queued" || existing.status === "running") {
       if (runningJobKey(
         existing.platform,
         existing.url,
         existing.quality,
-        existing.saveToWebsiteAssets ? existing.sourcePageUrl : ""
+        existing.saveToWebsiteAssets ? existing.sourcePageUrl : "",
+        existing.startTime,
+        existing.endTime
       ) === key) {
         return existing;
       }
@@ -1288,6 +1332,8 @@ var createJob = (options, input) => {
     quality,
     sourcePageUrl,
     saveToWebsiteAssets,
+    startTime,
+    endTime,
     status: "queued",
     progress: 0,
     downloadedBytes: 0,
@@ -1312,14 +1358,25 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     try {
       const validated = validateDownloaderUrl(rawUrl, options.validateUrl);
       if (validated.platform === "ispot" && options.specialInspect) {
-        const payload = await options.specialInspect(validated.url);
-        const videos2 = specialPayloadToCards(payload, validated.url, validated.platform);
+        const payload2 = await options.specialInspect(validated.url);
+        const videos2 = specialPayloadToCards(payload2, validated.url, validated.platform);
         return res.json({ ok: true, platform: validated.platform, videos: videos2, count: videos2.length });
+      }
+      const cacheKey = `${validated.platform}:${validated.url}`;
+      const cached = inspectCache.get(cacheKey);
+      if (cached && cached.expiresAt > now()) {
+        return res.json(cached.payload);
       }
       const info = await inspectWithFallbacks(options, validated.url, validated.platform);
       const videos = infoToCards(info, validated.url, validated.platform);
       if (videos.length === 0) throw new Error("No downloadable video was found for this URL.");
-      return res.json({ ok: true, platform: validated.platform, videos, count: videos.length });
+      const payload = { ok: true, platform: validated.platform, videos, count: videos.length };
+      inspectCache.set(cacheKey, { expiresAt: now() + INSPECT_CACHE_TTL_MS, payload });
+      if (inspectCache.size > 60) {
+        const expiredOrOldest = Array.from(inspectCache.entries()).sort((a, b) => a[1].expiresAt - b[1].expiresAt).slice(0, 20);
+        expiredOrOldest.forEach(([key]) => inspectCache.delete(key));
+      }
+      return res.json(payload);
     } catch (error) {
       const platform = detectDownloaderPlatform(rawUrl);
       return res.status(400).json({ error: friendlyDownloaderError(platform, errorText(error)) });
@@ -1332,7 +1389,9 @@ var registerVideoDownloaderRoutes = (app2, options) => {
         quality: String(req.body?.quality || "fhd").toLowerCase(),
         title: String(req.body?.title || "").trim(),
         sourcePageUrl: String(req.body?.sourcePageUrl || "").trim(),
-        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true
+        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
+        startTime: String(req.body?.startTime || "").trim(),
+        endTime: String(req.body?.endTime || "").trim()
       });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
@@ -1346,12 +1405,13 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       new Set(rawUrls.map((value) => String(value || "").trim()).filter(Boolean))
     ).slice(0, 20);
     const quality = String(req.body?.quality || "fhd").toLowerCase();
+    const trimRange = normalizeTrimRange(req.body?.startTime, req.body?.endTime);
     if (urls.length === 0) return res.status(400).json({ error: "Enter at least one video URL." });
     const created = [];
     const errors = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality }));
+        created.push(createJob(options, { url, quality, ...trimRange }));
       } catch (error) {
         errors.push({ url, error: error?.message || "Invalid URL" });
       }
@@ -1374,7 +1434,11 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     cancelledJobs.add(id);
     const pendingIndex = pendingJobs.indexOf(id);
     if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
-    activeDownloadProcesses.get(id)?.kill("SIGTERM");
+    const child = activeDownloadProcesses.get(id);
+    if (child && job.status === "paused" && process.platform !== "win32") {
+      child.kill("SIGCONT");
+    }
+    child?.kill("SIGTERM");
     updateJob(job, {
       status: "cancelled",
       progress: 0,
@@ -1383,9 +1447,83 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     });
     return res.json({ ok: true, job: publicJob(job) });
   });
+  app2.post("/api/downloader/jobs/:id/pause", (req, res) => {
+    const id = String(req.params.id || "");
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: "Download job was not found." });
+    if (job.status === "completed" || job.status === "error" || job.status === "cancelled") {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    if (job.status === "paused") {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    const pendingIndex = pendingJobs.indexOf(id);
+    if (pendingIndex >= 0) pendingJobs.splice(pendingIndex, 1);
+    const child = activeDownloadProcesses.get(id);
+    if (child && process.platform !== "win32") {
+      try {
+        child.kill("SIGSTOP");
+      } catch (error) {
+        return res.status(500).json({ error: error?.message || "Could not pause download." });
+      }
+    } else if (child && process.platform === "win32") {
+      return res.status(400).json({ error: "Pause is not supported for active downloads on Windows. Cancel and restart the selected time range instead." });
+    }
+    updateJob(job, {
+      status: "paused",
+      message: "Download paused"
+    });
+    return res.json({ ok: true, job: publicJob(job) });
+  });
+  app2.post("/api/downloader/jobs/:id/resume", (req, res) => {
+    const id = String(req.params.id || "");
+    const job = jobs.get(id);
+    if (!job) return res.status(404).json({ error: "Download job was not found." });
+    if (job.status !== "paused") {
+      return res.json({ ok: true, job: publicJob(job) });
+    }
+    const child = activeDownloadProcesses.get(id);
+    if (child && process.platform !== "win32") {
+      try {
+        child.kill("SIGCONT");
+        updateJob(job, {
+          status: "running",
+          message: "Download resumed"
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error?.message || "Could not resume download." });
+      }
+    } else {
+      updateJob(job, {
+        status: "queued",
+        message: "Queued"
+      });
+      if (!pendingJobs.includes(id)) pendingJobs.push(id);
+      pumpQueue(options);
+    }
+    return res.json({ ok: true, job: publicJob(job) });
+  });
   app2.get("/api/downloader/jobs", (_req, res) => {
     const items = Array.from(jobs.values()).sort((a, b) => b.updatedAt - a.updatedAt).map(publicJob);
     return res.json({ items, count: items.length });
+  });
+  app2.delete("/api/downloader/jobs", (_req, res) => {
+    for (const id of pendingJobs.splice(0)) {
+      cancelledJobs.add(id);
+    }
+    for (const [id, child] of activeDownloadProcesses.entries()) {
+      const job = jobs.get(id);
+      cancelledJobs.add(id);
+      if (job?.status === "paused" && process.platform !== "win32") {
+        child.kill("SIGCONT");
+      }
+      child.kill("SIGTERM");
+    }
+    const removed = jobs.size;
+    jobs.clear();
+    activeDownloadProcesses.clear();
+    cancelledJobs.clear();
+    return res.json({ ok: true, removed });
   });
   app2.get("/api/downloader/downloads", async (_req, res) => {
     try {
@@ -3285,7 +3423,7 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl) => {
       ],
       ignoreDefaultArgs: ["--enable-automation"]
     });
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
@@ -3342,10 +3480,36 @@ app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
     });
   }
 });
+var normalizeFontFamilyForStaticBackfill = (value = "") => {
+  const family = String(value || "").replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ").trim();
+  if (!family) return "";
+  const lower = family.toLowerCase();
+  if (!lower || isJunkFontLabel(lower) || ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"].includes(lower)) {
+    return "";
+  }
+  return lower;
+};
+var getFontCardFamilyForStaticBackfill = (font) => {
+  const identity = resolveFontIdentityFields(font || {});
+  return normalizeFontFamilyForStaticBackfill(
+    identity.family || font?.family || font?.title || font?.name || buildFontDisplayName(font || {})
+  );
+};
+var hasRenderedFontFamilyWithoutCard = (extracted) => {
+  const renderedFamilies = new Set(
+    (Array.isArray(extracted?.fontUsage) ? extracted.fontUsage : []).map((font) => normalizeFontFamilyForStaticBackfill(font?.family)).filter(Boolean)
+  );
+  if (!renderedFamilies.size) return false;
+  const cardFamilies = new Set(
+    (Array.isArray(extracted?.fonts) ? extracted.fonts : []).map((font) => getFontCardFamilyForStaticBackfill(font)).filter(Boolean)
+  );
+  return Array.from(renderedFamilies).some((family) => !cardFamilies.has(family));
+};
 async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
   const hasAssets = extracted?.images?.length || 0 || (extracted?.icons?.length || 0) || (extracted?.fonts?.length || 0) || (extracted?.videos?.length || 0);
   const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
-  if (hasAssets && hasDownloadableFonts || !fallbackUrl) return extracted;
+  const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
+  if (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill || !fallbackUrl) return extracted;
   const staticAssets = await withTimeout(
     extractStaticAssets(fallbackUrl, "", { fast: true }),
     35e3,
@@ -3369,7 +3533,7 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
     extractionMeta: {
       ...extracted?.extractionMeta,
-      mode: hasAssets ? "browser-static-font-fallback" : "browser-static-fallback",
+      mode: hasAssets || needsRenderedFontBackfill ? "browser-static-font-fallback" : "browser-static-fallback",
       sectionLabel: extracted?.title || "Static fallback"
     },
     pageUrl: extracted?.pageUrl || fallbackUrl,
@@ -3621,44 +3785,31 @@ var buildDmgAssetName = (productName, version) => {
   const cleanVersion = normalizeAssetVersion(version);
   return `Creative.Asset.Extractor-${cleanVersion}-arm64.dmg`;
 };
-var buildExeAssetName = (version) => {
-  const cleanVersion = normalizeAssetVersion(version);
-  return `Creative.Asset.Extractor-Setup-${cleanVersion}-x64.exe`;
-};
 var buildGithubReleaseLinks = (githubOwner, githubRepo, version, productName) => {
   const tagName = normalizeReleaseTag(version);
   const dmgName = buildDmgAssetName(productName, version);
-  const exeName = buildExeAssetName(version);
   const repoUrl = `https://github.com/${githubOwner}/${githubRepo}`;
   return {
     tagName,
     htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
     releasesUrl: `${repoUrl}/releases`,
     repoUrl,
-    packageDownloadUrl: `https://codeload.github.com/${githubOwner}/${githubRepo}/zip/refs/heads/v2.0`,
-    packageAssetName: `${githubRepo}-v2.0.zip`,
     dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
-    dmgAssetName: dmgName,
-    exeDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(exeName)}`,
-    exeAssetName: exeName
+    dmgAssetName: dmgName
   };
 };
 var parseGithubReleasePayload = (data) => {
   const assets = Array.isArray(data?.assets) ? data.assets : [];
   const dmgAsset = assets.find((asset) => /\.dmg$/i.test(String(asset?.name || "")));
-  const exeAsset = assets.find((asset) => /\.exe$/i.test(String(asset?.name || "")));
-  const packageAsset = assets.find((asset) => /\.(?:dmg|exe|msi|appimage|deb|rpm|pkg|zip)$/i.test(String(asset?.name || ""))) || assets[0];
   return {
     tagName: String(data?.tag_name || ""),
     name: String(data?.name || data?.tag_name || "Latest release"),
     body: String(data?.body || ""),
     publishedAt: String(data?.published_at || ""),
     htmlUrl: String(data?.html_url || ""),
-    packageDownloadUrl: String(dmgAsset?.browser_download_url || packageAsset?.browser_download_url || data?.html_url || ""),
-    packageAssetName: String(dmgAsset?.name || packageAsset?.name || "Latest Release"),
+    packageDownloadUrl: String(dmgAsset?.browser_download_url || ""),
+    packageAssetName: String(dmgAsset?.name || "Mac DMG"),
     dmgDownloadUrl: String(dmgAsset?.browser_download_url || ""),
-    exeDownloadUrl: String(exeAsset?.browser_download_url || ""),
-    exeAssetName: String(exeAsset?.name || ""),
     dmgAssetName: String(dmgAsset?.name || "")
   };
 };
@@ -3713,12 +3864,10 @@ app.get("/api/github-latest-release", async (_req, res) => {
         ...release,
         repoUrl: links.repoUrl,
         releasesUrl: links.releasesUrl,
-        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl || release.packageDownloadUrl || release.htmlUrl || links.releasesUrl,
-        packageAssetName: release.dmgAssetName || links.dmgAssetName || release.packageAssetName || "Latest Release",
+        packageDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
+        packageAssetName: release.dmgAssetName || links.dmgAssetName || "Mac DMG",
         dmgDownloadUrl: release.dmgDownloadUrl || links.dmgDownloadUrl,
-        dmgAssetName: release.dmgAssetName || links.dmgAssetName,
-        exeDownloadUrl: release.exeDownloadUrl || links.exeDownloadUrl,
-        exeAssetName: release.exeAssetName || links.exeAssetName
+        dmgAssetName: release.dmgAssetName || links.dmgAssetName
       }
     });
   } catch (error) {
@@ -3744,12 +3893,10 @@ app.get("/api/release-notes", async (_req, res) => {
     htmlUrl: links.htmlUrl,
     repoUrl: links.repoUrl,
     releasesUrl: links.releasesUrl,
-    packageDownloadUrl: links.packageDownloadUrl,
-    packageAssetName: links.packageAssetName,
-    dmgDownloadUrl: "",
-    dmgAssetName: "",
-    exeDownloadUrl: links.exeDownloadUrl,
-    exeAssetName: links.exeAssetName,
+    packageDownloadUrl: links.dmgDownloadUrl,
+    packageAssetName: links.dmgAssetName,
+    dmgDownloadUrl: links.dmgDownloadUrl,
+    dmgAssetName: links.dmgAssetName,
     source: "local"
   };
   try {
@@ -3769,8 +3916,6 @@ app.get("/api/release-notes", async (_req, res) => {
       packageAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
       dmgDownloadUrl: githubRelease.dmgDownloadUrl || links.dmgDownloadUrl,
       dmgAssetName: githubRelease.dmgAssetName || links.dmgAssetName,
-      exeDownloadUrl: githubRelease.exeDownloadUrl || links.exeDownloadUrl,
-      exeAssetName: githubRelease.exeAssetName || links.exeAssetName,
       source: "github"
     };
   } catch (error) {
@@ -4091,6 +4236,28 @@ var releaseSharedPuppeteerBrowser = async (options = {}) => {
   }
 };
 var launchPuppeteerBrowser = async () => acquireSharedPuppeteerBrowser();
+var acquireSingleWebsitePage = async (browser) => {
+  const pages = await browser.pages().catch(() => []);
+  const page = pages.find((candidate) => {
+    try {
+      const url = String(candidate.url?.() || "");
+      return !url || url === "about:blank";
+    } catch {
+      return false;
+    }
+  }) || await browser.newPage();
+  await Promise.all(
+    pages.filter((candidate) => candidate !== page).filter((candidate) => {
+      try {
+        const url = String(candidate.url?.() || "");
+        return !url || url === "about:blank";
+      } catch {
+        return false;
+      }
+    }).map((candidate) => candidate.close().catch(() => void 0))
+  );
+  return page;
+};
 var closePuppeteerBrowser = async (browser) => {
   if (browser && browser === sharedPuppeteerBrowser) {
     await releaseSharedPuppeteerBrowser();
@@ -4228,7 +4395,7 @@ var fetchSiteHtmlViaBrowser = async (siteUrl) => {
   let page = null;
   try {
     browser = await launchPuppeteerBrowser();
-    page = await browser.newPage();
+    page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     await page.goto(siteUrl, { waitUntil: "domcontentloaded", timeout: 25e3 }).catch(() => void 0);
     return await waitForRenderedSiteHtml(page);
@@ -5073,7 +5240,8 @@ var isUnsupportedVideoResourceUrl = (rawUrl) => {
   const value = String(rawUrl || "").trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith("data:") || value.startsWith("blob:")) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#@]|$)/i.test(value)) return true;
+  if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL2(value);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
@@ -5435,6 +5603,31 @@ var collapseVimeoVideosForClient = (videos) => {
   return collapsed;
 };
 var buildWistiaEmbedUrl = (hashedId) => `https://fast.wistia.com/embed/medias/${hashedId}`;
+var isWistiaSwatchUrl = (rawUrl = "") => {
+  try {
+    const parsed = new URL2(String(rawUrl || ""));
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    return (host.includes("wistia.com") || host.includes("wistia.net")) && /\/embed\/medias\/[a-z0-9]{8,12}\/swatch\/?$/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+};
+var isWistiaHelperResourceUrl = (rawUrl = "") => {
+  try {
+    const parsed = new URL2(String(rawUrl || ""));
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (!host.includes("wistia.com") && !host.includes("wistia.net")) return false;
+    const path4 = parsed.pathname.toLowerCase();
+    if (isWistiaSwatchUrl(parsed.href)) return true;
+    if (/\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)(?:\.js)?(?:@|\/|$)/i.test(path4)) {
+      return true;
+    }
+    if (/\/(?:mput|jsonp|iframe_shim)(?:\/|$)/i.test(path4)) return true;
+    return /\/embed\/medias\/[a-z0-9]{8,12}\/(?:swatch|seo|jsonp)(?:\/|$)/i.test(path4);
+  } catch {
+    return false;
+  }
+};
 var extractWistiaIdsFromText = (text, baseUrl) => {
   const ids = /* @__PURE__ */ new Set();
   const normalizedText = text.replace(/\\\//g, "/").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
@@ -5455,8 +5648,16 @@ var extractWistiaIdsFromText = (text, baseUrl) => {
   while ((match = wvideoRegex.exec(normalizedText)) !== null) {
     addId(match[1]);
   }
+  const mediaIdRegex = /(?:media-id|media_id|hashedId|hashed_id|wistiaHashedId|wistia_hashed_id)["'\s:=]+["']?([a-z0-9]{8,12})/gi;
+  while ((match = mediaIdRegex.exec(normalizedText)) !== null) {
+    addId(match[1]);
+  }
   const mediasRegex = /wistia\.com\/medias\/([a-z0-9]{8,12})/gi;
   while ((match = mediasRegex.exec(normalizedText)) !== null) {
+    addId(match[1]);
+  }
+  const embedIframeRegex = /(?:fast\.)?wistia\.(?:com|net)\/embed\/iframe\/([a-z0-9]{8,12})/gi;
+  while ((match = embedIframeRegex.exec(normalizedText)) !== null) {
     addId(match[1]);
   }
   const iframeRegex = /<iframe[^>]+src=["']([^"']*wistia[^"']+)["']/gi;
@@ -5798,7 +5999,7 @@ var fetchRemoteFontBufferViaBrowser = async (url, refererPage = "") => {
   let browser = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     const landing = String(refererPage || "").trim() || (() => {
       try {
@@ -6168,7 +6369,7 @@ var fetchRemoteImageBufferViaBrowser = async (url, refererPageUrl = "") => {
   let browser = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await applyPuppeteerStealth(page);
     let landing = String(refererPageUrl || "").trim();
     if (!landing.startsWith("http")) {
@@ -7315,6 +7516,12 @@ var extractAssetsFromRawText = (text, baseUrl) => {
     const cleaned = cleanRawAssetUrl(match[0]);
     const resolved = resolveUrl(baseUrl, cleaned);
     if (!resolved || resolved.startsWith("data:") || resolved.startsWith("blob:")) continue;
+    if (isWistiaHelperResourceUrl(resolved)) {
+      if (isWistiaSwatchUrl(resolved)) {
+        addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS, type: "webp" }, { permissive: true });
+      }
+      continue;
+    }
     if (/\.(?:jpe?g|png|webp|gif|avif|svg)(?:[?#]|$)/i.test(resolved)) {
       addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS }, { permissive: true });
     } else if (/\.(?:mp4|webm|m3u8|mov)(?:[?#]|$)/i.test(resolved)) {
@@ -7346,6 +7553,13 @@ var extractAssetsFromRawText = (text, baseUrl) => {
         cssSource: baseUrl,
         status: DEFAULT_ASSET_STATUS
       });
+    }
+  }
+  const wistiaSwatchRegex = /https?:\/\/fast\.wistia\.(?:com|net)\/embed\/medias\/[a-z0-9]{8,12}\/swatch(?:[?#][^"'`<>\s\\)]*)?/gi;
+  while ((match = wistiaSwatchRegex.exec(raw)) !== null) {
+    const resolved = resolveUrl(baseUrl, cleanRawAssetUrl(match[0]));
+    if (resolved && isWistiaSwatchUrl(resolved)) {
+      addImageCandidate(images, resolved, baseUrl, { status: DEFAULT_ASSET_STATUS, type: "webp" }, { permissive: true });
     }
   }
   return { images, videos, fonts };
@@ -7636,6 +7850,10 @@ var staticExtractHasUnresolvedEmbeds = (html, assets, options = {}) => {
   const videos = assets?.videos || [];
   const vimeoHints = /vimeo\.com|data-vimeo-id/i.test(text);
   if (vimeoHints && !videos.some((video) => video?.isVimeoDirect)) return true;
+  const wistiaHints = /wistia|<wistia-player\b|fast\.wistia\.(?:com|net)/i.test(text);
+  if (wistiaHints && !videos.some((video) => video?.provider === "wistia" && (video?.isWistiaDirect || /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(String(video?.url || ""))))) {
+    return true;
+  }
   const brightcoveHints = /brightcove|gb-video-brightcove|data-account-id|players\.brightcove\.net/i.test(text);
   if (brightcoveHints && !videos.some((video) => video?.provider === "brightcove" && (video?.isDirect || video?.brightcoveManifestUrl || /\.mp4|m3u8/i.test(String(video?.url || ""))))) {
     return true;
@@ -8120,6 +8338,32 @@ var filterUnavailableSitecoreFonts = async (fonts, pageUrl = "") => {
     return familyA.localeCompare(familyB);
   });
 };
+var isLikelyEncodedVideoPlaceholderTitle = (value = "") => /^[A-Za-z0-9+/_=-]{24,}\.*$/.test(String(value || "").trim()) && !/\s/.test(String(value || "").trim());
+var isDirectVideoCandidateUrl = (rawUrl = "") => /\.(?:mp4|webm|mov|mkv|m4v|m3u8|mpd)(?:[?#]|$)/i.test(String(rawUrl || "")) || /\/(?:videoplayback|progressive_redirect\/download)\b|vimeocdn\.com|vod-adaptive\.akamaized\.net|wistia\.com\/deliveries\//i.test(String(rawUrl || ""));
+var isLikelyBlankEmbeddedVideoCard = (video, targetUrl = "") => {
+  const candidates = [
+    video?.url,
+    video?.sourceStreamUrl,
+    video?.downloadUrl,
+    video?.originalUrl,
+    video?.embedUrl,
+    video?.sourceUrl,
+    video?.pageUrl,
+    targetUrl
+  ].map((candidate) => String(candidate || "").trim()).filter(Boolean);
+  if (candidates.some(isWistiaHelperResourceUrl)) return true;
+  if (candidates.some((candidate) => /(?:wistia\.com|wistia\.net)\/deliveries\//i.test(candidate)) && !video?.isWistiaDirect && !video?.height && !video?.width && !/\b(?:mp4|m3u8|hls)\b/i.test(String(video?.type || video?.format || video?.resolution || ""))) {
+    return true;
+  }
+  if (candidates.some(isDirectVideoCandidateUrl)) return false;
+  const title = String(video?.title || video?.name || video?.label || "").trim();
+  const hasPreview = /^https?:\/\//i.test(String(video?.thumbnail || video?.poster || "").trim());
+  if (hasPreview) return false;
+  const hasHttpCandidate = candidates.some((candidate) => /^https?:\/\//i.test(candidate));
+  if (!hasHttpCandidate) return true;
+  if (isLikelyEncodedVideoPlaceholderTitle(title)) return true;
+  return /(?:embedded\s+player|video\s+player)/i.test(String(video?.type || video?.provider || video?.label || "")) && !candidates.some((candidate) => /youtube\.com|youtu\.be|vimeo\.com|wistia\.com|brightcove|facebook\.com|instagram\.com|x\.com|twitter\.com|tiktok\.com/i.test(candidate));
+};
 var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fallbackThumb = "", options = {}) => {
   const iconPool = [...options.extraIcons || [], ...images.filter((item) => classifyAssetIconCandidate(item))];
   const imagePool = images.filter((item) => !classifyAssetIconCandidate(item));
@@ -8175,9 +8419,11 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
   const videoByKey = /* @__PURE__ */ new Map();
   collapseVimeoVideosForClient(videos).forEach((video) => {
     if (!video?.url) return;
+    if (isLikelyBlankEmbeddedVideoCard(video, targetUrl)) return;
     if (isUnsupportedVideoResourceUrl(String(video.url || video.sourceStreamUrl || video.sourceUrl || ""))) return;
     const sanitized = sanitizeVideoForClient(video, targetUrl);
     if (!sanitized?.url) return;
+    if (isLikelyBlankEmbeddedVideoCard(sanitized, targetUrl)) return;
     if (isUnsupportedVideoResourceUrl(String(sanitized.url || sanitized.sourceStreamUrl || sanitized.sourceUrl || ""))) return;
     const key = videoKey(sanitized);
     const normalizedVideo = !sanitized.thumbnail && fallbackThumb ? { ...sanitized, thumbnail: fallbackThumb } : sanitized;
@@ -8543,6 +8789,21 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
       videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
     }
   };
+  const resolveWistiaCandidateVideos = async (timeoutMs, label) => {
+    if (wistiaCandidateIds.size === 0) return;
+    try {
+      const wistiaAssets = await withTimeout(
+        extractWistiaVideos(Array.from(wistiaCandidateIds), "fhd"),
+        timeoutMs,
+        label
+      );
+      videos.push(...wistiaAssets.videos || []);
+      if (!options.videosOnly) images.push(...wistiaAssets.images || []);
+    } catch (error) {
+      console.warn(`${label} failed, using placeholders:`, error?.message || error);
+      videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
+    }
+  };
   const deferVimeoHomepageStreamUpgrade = !options.videosOnly && isPlatformMarketingHomepage(targetUrl);
   if (vimeoCandidateUrls.size > 0 && deferVimeoHomepageStreamUpgrade) {
     videos.push(...createVimeoSourceVideos(Array.from(vimeoCandidateUrls)));
@@ -8564,6 +8825,10 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
       console.warn("Quick Vimeo upgrade skipped:", error?.message || error);
     }
   }
+  await resolveWistiaCandidateVideos(
+    options.fast ? 8e3 : 12e3,
+    options.fast ? `Fast static Wistia extraction for ${targetUrl}` : `Static Wistia extraction for ${targetUrl}`
+  );
   if (videos.length === 0 && html) {
     videos.push(...buildWebsiteVideoPlayersFromHtml(html, targetUrl));
   }
@@ -8623,22 +8888,6 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
     fonts = fonts.concat(rawAssets.fonts);
     colors = colors.concat(extractColorsFromCss(css));
   });
-  if (!options.fast && wistiaCandidateIds.size > 0) {
-    try {
-      const wistiaAssets = await withTimeout(
-        extractWistiaVideos(Array.from(wistiaCandidateIds), "fhd"),
-        8e3,
-        `Static Wistia extraction for ${targetUrl}`
-      );
-      videos.push(...wistiaAssets.videos || []);
-      images.push(...wistiaAssets.images || []);
-    } catch (error) {
-      console.warn("Static Wistia extraction failed, using placeholders:", error?.message || error);
-      videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
-    }
-  } else if (options.fast && wistiaCandidateIds.size > 0) {
-    videos.push(...createWistiaSourceVideos(Array.from(wistiaCandidateIds)));
-  }
   return dedupeExtractedAssets(images, await resolveBrightcoveCandidateVideos(videos, `Static Brightcove extraction for ${targetUrl}`), fonts, colors, targetUrl, resolvedPagePrimaryThumb, { fast: options.fast });
 };
 var extractQuickAssets = async (targetUrl, options = {}) => {
@@ -9550,7 +9799,7 @@ var captureVimeoNetworkManifests = async (vimeoId, sourcePageUrl = "") => {
   let browser = null;
   try {
     browser = await acquireSharedPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     if (sourcePageUrl) {
       await page.setExtraHTTPHeaders({ Referer: `${sourcePageUrl.replace(/\/+$/, "")}/` });
@@ -10528,7 +10777,7 @@ var captureIspotNetworkManifest = async (targetUrl) => {
   let browser = null;
   try {
     browser = await acquireSharedPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     page.on("response", (response) => {
       const url = response.url();
@@ -12816,7 +13065,7 @@ var extractSectionAssets = async (targetUrl, sectionSelector, sectionLabel = "")
   let browser = null;
   try {
     browser = await launchPuppeteerBrowser();
-    const page = await browser.newPage();
+    const page = await acquireSingleWebsitePage(browser);
     await page.setUserAgent(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
@@ -13222,7 +13471,7 @@ app.post("/api/extract", async (req, res) => {
         const touchAssetActivity = () => {
           lastNewAssetAt = Date.now();
         };
-        const page = await browser.newPage();
+        const page = await acquireSingleWebsitePage(browser);
         await page.setViewport({ width: 1440, height: 1100 });
         await applyPuppeteerStealth(page);
         await page.setRequestInterception(true);
@@ -13849,7 +14098,7 @@ app.post("/api/extract", async (req, res) => {
         await mapWithConcurrency(Array.from(embeddedPageUrls).slice(0, 2), 2, async (embeddedUrl) => {
           let embeddedPage;
           try {
-            embeddedPage = await browser.newPage();
+            embeddedPage = await acquireSingleWebsitePage(browser);
             embeddedPage.on("response", handlePageResponse);
             await embeddedPage.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             await embeddedPage.setRequestInterception(true);
@@ -15281,7 +15530,7 @@ app.get("/api/download", async (req, res) => {
     const base = sourceName.replace(/\.[a-z0-9]+$/i, "") || "download";
     const requestedName = typeof filename === "string" ? filename.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") : "";
     const preferredName = requestedName || `${base}.mp4`;
-    const contentType = response.headers["content-type"] || "video/mp4";
+    const contentType = String(response.headers["content-type"] || "video/mp4");
     const forceTranscode = needsMp4Transcode(downloadUrl, contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${preferredName}"`);
     res.setHeader("Content-Type", "video/mp4");
@@ -16256,7 +16505,7 @@ app.post("/api/insights", async (req, res) => {
       const current = queue.shift();
       if (visited.has(current.url) || current.depth > maxDepth) continue;
       visited.add(current.url);
-      const page = await browser.newPage();
+      const page = await acquireSingleWebsitePage(browser);
       try {
         await withTimeout(
           (async () => {
