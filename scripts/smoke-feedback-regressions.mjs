@@ -93,13 +93,14 @@ const fetchBuffer = async (route, init = {}, timeoutMs = 120000) => {
 };
 
 const checkStaticFeedbackContracts = async () => {
-  const [app, fontExtractor, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes] = await Promise.all([
+  const [app, fontExtractor, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes, server] = await Promise.all([
     readText('src/App.tsx'),
     readText('src/components/FontExtractor.tsx'),
     readText('src/components/ImageExtractor.tsx'),
     readText('src/lib/videoDownloader.ts'),
     readText('src/components/VideoDownloaderPage.tsx'),
     readText('server/video-downloader-routes.ts'),
+    readText('server.ts'),
   ]);
 
   assertIncludes('Reset button UI', app, 'Video Downloader');
@@ -148,6 +149,11 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'Refreshing YouTube engine');
   assertIncludes('YouTube geo bypass', videoDownloaderRoutes, '--geo-bypass');
   assertIncludes('YouTube cookies recovery', videoDownloaderRoutes, "platform === 'youtube'");
+  assertIncludes('Toyota 360 frame extraction', server, 'extractImageSequencesFromText');
+  assertIncludes('Toyota 360 frame extraction', server, 'data-image-count');
+  assertIncludes('Toyota 360 frame extraction', server, '360-sequence');
+  assertIncludes('Toyota 360 frame extraction', server, 'jellies');
+  assertIncludes('Toyota 360 frame extraction', server, 'MAX_IMAGE_SEQUENCE_FRAMES');
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
   assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');

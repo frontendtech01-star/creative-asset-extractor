@@ -1256,6 +1256,47 @@ const buildChromeTabAssetCaptureScript = () => `
     });
     return urls;
   };
+  const expand360Sequence = (raw, countHint) => {
+    const target = absoluteUrl(raw);
+    if (!target) return [];
+    let parsed;
+    try { parsed = new URL(target); } catch { return []; }
+    if (!/(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(parsed.href)) return [];
+    const match = parsed.pathname.match(/^(.*\\/)(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
+    if (!match) return [];
+    const frame = Number(match[2]);
+    if (!Number.isFinite(frame) || frame < 1) return [];
+    const parts = match[1].split('/').filter(Boolean);
+    const pathCount = Number(parts[parts.length - 1] || 0);
+    const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : 0);
+    if (!count || count > 120 || frame > count) return [];
+    return Array.from({ length: count }, (_, index) => {
+      const clone = new URL(parsed.href);
+      clone.pathname = match[1] + (index + 1) + match[3];
+      return clone.href;
+    });
+  };
+  const collect360FromRoot = (root) => {
+    const count = Number(root?.getAttribute?.('data-image-count') || root?.querySelector?.('[data-image-count]')?.getAttribute('data-image-count') || 0);
+    const candidates = [];
+    const nodes = root?.querySelectorAll?.('img, source, picture, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]') || [];
+    nodes.forEach((node) => {
+      ['currentSrc', 'src'].forEach((key) => {
+        if (node[key]) candidates.push(node[key]);
+      });
+      ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (!value) return;
+        String(value).split(',').forEach((part) => candidates.push(part.trim().split(/\\s+/)[0]));
+      });
+    });
+    candidates.forEach((candidate) => {
+      expand360Sequence(candidate, count).forEach((frameUrl, index) => addImage(frameUrl, {
+        source: '360-sequence',
+        alt: '360 frame ' + (index + 1),
+      }));
+    });
+  };
 
   Array.from(document.images || []).forEach((img) => {
     addImage(img.currentSrc || img.src || img.getAttribute('data-src'), {
@@ -1297,6 +1338,13 @@ const buildChromeTabAssetCaptureScript = () => `
     const initiator = String(entry.initiatorType || '').toLowerCase();
     if (!name) return;
     if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name, { source: initiator || 'performance' });
+  });
+  Array.from(document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]')).forEach(collect360FromRoot);
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+    expand360Sequence(entry.name, 0).forEach((frameUrl, index) => addImage(frameUrl, {
+      source: '360-sequence',
+      alt: '360 frame ' + (index + 1),
+    }));
   });
 
   const fontUrls = new Set();
@@ -1373,7 +1421,7 @@ const buildChromeTabAssetCaptureScript = () => `
     addColor(style.stroke, weight);
   });
 
-  const images = Array.from(imageMap.values()).slice(0, 160);
+  const images = Array.from(imageMap.values()).slice(0, 320);
   return JSON.stringify({
     ok: true,
     url: location.href,
@@ -3504,6 +3552,68 @@ const addSrcsetCandidates = (images: any[], srcset: string | undefined, baseUrl:
   }
 };
 
+const MAX_IMAGE_SEQUENCE_FRAMES = 120;
+
+const isLikely360SequenceUrl = (value: string) =>
+  /(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(String(value || ''));
+
+const expandImageSequenceUrl = (rawUrl: string, baseUrl: string, hintedCount = 0) => {
+  const absolute = resolveUrl(baseUrl, String(rawUrl || '').replace(/&amp;/g, '&').trim());
+  if (!absolute || !isLikely360SequenceUrl(absolute)) return [];
+  let parsed: URL;
+  try {
+    parsed = new URL(absolute);
+  } catch {
+    return [];
+  }
+  const match = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  if (!match) return [];
+  const frame = Number(match[2]);
+  if (!Number.isFinite(frame) || frame < 1) return [];
+  const pathParts = match[1].split('/').filter(Boolean);
+  const pathCount = Number(pathParts[pathParts.length - 1] || 0);
+  const count =
+    hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES
+      ? hintedCount
+      : pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES
+        ? pathCount
+        : 0;
+  if (!count || frame > count) return [];
+  return Array.from({ length: count }, (_, index) => {
+    const clone = new URL(parsed.href);
+    clone.pathname = `${match[1]}${index + 1}${match[3]}`;
+    return clone.href;
+  });
+};
+
+const extractImageSequencesFromText = (text: string, targetUrl: string) => {
+  const images: any[] = [];
+  const source = String(text || '').replace(/\\/g, '').replace(/&amp;/g, '&');
+  const counts = Array.from(source.matchAll(/data-image-count=["']?(\d{1,3})/gi), (match) => Number(match[1])).filter(
+    (count) => count >= 2 && count <= MAX_IMAGE_SEQUENCE_FRAMES
+  );
+  const hintedCount = counts.includes(36) ? 36 : counts[0] || 0;
+  const urlRegex = /(?:https?:\/\/[^"'<>\s\\)]+|\/[^"'<>\s\\)]+)\.(?:png|jpe?g|webp|avif)(?:\?[^"'<>\s\\)]*)?/gi;
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(source)) !== null) {
+    expandImageSequenceUrl(match[0], targetUrl, hintedCount).forEach((frameUrl) => {
+      if (seen.has(frameUrl)) return;
+      seen.add(frameUrl);
+      const frameMatch = frameUrl.match(/\/(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i);
+      images.push({
+        url: frameUrl,
+        type: inferImageTypeFromUrl(frameUrl) || getAssetTypeFromUrl(frameUrl, 'png'),
+        filename: filenameFromUrlPath(frameUrl),
+        source: '360-sequence',
+        alt: frameMatch?.[1] ? `360 frame ${frameMatch[1]}` : '360 frame',
+        status: DEFAULT_ASSET_STATUS,
+      });
+    });
+  }
+  return images;
+};
+
 const LAZY_IMAGE_ATTRS = [
   'src',
   'data-src',
@@ -3784,6 +3894,7 @@ const extractImagesFromDom = ($: any, targetUrl: string, options: { scoped?: boo
     if (style) images.push(...extractImagesFromCss(style, targetUrl));
   });
 
+  if (!options.scoped) images.push(...extractImageSequencesFromText($.html() || '', targetUrl));
   if (!options.scoped) extractInlineSvgsFromDom($, images);
   return images;
 };
@@ -3820,6 +3931,7 @@ const extractImagesFromHtmlString = (html: string, targetUrl: string) => {
     addImageCandidate(images, jsonMatch[1], targetUrl);
   }
 
+  images.push(...extractImageSequencesFromText(searchText, targetUrl));
   return images;
 };
 
@@ -7478,6 +7590,9 @@ const canonicalImageDedupKey = (url: string) => {
     if (contextParam) {
       return `${host}:${parsed.pathname}?context=${contextParam}`.toLowerCase();
     }
+    if (isLikely360SequenceUrl(raw)) {
+      return `${host}:sequence:${parsed.pathname}${parsed.search}`.toLowerCase();
+    }
     if (leaf && !isOpaqueGeneratedImageLeaf(leaf)) {
       return `${host}:file:${leaf}`;
     }
@@ -7853,6 +7968,50 @@ const extractRenderedDomAssetsFromPage = async (
       'data-flickity-lazyload', 'data-url',
     ];
     const SRCSET_ATTRS = ['srcset', 'data-srcset', 'data-lazy-srcset'];
+    const expand360Sequence = (raw: string | null | undefined, countHint = 0) => {
+      const target = _.toAbsolute(String(raw || '').replace(/&amp;/g, '&'));
+      if (!target || !/(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(target)) return [];
+      let parsed: URL;
+      try {
+        parsed = new URL(target);
+      } catch {
+        return [];
+      }
+      const match = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+      if (!match) return [];
+      const frame = Number(match[2]);
+      const parts = match[1].split('/').filter(Boolean);
+      const pathCount = Number(parts[parts.length - 1] || 0);
+      const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : 0);
+      if (!Number.isFinite(frame) || frame < 1 || !count || count > 120 || frame > count) return [];
+      return Array.from({ length: count }, (_unused, index) => {
+        const clone = new URL(parsed.href);
+        clone.pathname = `${match[1]}${index + 1}${match[3]}`;
+        return clone.href;
+      });
+    };
+    const collect360FromRoot = (root: Element) => {
+      const count = Number(
+        root.getAttribute('data-image-count') ||
+          root.querySelector('[data-image-count]')?.getAttribute('data-image-count') ||
+          0
+      );
+      const candidates: string[] = [];
+      root.querySelectorAll('img, source, picture, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
+        const anyNode = node as any;
+        ['currentSrc', 'src'].forEach((key) => {
+          if (anyNode[key]) candidates.push(anyNode[key]);
+        });
+        ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
+          const value = node.getAttribute(attr);
+          if (!value) return;
+          String(value).split(',').forEach((part) => candidates.push(part.trim().split(/\s+/)[0]));
+        });
+      });
+      candidates.forEach((candidate) => {
+        expand360Sequence(candidate, count).forEach((frameUrl) => _.addImage(frameUrl));
+      });
+    };
 
     document.querySelectorAll('img').forEach((img) => {
       const el = img as HTMLImageElement;
@@ -7964,6 +8123,13 @@ const extractRenderedDomAssetsFromPage = async (
       while ((match = bgRegex.exec(cssText)) !== null) {
         _.addImage(match[1].replace(/^["']|["']$/g, ''));
       }
+    });
+
+    document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]').forEach((root) => {
+      collect360FromRoot(root);
+    });
+    Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+      expand360Sequence((entry as PerformanceResourceTiming).name, 0).forEach((frameUrl) => _.addImage(frameUrl));
     });
 
     Array.from(document.styleSheets).forEach((sheet) => {
