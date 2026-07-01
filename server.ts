@@ -5742,7 +5742,10 @@ const resolveRasterSourceFormat = (
   contentType = ''
 ) => {
   const fromBuffer = detectRasterFormatFromBuffer(buffer) || detectImageFormatFromBuffer(buffer);
-  if (fromBuffer && RASTER_CONVERTIBLE_FORMATS.has(fromBuffer)) return fromBuffer;
+  // Trust the actual bytes first. Some websites serve raster images from URLs
+  // ending in .svg; saving those bytes with a .svg extension creates invalid
+  // Illustrator files.
+  if (fromBuffer) return fromBuffer;
   const fromLookup = inferImageTypeFromUrl(lookupUrl, contentType);
   if (fromLookup && RASTER_CONVERTIBLE_FORMATS.has(fromLookup)) return fromLookup;
   const fromUrl = inferImageTypeFromUrl(normalizedUrl, contentType);
@@ -5761,6 +5764,47 @@ const imageContentTypeForFormat = (format: string, fallback = 'application/octet
   if (normalized === 'svg') return 'image/svg+xml';
   if (normalized === 'gif') return 'image/gif';
   return fallback;
+};
+
+const IMAGE_BINARY_FORMATS = new Set(['jpg', 'png', 'webp', 'avif', 'svg', 'gif']);
+
+const reconcileImageFilenameWithBuffer = (filename: string, buffer: Buffer, contentType = '') => {
+  const actual = normalizeRasterFormat(
+    detectRasterFormatFromBuffer(buffer) ||
+      detectImageFormatFromBuffer(buffer) ||
+      inferImageTypeFromContentType(contentType)
+  );
+  if (!actual || !IMAGE_BINARY_FORMATS.has(actual)) return filename;
+  const ext = actual === 'jpeg' ? 'jpg' : actual;
+  const currentExt = normalizeRasterFormat(path.extname(filename || '').replace(/^\./, ''));
+  if (currentExt === ext) return filename;
+  if (filename && path.extname(filename)) return filename.replace(/\.[^./\\]+$/, `.${ext}`);
+  return `${filename || 'asset'}.${ext}`;
+};
+
+const escapeXmlAttribute = (value: string) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const wrapRasterBufferAsIllustratorSvg = (buffer: Buffer, format: string, label = '') => {
+  const normalized = normalizeRasterFormat(format);
+  if (!buffer?.length || !['jpg', 'png', 'webp', 'avif', 'gif'].includes(normalized)) return buffer;
+  const dimensions = probeRasterDimensions(buffer);
+  const width = dimensions.width > 0 ? dimensions.width : 1200;
+  const height = dimensions.height > 0 ? dimensions.height : 800;
+  const mime = imageContentTypeForFormat(normalized, 'image/png');
+  const title = escapeXmlAttribute(path.basename(label || 'embedded-image').replace(/\.[^.]+$/, ''));
+  const encoded = buffer.toString('base64');
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <title>${title}</title>
+  <image x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet" href="data:${mime};base64,${encoded}" xlink:href="data:${mime};base64,${encoded}"/>
+</svg>
+`;
+  return Buffer.from(svg, 'utf8');
 };
 
 const convertImageFileWithFfmpeg = async (inputPath: string, outputPath: string, format: 'jpg' | 'png') =>
@@ -5941,10 +5985,16 @@ const saveBufferToDownloads = async (
   if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
     throw new Error(`${label} produced an empty file.`);
   }
-  const writeBuffer = detectImageFormatFromBuffer(buffer) === 'svg' || /\.svg$/i.test(filename)
+  const detectedImageFormat = kind === 'image' || /\.svg$/i.test(filename)
+    ? detectImageFormatFromBuffer(buffer)
+    : '';
+  const writeBuffer = detectedImageFormat === 'svg'
     ? normalizeSvgBufferForIllustrator(buffer)
     : buffer;
-  const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind, subfolder });
+  const safeFilename = kind === 'image'
+    ? reconcileImageFilenameWithBuffer(filename, writeBuffer)
+    : filename;
+  const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind, subfolder });
   await fsp.writeFile(target.filePath, writeBuffer);
   const stat = await validateSavedAssetFile(target.filePath, label);
   return {
@@ -5965,22 +6015,39 @@ const saveCachedFileToDownloads = async (
   kind: DownloadSaveKind = 'default'
 ) => {
   if (!sourcePath) throw new Error(`${label} cache path is missing.`);
-  const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
-  if (/\.svg$/i.test(filename) || /\.svg$/i.test(sourcePath)) {
+  if (kind === 'image' || /\.svg$/i.test(filename) || /\.svg$/i.test(sourcePath)) {
     const sourceBuffer = await fsp.readFile(sourcePath);
-    await fsp.writeFile(target.filePath, normalizeSvgBufferForIllustrator(sourceBuffer));
+    const detectedImageFormat = detectImageFormatFromBuffer(sourceBuffer);
+    const writeBuffer = detectedImageFormat === 'svg'
+      ? normalizeSvgBufferForIllustrator(sourceBuffer)
+      : sourceBuffer;
+    const safeFilename = kind === 'image'
+      ? reconcileImageFilenameWithBuffer(filename, writeBuffer)
+      : filename;
+    const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind });
+    await fsp.writeFile(target.filePath, writeBuffer);
+    const stat = await validateSavedAssetFile(target.filePath, label);
+    return {
+      ok: true,
+      filename: target.filename,
+      downloadPath: target.filePath,
+      localPath: target.filePath,
+      folderPath: target.folderPath,
+      size: stat.size,
+    };
   } else {
+    const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
     await fsp.copyFile(sourcePath, target.filePath);
+    const stat = await validateSavedAssetFile(target.filePath, label);
+    return {
+      ok: true,
+      filename: target.filename,
+      downloadPath: target.filePath,
+      localPath: target.filePath,
+      folderPath: target.folderPath,
+      size: stat.size,
+    };
   }
-  const stat = await validateSavedAssetFile(target.filePath, label);
-  return {
-    ok: true,
-    filename: target.filename,
-    downloadPath: target.filePath,
-    localPath: target.filePath,
-    folderPath: target.folderPath,
-    size: stat.size,
-  };
 };
 
 const convertedImageCachePath = (lookupUrl: string, targetFormat: string) =>
@@ -6293,6 +6360,16 @@ const getCachedConvertedImage = async (
   const normalizedTarget = normalizeRasterFormat(requestedFormat || defaultTarget);
   filenameExtras.contentDisposition = (fetched as any).contentDisposition || options?.prefetched?.contentDisposition;
 
+  if (normalizedTarget === 'svg' && normalizedSource !== 'svg' && IMAGE_BINARY_FORMATS.has(normalizedSource)) {
+    const wrappedSvg = wrapRasterBufferAsIllustratorSvg(fetched.buffer, normalizedSource, filenameSourceUrl);
+    return {
+      buffer: normalizeSvgBufferForIllustrator(wrappedSvg),
+      format: 'svg',
+      filename: buildDownloadFilename(filenameSourceUrl, 'svg', preferredBase, filenameExtras),
+      cachedPath: '',
+    };
+  }
+
   const wantsRasterConversion =
     ['png', 'jpg'].includes(normalizedTarget) &&
     RASTER_CONVERTIBLE_FORMATS.has(normalizedSource) &&
@@ -6408,6 +6485,15 @@ const getCurlFetchedConvertedImage = async (
     sourceFormat === 'avif' ? 'png' :
     sourceFormat;
   const normalizedTarget = normalizeRasterFormat(requestedFormat || defaultTarget);
+  if (normalizedTarget === 'svg' && sourceFormat !== 'svg' && IMAGE_BINARY_FORMATS.has(sourceFormat)) {
+    const wrappedSvg = wrapRasterBufferAsIllustratorSvg(fetched.buffer, sourceFormat, filenameSourceUrl);
+    return {
+      buffer: normalizeSvgBufferForIllustrator(wrappedSvg),
+      format: 'svg',
+      filename: buildDownloadFilename(filenameSourceUrl, 'svg', preferredBase, filenameExtras),
+      cachedPath: '',
+    };
+  }
   const wantsRasterConversion =
     ['png', 'jpg'].includes(normalizedTarget) &&
     RASTER_CONVERTIBLE_FORMATS.has(sourceFormat) &&
@@ -16379,7 +16465,11 @@ app.get('/api/image-preview', async (req, res) => {
     if (!isValidImageBuffer(fetched.buffer, fetched.contentType)) {
       return res.status(502).json({ error: 'Preview image could not be loaded' });
     }
-    const format = getAssetTypeFromUrl(normalized, inferImageTypeFromContentType(fetched.contentType) || 'bin');
+    const format =
+      detectRasterFormatFromBuffer(fetched.buffer) ||
+      detectImageFormatFromBuffer(fetched.buffer) ||
+      inferImageTypeFromContentType(fetched.contentType) ||
+      getAssetTypeFromUrl(normalized, 'bin');
     const contentType =
       format === 'jpg' || format === 'jpeg' ? 'image/jpeg'
         : format === 'png' ? 'image/png'
@@ -16648,7 +16738,14 @@ app.get('/api/convert-image', async (req, res) => {
         }
       }
     }
-    const contentType = imageContentTypeForFormat(converted.format, 'application/octet-stream');
+    const responseFormat = normalizeRasterFormat(
+      detectRasterFormatFromBuffer(converted.buffer) ||
+        detectImageFormatFromBuffer(converted.buffer) ||
+        converted.format ||
+        'bin'
+    );
+    const responseFilename = reconcileImageFilenameWithBuffer(converted.filename, converted.buffer);
+    const contentType = imageContentTypeForFormat(responseFormat, 'application/octet-stream');
     if (typeof toFormat === 'string' && ['png', 'jpg'].includes(normalizeRasterFormat(toFormat))) {
       const expected = normalizeRasterFormat(toFormat) as RasterOutputFormat;
       if (!isValidRasterOutputBuffer(converted.buffer, expected)) {
@@ -16662,16 +16759,16 @@ app.get('/api/convert-image', async (req, res) => {
       if (converted.cachedPath) {
         try {
           await fsp.access(converted.cachedPath);
-          const saved = await saveCachedFileToDownloads(converted.cachedPath, converted.filename, 'Image conversion', sourcePageUrl, 'image');
+          const saved = await saveCachedFileToDownloads(converted.cachedPath, responseFilename, 'Image conversion', sourcePageUrl, 'image');
           return res.json(saved);
         } catch {
           // Converted buffer may be in memory only; save bytes directly.
         }
       }
-      const saved = await saveBufferToDownloads(converted.buffer, converted.filename, 'Image conversion', sourcePageUrl, 'image');
+      const saved = await saveBufferToDownloads(converted.buffer, responseFilename, 'Image conversion', sourcePageUrl, 'image');
       return res.json(saved);
     }
-    res.setHeader('Content-Disposition', `attachment; filename="${converted.filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${responseFilename}"`);
     res.setHeader('Content-Type', contentType);
     return res.send(converted.buffer);
   } catch (error: any) {
@@ -19046,7 +19143,7 @@ app.post('/api/download-zip', async (req, res) => {
           const entryBuffer = detectImageFormatFromBuffer(converted.buffer) === 'svg'
             ? normalizeSvgBufferForIllustrator(converted.buffer)
             : converted.buffer;
-          return { ok: true, entry: { name: converted.filename, buffer: entryBuffer } };
+          return { ok: true, entry: { name: reconcileImageFilenameWithBuffer(converted.filename, entryBuffer), buffer: entryBuffer } };
         }
 
         if (isVideoAsset) {
@@ -19136,7 +19233,10 @@ app.post('/api/download-zip', async (req, res) => {
             throw cacheError;
           }
         }
-        return { ok: true, entry: { name: converted.filename, buffer: converted.buffer } };
+        const entryBuffer = detectImageFormatFromBuffer(converted.buffer) === 'svg'
+          ? normalizeSvgBufferForIllustrator(converted.buffer)
+          : converted.buffer;
+        return { ok: true, entry: { name: reconcileImageFilenameWithBuffer(converted.filename, entryBuffer), buffer: entryBuffer } };
       } catch (e: any) {
         console.error(`Failed to add ${rawUrl} to zip:`, e.message || e);
         if (isImageConversion) zipImageStats.skipped += 1;

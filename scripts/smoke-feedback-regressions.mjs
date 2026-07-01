@@ -5,6 +5,7 @@ import opentype from 'opentype.js';
 const BASE = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const FONT_SITE_URL = process.env.SMOKE_FONT_SITE_URL || 'https://jbpritzker.com/';
 const FONT_ZIP_SITE_URL = process.env.SMOKE_FONT_ZIP_SITE_URL || 'https://www.encelto.com/ecp/';
+const SVG_MISMATCH_SITE_URL = process.env.SMOKE_SVG_MISMATCH_SITE_URL || 'https://www.encelto.com/ecp/';
 const VIMEO_WEBSITE_URL = process.env.SMOKE_VIMEO_WEBSITE_URL || 'https://vimeo.com/features/video-library';
 const headers = { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' };
 
@@ -288,6 +289,59 @@ const checkSelectedFontZipConversion = async () => {
   ok(`selected font ZIP converts TTF/WOFF and TTF glyph map works on encelto.com (${added} entries)`);
 };
 
+const contentDispositionFilename = (headers) => {
+  const disposition = String(headers.get('content-disposition') || '');
+  return disposition.match(/filename="?([^";]+)"?/i)?.[1] || '';
+};
+
+const checkMislabeledSvgDownloads = async () => {
+  const extracted = await fetchJson(
+    '/api/extract',
+    {
+      method: 'POST',
+      body: JSON.stringify({ url: SVG_MISMATCH_SITE_URL }),
+    },
+    120000
+  );
+  const images = Array.isArray(extracted?.images) ? extracted.images : [];
+  const mislabeledRasterSvg = images.find((image) => /logo-hero-main\.svg/i.test(`${image?.url || ''} ${image?.src || ''} ${image?.filename || ''}`));
+  const realSvg = images.find((image) => /encelto-connect.*\.svg/i.test(`${image?.url || ''} ${image?.src || ''} ${image?.filename || ''}`));
+  if (!mislabeledRasterSvg?.url) fail('expected Encelto mislabeled logo-hero-main.svg image card');
+  if (!realSvg?.url) fail('expected Encelto real encelto-connect SVG image card');
+
+  const mislabeledParams = new URLSearchParams({
+    url: String(mislabeledRasterSvg.cachedUrl || mislabeledRasterSvg.url),
+    originalUrl: String(mislabeledRasterSvg.url),
+    toFormat: 'svg',
+    filenameBase: 'logo-hero-main',
+    metadataFilename: 'logo-hero-main.svg',
+  });
+  const mislabeled = await fetchBuffer(`/api/convert-image?${mislabeledParams.toString()}`, {}, 120000);
+  const mislabeledHead = mislabeled.buffer.slice(0, 500).toString('utf8').toLowerCase();
+  if (!mislabeledHead.includes('<svg') || !mislabeledHead.includes('<image') || !mislabeledHead.includes('data:image/png;base64')) {
+    fail('mislabeled Encelto .svg URL should return a valid SVG wrapper with embedded PNG bytes');
+  }
+  if (!/\.svg$/i.test(contentDispositionFilename(mislabeled.headers))) {
+    fail(`mislabeled Encelto .svg URL must download as .svg, got ${contentDispositionFilename(mislabeled.headers) || 'no filename'}`);
+  }
+
+  const realParams = new URLSearchParams({
+    url: String(realSvg.cachedUrl || realSvg.url),
+    originalUrl: String(realSvg.url),
+    toFormat: 'svg',
+    filenameBase: 'encelto-connect',
+    metadataFilename: 'encelto-connect.svg',
+  });
+  const real = await fetchBuffer(`/api/convert-image?${realParams.toString()}`, {}, 120000);
+  const realHead = real.buffer.slice(0, 300).toString('utf8').toLowerCase();
+  if (!realHead.includes('<svg')) fail('real Encelto SVG should return SVG XML');
+  if (!/\.svg$/i.test(contentDispositionFilename(real.headers))) {
+    fail(`real Encelto SVG must download as .svg, got ${contentDispositionFilename(real.headers) || 'no filename'}`);
+  }
+
+  ok('mislabeled SVG URLs download as valid Illustrator-compatible SVG files');
+};
+
 const checkWistiaJunkPlayersRemoved = async () => {
   const visibleVideos = await import('../src/lib/visibleVideos.ts');
   const staleUiVideos = [
@@ -421,6 +475,7 @@ const main = async () => {
   await checkDownloaderResetApi();
   await checkFontCardBackfill();
   await checkSelectedFontZipConversion();
+  await checkMislabeledSvgDownloads();
   await checkWistiaJunkPlayersRemoved();
   await checkBrightcoveTrackerLinksCanonicalized();
   await runCommand('node', ['scripts/smoke-video-ui.mjs'], { SMOKE_BASE_URL: BASE });
