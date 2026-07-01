@@ -363,6 +363,11 @@ const isXGuestTokenError = (message: string) =>
 const isAuthLikeError = (message: string) =>
   /login|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available/i.test(message);
 
+const isYouTubeUnavailableError = (message: string) =>
+  /(?:\[youtube\].*)?(?:this video is not available|video unavailable|private video|members-only|sign in to confirm|not available in your country|copyright|removed by the uploader)/i.test(
+    message
+  );
+
 const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) => {
   if (
     /X\.com extraction needs updated engine|Instagram could not refresh|Facebook could not access|No downloadable video stream|Video extraction failed/i.test(
@@ -379,6 +384,9 @@ const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) 
   }
   if (platform === 'facebook' && isAuthLikeError(message)) {
     return 'Facebook could not access this public video. Confirm the video is public, then retry.';
+  }
+  if (platform === 'youtube' && isYouTubeUnavailableError(message)) {
+    return 'YouTube says this video is unavailable from this connection. It may be private, removed, region-blocked, age-restricted, or temporarily blocked. Use the YT5S backup button below, or try again with a different network/VPN.';
   }
   if (/unsupported url/i.test(message)) return 'This link is not supported by the current video extractor.';
   if (/no video formats|no formats|no downloadable/i.test(message)) return 'No downloadable video stream was found for this link.';
@@ -1408,11 +1416,10 @@ const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob
       friendly_error: friendly,
       total_ms: totalTime,
     });
-    const shortError = rawError.split('\n')[0].slice(0, 200) || friendly;
     updateJob(job, {
       status: 'error',
       progress: 0,
-      error: shortError,
+      error: friendly,
       message: 'Download failed',
     });
   }

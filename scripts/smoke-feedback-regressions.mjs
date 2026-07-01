@@ -93,12 +93,13 @@ const fetchBuffer = async (route, init = {}, timeoutMs = 120000) => {
 };
 
 const checkStaticFeedbackContracts = async () => {
-  const [app, fontExtractor, imageExtractor, videoDownloader, videoDownloaderPage] = await Promise.all([
+  const [app, fontExtractor, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes] = await Promise.all([
     readText('src/App.tsx'),
     readText('src/components/FontExtractor.tsx'),
     readText('src/components/ImageExtractor.tsx'),
     readText('src/lib/videoDownloader.ts'),
     readText('src/components/VideoDownloaderPage.tsx'),
+    readText('server/video-downloader-routes.ts'),
   ]);
 
   assertIncludes('Reset button UI', app, 'Video Downloader');
@@ -137,6 +138,11 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'handledAutoStartIdRef');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, "downloadQueue(autoStartRequest.quality || 'fhd'");
   assertIncludes('Video clear downloads confirmation', videoDownloaderPage, "window.confirm('Delete all downloaded videos and extracted platform folders?')");
+  assertIncludes('YouTube backup link', videoDownloaderPage, 'https://yt5s.in/en271/');
+  assertIncludes('YouTube backup link', videoDownloaderPage, 'Open YT5S backup');
+  assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'isYouTubeUnavailableError');
+  assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'YouTube says this video is unavailable from this connection');
+  assertIncludes('Downloader job stores friendly error', videoDownloaderRoutes, 'error: friendly');
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
   assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');
