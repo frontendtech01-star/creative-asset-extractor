@@ -45,6 +45,7 @@ import {
   isJunkFontLabel,
   pickBestFontForUrl,
   resolveFontIdentityFields,
+  scoreFontRecord,
 } from './src/lib/fontAsset';
 import {
   CREATIVE_ASSET_SUBFOLDERS,
@@ -6786,9 +6787,78 @@ type ConvertFontExtras = {
   contentDisposition?: string;
   cacheOnly?: boolean;
   refererPageUrl?: string;
+  cssSource?: string;
+  fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
   prefetched?: { buffer: Buffer; contentType: string; contentDisposition?: string };
   preferInlineConversion?: boolean;
   timeoutMs?: number;
+};
+
+const GOOGLE_INSTALLABLE_FONT_CACHE = new Map<string, any | null>();
+
+const normalizeFontFamilyCompare = (value: string) =>
+  String(value || '')
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const resolveGoogleInstallableFontSource = async (extras: ConvertFontExtras = {}) => {
+  const cssSource = String(extras.cssSource || '').trim();
+  if (!/fonts\.googleapis\.com/i.test(cssSource)) return null;
+  const familyWanted = normalizeFontFamilyCompare(extras.fontFamily || extras.metadataFilename || '');
+  const weightWanted = String(extras.fontWeight || '').trim() || '400';
+  const styleWanted = String(extras.fontStyle || '').trim().toLowerCase() || 'normal';
+  const cacheKey = `${cssSource}|${familyWanted}|${weightWanted}|${styleWanted}`;
+  if (GOOGLE_INSTALLABLE_FONT_CACHE.has(cacheKey)) return GOOGLE_INSTALLABLE_FONT_CACHE.get(cacheKey);
+  try {
+    assertPublicAssetUrl(cssSource);
+    const response = await axios.get(cssSource, {
+      timeout: 10000,
+      httpsAgent: relaxedHttpsAgent,
+      ...axiosProxyOptions(),
+      validateStatus: (status) => status === 200,
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        Accept: 'text/css,*/*;q=0.1',
+      },
+    });
+    const css = String(response.data || '');
+    const directFonts: any[] = [];
+    for (const match of css.matchAll(/@font-face\s*\{([^}]+)\}/gi)) {
+      const block = match[1] || '';
+      const family = normalizeFontFamilyCompare(block.match(/font-family\s*:\s*['"]?([^'";]+)['"]?/i)?.[1] || '');
+      const weight = String(block.match(/font-weight\s*:\s*([^;]+)/i)?.[1] || '400').trim();
+      const style = String(block.match(/font-style\s*:\s*([^;]+)/i)?.[1] || 'normal').trim().toLowerCase();
+      const src = block.match(/url\(\s*['"]?([^'")]+?\.(?:ttf|woff2?|otf)(?:[?#][^'")]+)?)['"]?\s*\)/i)?.[1] || '';
+      const format = getFontFormatFromUrlOrType(src, block);
+      if (!src || !/^https?:\/\//i.test(src)) continue;
+      directFonts.push({ family, weight, style, url: src, format, cssSource });
+    }
+    const scored = directFonts
+      .filter((font) => {
+        if (familyWanted && font.family && font.family !== familyWanted) return false;
+        if (weightWanted && font.weight && font.weight !== weightWanted) return false;
+        if (styleWanted && font.style && font.style !== styleWanted) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const aUrl = String(a?.url || '');
+        const bUrl = String(b?.url || '');
+        const aScore = (/\.ttf(?:[?#]|$)/i.test(aUrl) ? 100 : 0) + scoreFontRecord(a);
+        const bScore = (/\.ttf(?:[?#]|$)/i.test(bUrl) ? 100 : 0) + scoreFontRecord(b);
+        return bScore - aScore;
+      });
+    const best = scored[0] || null;
+    GOOGLE_INSTALLABLE_FONT_CACHE.set(cacheKey, best);
+    return best;
+  } catch {
+    GOOGLE_INSTALLABLE_FONT_CACHE.set(cacheKey, null);
+    return null;
+  }
 };
 
 const convertFontAsset = async (
@@ -6852,6 +6922,10 @@ const getCachedConvertedFont = async (
     metadataFilename: extras.metadataFilename,
   };
   let cached = await readCachedFileIfExists(cachePath);
+  if (cached && /fonts\.googleapis\.com/i.test(String(extras.cssSource || '')) && ['ttf', 'woff'].includes(normalizedTarget)) {
+    await fsp.unlink(cachePath).catch(() => undefined);
+    cached = null;
+  }
   if (cached && !isValidFontBuffer(cached, normalizedTarget)) {
     await fsp.unlink(cachePath).catch(() => undefined);
     cached = null;
@@ -6874,7 +6948,26 @@ const getCachedConvertedFont = async (
     fetched = extras.prefetched;
   } else {
     try {
+      const googleInstallable = await resolveGoogleInstallableFontSource(extras);
+      const effectiveUrl =
+        googleInstallable?.url && ['ttf', 'otf', 'woff', 'woff2'].includes(String(googleInstallable.format || '').toLowerCase())
+          ? String(googleInstallable.url)
+          : url;
+      const effectiveOriginal =
+        googleInstallable?.url && googleInstallable.url !== url
+          ? String(googleInstallable.url)
+          : extras.originalUrl || '';
+      const effectiveFormat =
+        googleInstallable?.format ? String(googleInstallable.format) : originalFormat;
       fetched = await fetchAssetBuffer(url, extras.originalUrl || '', { cacheOnly, refererPageUrl: refererPage });
+      if (effectiveUrl !== url && !cacheOnly) {
+        fetched = await fetchAssetBuffer(effectiveUrl, effectiveOriginal, {
+          cacheOnly: false,
+          refererPageUrl: extras.cssSource || refererPage,
+        });
+        originalFormat = effectiveFormat;
+        url = effectiveUrl;
+      }
     } catch (primaryFetchError: any) {
       const siblingUrl = url.replace(/\.(ttf|woff2?|eot|otf|svg)(\?|$)/i, `.${normalizedTarget}$2`);
       if (siblingUrl !== url) {
@@ -16631,7 +16724,7 @@ app.post('/api/save-asset-buffer', async (req, res) => {
 
 // API Endpoint to convert font formats
 app.get('/api/convert-font', async (req, res) => {
-  const { url, toFormat, originalFormat, filenameBase, familyFolder, originalUrl, metadataFilename, save } = req.query;
+  const { url, toFormat, originalFormat, filenameBase, familyFolder, originalUrl, metadataFilename, save, cssSource, fontFamily, fontWeight, fontStyle } = req.query;
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL is required' });
   }
@@ -16646,6 +16739,12 @@ app.get('/api/convert-font', async (req, res) => {
     originalUrl: typeof originalUrl === 'string' ? originalUrl : undefined,
     metadataFilename: typeof metadataFilename === 'string' ? metadataFilename : undefined,
     refererPageUrl: readSourcePageUrl(req) || undefined,
+    cssSource: typeof cssSource === 'string' ? cssSource : undefined,
+    fontFamily: typeof fontFamily === 'string' ? fontFamily : fontFamilyFolder || undefined,
+    fontWeight: typeof fontWeight === 'string' ? fontWeight : undefined,
+    fontStyle: typeof fontStyle === 'string' ? fontStyle : undefined,
+    preferInlineConversion: true,
+    timeoutMs: 65000,
   };
   const wantsSave = String(save || '').toLowerCase() === '1' || String(save || '').toLowerCase() === 'true';
 
@@ -18786,6 +18885,15 @@ app.post('/api/download-zip', async (req, res) => {
                 typeof item.cssSource === 'string' ? item.cssSource : '',
                 zipPageUrl || ''
               ) || undefined,
+            cssSource: typeof item.cssSource === 'string' ? item.cssSource : undefined,
+            fontFamily:
+              typeof item.fontFamily === 'string'
+                ? item.fontFamily
+                : typeof item.familyFolder === 'string'
+                  ? item.familyFolder
+                  : undefined,
+            fontWeight: typeof item.fontWeight === 'string' ? item.fontWeight : undefined,
+            fontStyle: typeof item.fontStyle === 'string' ? item.fontStyle : undefined,
             preferInlineConversion: true,
             timeoutMs: 65000,
           };

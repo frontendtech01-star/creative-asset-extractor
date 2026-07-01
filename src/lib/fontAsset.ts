@@ -142,6 +142,7 @@ export const scoreFontRecord = (font: {
   else if (format === 'ttf' || format === 'otf') score += 10;
   const assetUrl = String(font?.url || font?.cachedUrl || '');
   score += scoreFontSubsetUrl(assetUrl);
+  if (/fonts\.gstatic\.com/i.test(assetUrl) && /\.ttf(?:[?#]|$)/i.test(assetUrl)) score += 85;
   if (/-ttf\.ttf(\?|$)/i.test(assetUrl)) score += 18;
   else if (/-woff\.woff(\?|$)/i.test(assetUrl)) score += 12;
   if (/\/fonts\//i.test(assetUrl) && (format === 'ttf' || format === 'woff')) score += 10;
@@ -479,6 +480,9 @@ export const buildFontZipItem = (font: any, toFormat: FontZipOutputFormat, filen
     cachedPath: cachedPath || undefined,
     originalUrl: String(font?.url || '').trim(),
     cssSource: String(font?.cssSource || '').trim() || undefined,
+    fontFamily: String(font?.family || font?.title || font?.name || '').trim() || undefined,
+    fontWeight: String(font?.weight || '').trim() || undefined,
+    fontStyle: String(font?.style || '').trim() || undefined,
     status: String(font?.status || '').trim() || undefined,
     toFormat,
     originalFormat: resolveFontSourceFormat(font),

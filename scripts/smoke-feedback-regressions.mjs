@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import opentype from 'opentype.js';
 
 const BASE = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const FONT_SITE_URL = process.env.SMOKE_FONT_SITE_URL || 'https://jbpritzker.com/';
+const FONT_ZIP_SITE_URL = process.env.SMOKE_FONT_ZIP_SITE_URL || 'https://www.encelto.com/ecp/';
 const VIMEO_WEBSITE_URL = process.env.SMOKE_VIMEO_WEBSITE_URL || 'https://vimeo.com/features/video-library';
 const headers = { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' };
 
@@ -35,6 +37,20 @@ const assertIncludes = (label, haystack, needle) => {
   if (!haystack.includes(needle)) fail(`${label} is missing ${needle}`);
 };
 
+const sanitizeZipNamePart = (value) =>
+  String(value || 'font')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'font';
+
+const resolveFontSourceFormat = (font) => {
+  const direct = String(font?.format || '').toLowerCase();
+  if (['woff2', 'woff', 'ttf', 'otf'].includes(direct)) return direct;
+  const match = String(font?.url || font?.cachedUrl || '').match(/\.(woff2?|ttf|otf)(?:[?#]|$)/i);
+  return String(match?.[1] || 'woff2').toLowerCase();
+};
+
 const fetchJson = async (route, init = {}, timeoutMs = 90000) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -53,6 +69,23 @@ const fetchJson = async (route, init = {}, timeoutMs = 90000) => {
     }
     if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
     return json;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const fetchBuffer = async (route, init = {}, timeoutMs = 120000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${BASE}${route}`, {
+      ...init,
+      headers: { ...headers, ...(init.headers || {}) },
+      signal: controller.signal,
+    });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) throw new Error(buffer.toString('utf8').slice(0, 300) || `HTTP ${response.status}`);
+    return { buffer, headers: response.headers };
   } finally {
     clearTimeout(timer);
   }
@@ -77,6 +110,7 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Download-ready popup', app, 'downloadReadyNotice');
   assertIncludes('Download-ready popup', app, 'Open Downloads');
   assertIncludes('Download-ready popup dismissal', app, 'setDownloadReadyNotice(null)');
+  assertIncludes('Website clear downloads confirmation', app, "window.confirm('Delete downloaded files and the extracted website folder?')");
   assertIncludes('Image download popup callback', imageExtractor, 'onDownloadReady');
   assertIncludes('Font download popup callback', fontExtractor, 'onDownloadReady');
   assertIncludes('Font converter controls', fontExtractor, 'Font converter');
@@ -88,6 +122,11 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Font dropdown format output', fontExtractor, 'getInstallableFontFormat(font, selectedFormats)');
   assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'getZipDownloadFormats');
   assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'saved as TTF and WOFF');
+  assertIncludes('Font source verifier label', fontExtractor, 'Google Fonts');
+  assertIncludes('Font source verifier label', fontExtractor, 'Adobe Typekit');
+  assertIncludes('Font source verifier label', fontExtractor, 'Client font');
+  assertIncludes('Font original URL copy', fontExtractor, 'Original font URL');
+  assertIncludes('Font original URL copy', fontExtractor, 'copyOriginalFontUrl');
   assertIncludes('Native video duplicate download guard', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Downloader reset API client', videoDownloader, "method: 'DELETE'");
   assertIncludes('Website-to-video handoff', app, 'isDirectVideoPlatformUrl(directVideoTarget)');
@@ -96,6 +135,7 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'handledAutoStartIdRef');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, "downloadQueue(autoStartRequest.quality || 'fhd'");
+  assertIncludes('Video clear downloads confirmation', videoDownloaderPage, "window.confirm('Delete all downloaded videos and extracted platform folders?')");
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
   assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');
@@ -155,6 +195,97 @@ const checkFontCardBackfill = async () => {
     fail(`expected 8 ATC Arquette WOFF2 font cards, got ${atcFonts.length} ATC / ${woff2Count} WOFF2`);
   }
   ok(`ATC Arquette font cards found (${atcFonts.length})`);
+};
+
+const checkSelectedFontZipConversion = async () => {
+  const extracted = await fetchJson(
+    '/api/extract',
+    {
+      method: 'POST',
+      body: JSON.stringify({ url: FONT_ZIP_SITE_URL }),
+    },
+    120000
+  );
+  const fonts = (Array.isArray(extracted?.fonts) ? extracted.fonts : [])
+    .filter((font) => font?.url && !String(font.url).startsWith('data:'))
+    .slice(0, 3);
+  if (fonts.length === 0) fail(`expected fonts from ${FONT_ZIP_SITE_URL}`);
+
+  const items = fonts.flatMap((font, index) => {
+    const family = sanitizeZipNamePart(font.family || font.title || font.name || `font-${index + 1}`);
+    const filenameBase = sanitizeZipNamePart(`${family}-${font.weight || 400}-${font.style || 'normal'}`);
+    const cached = String(font.cachedUrl || '').trim();
+    const assetUrl = cached.startsWith('/') ? `${BASE}${cached}` : cached || font.url;
+    const sourceFormat = resolveFontSourceFormat(font);
+    return ['ttf', 'woff'].map((format) => ({
+      url: assetUrl,
+      cachedPath: cached || undefined,
+      originalUrl: String(font.url || ''),
+      cssSource: String(font.cssSource || ''),
+      toFormat: format,
+      originalFormat: sourceFormat,
+      filenameBase,
+      familyFolder: family,
+      zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.${format}`,
+      metadataFilename: family,
+      assetType: 'font',
+    }));
+  });
+
+  const { buffer, headers: zipHeaders } = await fetchBuffer(
+    '/api/download-zip',
+    {
+      method: 'POST',
+      body: JSON.stringify({ items, sourcePageUrl: FONT_ZIP_SITE_URL }),
+    },
+    180000
+  );
+  const added = Number(zipHeaders.get('x-zip-added-count') || 0);
+  const failed = Number(zipHeaders.get('x-zip-failed-count') || 0);
+  const zipText = buffer.toString('latin1');
+  if (failed !== 0) fail(`selected font ZIP conversion reported ${failed} failure(s)`);
+  if (added < items.length) fail(`selected font ZIP conversion added ${added}/${items.length} entries`);
+  if (/conversion-failed|font-conversion-report/i.test(zipText)) {
+    fail('selected font ZIP conversion included a conversion failure report');
+  }
+  const zipEntryNames = Array.from(
+    zipText.matchAll(/fonts\/[A-Za-z0-9._\-\/ ]+\.(?:ttf|woff2?|otf)/gi),
+    (match) => match[0]
+  );
+  if (!zipEntryNames.some((name) => /\.ttf$/i.test(name)) || !zipEntryNames.some((name) => /\.woff$/i.test(name))) {
+    fail('selected font ZIP conversion must include both TTF and WOFF files');
+  }
+
+  const glyphFont = fonts.find((font) => /Atkinson/i.test(String(font?.family || '')) && String(font?.weight || '') === '700') || fonts[0];
+  const cached = String(glyphFont.cachedUrl || '').trim();
+  const glyphUrl = cached.startsWith('/') ? `${BASE}${cached}` : cached || glyphFont.url;
+  const params = new URLSearchParams({
+    url: glyphUrl,
+    originalUrl: String(glyphFont.url || ''),
+    toFormat: 'ttf',
+    originalFormat: resolveFontSourceFormat(glyphFont),
+    filenameBase: sanitizeZipNamePart(`${glyphFont.family || 'font'} glyph smoke`),
+    familyFolder: sanitizeZipNamePart(glyphFont.family || 'font'),
+    metadataFilename: sanitizeZipNamePart(glyphFont.family || 'font'),
+    cssSource: String(glyphFont.cssSource || ''),
+    fontFamily: String(glyphFont.family || ''),
+    fontWeight: String(glyphFont.weight || ''),
+    fontStyle: String(glyphFont.style || ''),
+  });
+  const glyphResult = await fetchBuffer(`/api/convert-font?${params.toString()}`, {}, 120000);
+  const parsedFont = opentype.parse(
+    glyphResult.buffer.buffer.slice(
+      glyphResult.buffer.byteOffset,
+      glyphResult.buffer.byteOffset + glyphResult.buffer.byteLength
+    )
+  );
+  for (const char of 'ABCabcRome') {
+    if (parsedFont.charToGlyph(char).index === 0) {
+      fail(`converted TTF maps ${char} to .notdef; installed font would show boxes`);
+    }
+  }
+
+  ok(`selected font ZIP converts TTF/WOFF and TTF glyph map works on encelto.com (${added} entries)`);
 };
 
 const checkWistiaJunkPlayersRemoved = async () => {
@@ -289,6 +420,7 @@ const main = async () => {
   await checkVimeoWebsiteClassifier();
   await checkDownloaderResetApi();
   await checkFontCardBackfill();
+  await checkSelectedFontZipConversion();
   await checkWistiaJunkPlayersRemoved();
   await checkBrightcoveTrackerLinksCanonicalized();
   await runCommand('node', ['scripts/smoke-video-ui.mjs'], { SMOKE_BASE_URL: BASE });

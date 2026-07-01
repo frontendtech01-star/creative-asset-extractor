@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Download, Search, Type } from 'lucide-react';
+import { Check, Copy, Download, Search, Type } from 'lucide-react';
 import { apiFetch, apiUrl } from '../lib/api';
 import {
   buildFontDisplayName,
@@ -77,6 +77,29 @@ const getInstallableFontFormat = (font: any, selectedFormats: Record<string, Fon
   return explicit;
 };
 
+const getFontSourceVerifier = (font: any) => {
+  const source = `${font?.url || ''} ${font?.cssSource || ''}`.toLowerCase();
+  if (/fonts\.googleapis\.com|fonts\.gstatic\.com/.test(source)) {
+    return {
+      label: 'Google Fonts',
+      className: 'border-blue-100 bg-blue-50 text-blue-700',
+      hint: 'Google font source detected',
+    };
+  }
+  if (/typekit\.net|fonts\.adobe\.com|use\.typekit\.net/.test(source)) {
+    return {
+      label: 'Adobe Typekit',
+      className: 'border-purple-100 bg-purple-50 text-purple-700',
+      hint: 'Adobe/Typekit font source detected',
+    };
+  }
+  return {
+    label: 'Client font',
+    className: 'border-zinc-200 bg-zinc-50 text-zinc-700',
+    hint: 'Client-hosted font source detected',
+  };
+};
+
 function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; sourcePageUrl?: string }) {
   const sourceUrl = String(font?.url || '').trim();
   const fallbackUrl = resolveFontAssetUrl(font);
@@ -149,6 +172,7 @@ export default function FontExtractor({
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedFormats, setSelectedFormats] = useState<Record<string, FontDownloadFormat>>({});
+  const [copiedFontUrl, setCopiedFontUrl] = useState('');
 
   useEffect(() => {
     setSelected(new Set());
@@ -173,6 +197,10 @@ export default function FontExtractor({
         originalFormat,
         filenameBase: getFontFilenameBase(font),
         familyFolder: getFontFamilyFolderName(font),
+        cssSource: String(font?.cssSource || ''),
+        fontFamily: String(font?.family || font?.title || font?.name || ''),
+        fontWeight: String(font?.weight || ''),
+        fontStyle: String(font?.style || ''),
         metadataFilename: String(font?.filename || font?.name || font?.family || '').trim(),
         save: '1',
       });
@@ -292,6 +320,16 @@ export default function FontExtractor({
     window.open(`https://www.google.com/search?q=${query}`, '_blank');
   };
 
+  const copyOriginalFontUrl = async (font: any) => {
+    const originalUrl = String(font?.url || resolveFontAssetUrl(font) || '').trim();
+    if (!originalUrl) return;
+    await navigator.clipboard?.writeText(originalUrl).catch(() => undefined);
+    setCopiedFontUrl(originalUrl);
+    window.setTimeout(() => {
+      setCopiedFontUrl((current) => (current === originalUrl ? '' : current));
+    }, 1400);
+  };
+
   if (fonts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-zinc-500">
@@ -381,6 +419,7 @@ export default function FontExtractor({
           const availableFormats = getAvailableFontDownloadFormats(font);
           const selectedFormat = getInstallableFontFormat(font, selectedFormats);
           const selectedTargetFormat = resolveFontTargetFormat(font, selectedFormat);
+          const sourceVerifier = getFontSourceVerifier(font);
           return (
             <div
               key={`${selectionKey}-${idx}`}
@@ -414,6 +453,12 @@ export default function FontExtractor({
                   <p className="mt-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
                     {format} · {weight} · {style}
                   </p>
+                  <span
+                    className={`mt-2 inline-flex rounded-full border px-2 py-1 text-[11px] font-semibold ${sourceVerifier.className}`}
+                    title={sourceVerifier.hint}
+                  >
+                    {sourceVerifier.label}
+                  </span>
                 </div>
               </div>
 
@@ -460,6 +505,41 @@ export default function FontExtractor({
                       </>
                     )}
                   </button>
+                </div>
+                <div
+                  onClick={(event) => event.stopPropagation()}
+                  className="rounded-xl border border-zinc-200 bg-white p-3"
+                >
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Original font URL
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={String(font?.url || resolveFontAssetUrl(font) || '#')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-w-0 flex-1 truncate rounded-lg bg-zinc-50 px-3 py-2 text-xs font-medium text-blue-700 hover:text-blue-800 hover:underline"
+                      title={String(font?.url || resolveFontAssetUrl(font) || '')}
+                    >
+                      {String(font?.url || resolveFontAssetUrl(font) || 'No source URL')}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => void copyOriginalFontUrl(font)}
+                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
+                      title="Copy original font URL"
+                      aria-label="Copy original font URL"
+                    >
+                      {copiedFontUrl === String(font?.url || '').trim() ? (
+                        <Check className="h-4 w-4 text-emerald-600" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-4 text-zinc-500">
+                    If local conversion does not install correctly, copy this URL and convert it with Transfonter.
+                  </p>
                 </div>
                 <button
                   onClick={(event) => {
