@@ -363,6 +363,7 @@ var commonYtDlpArgs = (options, platform) => {
     "--no-warnings",
     "--no-check-certificates",
     "--no-playlist",
+    "--geo-bypass",
     "--force-ipv4",
     "--socket-timeout",
     "25",
@@ -389,13 +390,21 @@ var cookieAttempts = (platform) => {
   const attempts = [];
   const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || "").trim();
   if (cookiesFile && fs.existsSync(cookiesFile)) attempts.push(["--cookies", cookiesFile]);
-  if (platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
+  if (platform === "youtube" || platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
     attempts.push(["--cookies-from-browser", "chrome"]);
     if (process.platform === "darwin") attempts.push(["--cookies-from-browser", "safari"]);
     attempts.push(["--cookies-from-browser", "firefox"]);
   }
   return attempts;
 };
+var youtubeClientRetryAttempts = () => [
+  ["--extractor-args", "youtube:player_client=android,web_safari,web_embedded,ios,tv_embedded"],
+  ["--extractor-args", "youtube:player_client=android"],
+  ["--extractor-args", "youtube:player_client=web_safari"],
+  ["--extractor-args", "youtube:player_client=web_embedded"],
+  ["--extractor-args", "youtube:player_client=ios"],
+  ["--extractor-args", "youtube:player_client=tv_embedded"]
+];
 var errorText = (error) => [error?.message, error?.stderr, error?.stdout].filter(Boolean).join("\n").trim();
 var parseYtDlpProgressLine = (line) => {
   if (line.startsWith("__VDX_PROGRESS__|")) {
@@ -1000,6 +1009,26 @@ var runDownloadWithFallbacks = async (options, job) => {
         } catch (error) {
           lastError = error;
           void writeLog(job.id, { event: "fallback_cookies", error: errorText(error) });
+        }
+      }
+    }
+  }
+  if (job.platform === "youtube" && isYouTubeUnavailableError(errorText(lastError))) {
+    updateJob(job, { message: "Refreshing YouTube engine..." });
+    await updateYtDlp(options);
+    for (const clientArgs of youtubeClientRetryAttempts()) {
+      for (const url of urls) {
+        throwIfJobCancelled(job);
+        try {
+          updateJob(job, { message: "Retrying with alternate YouTube client..." });
+          return await runDownloadAttempt(options, job, url, ["--no-aria2", ...clientArgs]);
+        } catch (error) {
+          lastError = error;
+          void writeLog(job.id, {
+            event: "fallback_youtube_client",
+            client_args: clientArgs.join(" "),
+            error: errorText(error)
+          });
         }
       }
     }

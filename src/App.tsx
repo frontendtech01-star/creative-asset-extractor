@@ -761,9 +761,6 @@ export default function App() {
         setLatestRelease(release);
         const shouldNotify = shouldPromptForRelease(release, meta.version, dismissed, getSeenReleaseNotification());
         setReleaseUpdateAvailable(shouldNotify);
-        if (!shouldNotify) return;
-        setReleaseViewMode('update');
-        setReleaseOpen(true);
       } catch {
         // Release checks are best-effort on launch.
       }

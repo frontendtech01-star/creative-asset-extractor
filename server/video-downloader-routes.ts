@@ -274,6 +274,7 @@ const commonYtDlpArgs = (options: VideoDownloaderRouteOptions, platform: Downloa
     '--no-warnings',
     '--no-check-certificates',
     '--no-playlist',
+    '--geo-bypass',
     '--force-ipv4',
     '--socket-timeout',
     '25',
@@ -322,13 +323,22 @@ const cookieAttempts = (platform: DownloaderPlatform) => {
   const attempts: string[][] = [];
   const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || '').trim();
   if (cookiesFile && fs.existsSync(cookiesFile)) attempts.push(['--cookies', cookiesFile]);
-  if (platform === 'instagram' || platform === 'facebook' || platform === 'x' || platform === 'tiktok') {
+  if (platform === 'youtube' || platform === 'instagram' || platform === 'facebook' || platform === 'x' || platform === 'tiktok') {
     attempts.push(['--cookies-from-browser', 'chrome']);
     if (process.platform === 'darwin') attempts.push(['--cookies-from-browser', 'safari']);
     attempts.push(['--cookies-from-browser', 'firefox']);
   }
   return attempts;
 };
+
+const youtubeClientRetryAttempts = () => [
+  ['--extractor-args', 'youtube:player_client=android,web_safari,web_embedded,ios,tv_embedded'],
+  ['--extractor-args', 'youtube:player_client=android'],
+  ['--extractor-args', 'youtube:player_client=web_safari'],
+  ['--extractor-args', 'youtube:player_client=web_embedded'],
+  ['--extractor-args', 'youtube:player_client=ios'],
+  ['--extractor-args', 'youtube:player_client=tv_embedded'],
+];
 
 const errorText = (error: any) =>
   [error?.message, error?.stderr, error?.stdout].filter(Boolean).join('\n').trim();
@@ -1046,6 +1056,31 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
         } catch (error) {
           lastError = error;
           void writeLog(job.id, { event: 'fallback_cookies', error: errorText(error) });
+        }
+      }
+    }
+  }
+
+  // C2. YouTube sometimes reports a public video as unavailable depending on
+  // the packaged yt-dlp build, network, geo, or selected YouTube client. Before
+  // showing the external backup option, refresh yt-dlp and retry with alternate
+  // YouTube clients that commonly bypass false "not available" responses.
+  if (job.platform === 'youtube' && isYouTubeUnavailableError(errorText(lastError))) {
+    updateJob(job, { message: 'Refreshing YouTube engine...' });
+    await updateYtDlp(options);
+    for (const clientArgs of youtubeClientRetryAttempts()) {
+      for (const url of urls) {
+        throwIfJobCancelled(job);
+        try {
+          updateJob(job, { message: 'Retrying with alternate YouTube client...' });
+          return await runDownloadAttempt(options, job, url, ['--no-aria2', ...clientArgs]);
+        } catch (error) {
+          lastError = error;
+          void writeLog(job.id, {
+            event: 'fallback_youtube_client',
+            client_args: clientArgs.join(' '),
+            error: errorText(error),
+          });
         }
       }
     }

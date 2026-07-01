@@ -143,11 +143,22 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'isYouTubeUnavailableError');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'YouTube says this video is unavailable from this connection');
   assertIncludes('Downloader job stores friendly error', videoDownloaderRoutes, 'error: friendly');
+  assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'youtubeClientRetryAttempts');
+  assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'fallback_youtube_client');
+  assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'Refreshing YouTube engine');
+  assertIncludes('YouTube geo bypass', videoDownloaderRoutes, '--geo-bypass');
+  assertIncludes('YouTube cookies recovery', videoDownloaderRoutes, "platform === 'youtube'");
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
   assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');
   assertIncludes('Bulk video download popup', videoExtractor, 'onDownloadReady?.({');
   assertIncludes('Bulk video download popup wiring', app, 'onDownloadReady={showDownloadReadyNotice}');
+  assertIncludes('Release button highlight', app, 'releaseUpdateAvailable');
+  assertIncludes('Release button highlight', app, 'release-blink-once');
+  assertIncludes('Release notes manual open', app, 'const openReleaseNotes = async () =>');
+  if (/setReleaseViewMode\('update'\)[\s\S]{0,120}setReleaseOpen\(true\)/.test(app)) {
+    fail('Release update check must not auto-open the release popup on launch');
+  }
 
   const navStart = app.indexOf("onClick={() => setMainNav('video-downloader')}");
   const resetStart = app.indexOf('onClick={() => void handleResetApp()}', navStart);
