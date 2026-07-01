@@ -60,6 +60,121 @@ const isVimeoWebsitePagePath = (path: string) => {
   return VIMEO_WEBSITE_PAGE_PREFIXES.has(firstSegment.toLowerCase());
 };
 
+type BrightcoveIds = {
+  accountId: string;
+  playerId: string;
+  videoId: string;
+};
+
+const normalizeBrightcovePlayerId = (playerId?: string | null) => {
+  const clean = String(playerId || '').trim().replace(/^\/+|\/+$/g, '');
+  if (!clean || clean === 'default') return 'default_default';
+  return clean;
+};
+
+const buildBrightcoveCanonicalUrl = ({ accountId, playerId, videoId }: BrightcoveIds) =>
+  `https://players.brightcove.net/${accountId}/${normalizeBrightcovePlayerId(playerId)}/index.html?videoId=${videoId}`;
+
+const parseBrightcoveIdsFromUrl = (rawUrl: string): BrightcoveIds | null => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname;
+
+    if (host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net')) {
+      const match = path.match(/^\/(\d+)\/([^/?#]+)\/index(?:\.min)?\.(?:html|js)$/i);
+      const videoId = parsed.searchParams.get('videoId') || parsed.searchParams.get('video_id');
+      if (match?.[1] && match?.[2] && videoId) {
+        return { accountId: match[1], playerId: match[2], videoId };
+      }
+    }
+
+    const playbackMatch = path.match(/\/accounts\/(\d+)\/videos\/(\d+)/i);
+    if (playbackMatch?.[1] && playbackMatch?.[2]) {
+      return { accountId: playbackMatch[1], playerId: 'default_default', videoId: playbackMatch[2] };
+    }
+
+    const queryAccount = parsed.searchParams.get('account') || parsed.searchParams.get('accountId') || parsed.searchParams.get('account_id');
+    const queryVideo = parsed.searchParams.get('video') || parsed.searchParams.get('videoId') || parsed.searchParams.get('video_id');
+    if (queryAccount && queryVideo) {
+      const playerParam = parsed.searchParams.get('player') || parsed.searchParams.get('playerUrl') || parsed.searchParams.get('player_url') || '';
+      const playerMatch = playerParam.match(/players\.brightcove\.(?:net|com)\/\d+\/([^/?&#]+)/i);
+      return {
+        accountId: queryAccount,
+        playerId: playerMatch?.[1] || 'default_default',
+        videoId: queryVideo,
+      };
+    }
+  } catch {
+    const match = value.match(/players\.brightcove\.net\/(\d+)\/([^/?#]+)\/index\.html\?[^#]*videoId=(\d+)/i);
+    if (match?.[1] && match?.[2] && match?.[3]) {
+      return { accountId: match[1], playerId: match[2], videoId: match[3] };
+    }
+  }
+  return null;
+};
+
+export const canonicalBrightcovePlayerUrl = (rawUrl: string) => {
+  const ids = parseBrightcoveIdsFromUrl(rawUrl);
+  return ids ? buildBrightcoveCanonicalUrl(ids) : '';
+};
+
+export const canonicalBrightcovePlayerUrlFromItem = (item: any, seedUrl = '') => {
+  const candidates = [
+    item?.embedUrl,
+    item?.url,
+    item?.sourceStreamUrl,
+    item?.downloadUrl,
+    item?.originalUrl,
+    item?.sourceUrl,
+    item?.pageUrl,
+    seedUrl,
+  ]
+    .map((candidate) => String(candidate || '').trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    const canonical = canonicalBrightcovePlayerUrl(candidate);
+    if (canonical) return canonical;
+  }
+  return '';
+};
+
+export const isBrightcoveNoiseUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (host === 'metrics.brightcove.com' || host.endsWith('.metrics.brightcove.com')) return true;
+    if (/\/(?:v\d+\/)?tracker(?:\/|$)/i.test(path)) return true;
+    if (/\.(?:m3u8|mpd)(?:[?#]|$)/i.test(path) && (
+      host.includes('brightcove') ||
+      host.includes('bcovlive') ||
+      host.includes('boltdns') ||
+      host.includes('videocloud') ||
+      host.includes('brightcovecdn')
+    )) return true;
+    return false;
+  } catch {
+    return /metrics\.brightcove\.com|\/tracker[/?#]|(?:brightcove|bcovlive|boltdns|videocloud|brightcovecdn)[^"'\s]*\.(?:m3u8|mpd)(?:[?#]|\s|$)/i.test(value);
+  }
+};
+
+export const isTransportStreamSegmentUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname.toLowerCase();
+    return /(?:^|\/)(?:segment|seg|fragment|chunk)[^/]*\.ts$/i.test(path) || /\.ts$/i.test(path);
+  } catch {
+    return /(?:^|\/)(?:segment|seg|fragment|chunk)[^"'\s/]*\.ts(?:[?#]|\s|$)|\.ts(?:[?#]|\s|$)/i.test(value);
+  }
+};
+
 export const isDirectVideoPlatformUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim();
   if (!value) return false;
@@ -96,6 +211,9 @@ export const isDirectVideoPlatformUrl = (rawUrl: string) => {
     if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return /\/video\//.test(path);
     if (host === 'players.brightcove.net' || host.endsWith('.players.brightcove.net')) {
       return /\/index\.html$/i.test(path) && Boolean(parsed.searchParams.get('videoId'));
+    }
+    if (host === 'metrics.brightcove.com' || host.endsWith('.metrics.brightcove.com')) {
+      return Boolean(canonicalBrightcovePlayerUrl(value));
     }
     return false;
   } catch {
@@ -176,7 +294,8 @@ export const isPlatformHostedUrl = (rawUrl: string) => {
       host.includes('instagram.com') ||
       host.includes('tiktok.com') ||
       host.includes('dailymotion.com') ||
-      host.includes('brightcove.net')
+      host.includes('brightcove.net') ||
+      host.includes('brightcove.com')
     );
   } catch {
     return false;
@@ -255,6 +374,17 @@ export const toCanonicalVideoKey = (item: any, seedUrl = '') => {
     item?.sourceUrl || item?.pageUrl || seedUrl
   );
   if (!rawUrl) return '';
+  const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem(item, seedUrl);
+  if (brightcoveCanonical) {
+    try {
+      const parsedBrightcove = new URL(brightcoveCanonical);
+      const accountId = parsedBrightcove.pathname.split('/').filter(Boolean)[0] || '';
+      const videoId = parsedBrightcove.searchParams.get('videoId') || '';
+      return `brightcove:${accountId}:${videoId}`;
+    } catch {
+      return brightcoveCanonical;
+    }
+  }
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
@@ -344,6 +474,9 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
   if (contextCandidates.some(isWistiaHelperResourceUrl)) return false;
   if (isBareWistiaDeliveryResource(item)) return false;
   if (isBareWistiaManifestResource(item)) return false;
+  if (contextCandidates.some(isTransportStreamSegmentUrl)) return false;
+  const hasBrightcoveCanonical = Boolean(canonicalBrightcovePlayerUrlFromItem(item, seedUrl));
+  const isBrightcoveNoise = contextCandidates.some(isBrightcoveNoiseUrl);
   const isVimeoContext = contextCandidates.some((candidate) => {
     try {
       const host = new URL(candidate).hostname.replace(/^www\./, '').toLowerCase();
@@ -357,6 +490,9 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
   const primaryUrl = String(item?.url || item?.embedUrl || '').trim();
   const hasRealPreview = /^https?:\/\//i.test(String(item?.thumbnail || item?.poster || '').trim());
   const titleLooksEncoded = /^[A-Za-z0-9+/_=-]{24,}\.*$/.test(rawTitle) && !/\s/.test(rawTitle);
+  if (isBrightcoveNoise && !hasBrightcoveCanonical) return false;
+  if (/^tracker(?:\s*\d+)?$/i.test(title) && !hasBrightcoveCanonical) return false;
+  if (hasBrightcoveCanonical) return true;
   if (
     isVimeoContext &&
     (
@@ -499,11 +635,13 @@ export const qualityTierOptions = [
 
 export const isTechnicalStream = (item: any) => {
   const value = `${item?.url || ''} ${item?.type || ''} ${item?.formatNote || ''} ${item?.format || ''}`.toLowerCase();
+  if (isTransportStreamSegmentUrl(String(item?.url || ''))) return true;
+  if (isBrightcoveNoiseUrl(String(item?.url || '')) && !canonicalBrightcovePlayerUrlFromItem(item)) return true;
   if (isWistiaHelperResourceUrl(String(item?.url || ''))) return true;
   if (isBareWistiaDeliveryResource(item)) return true;
   if (isBareWistiaManifestResource(item)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(value)) return true;
-  return /storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd|\.m3u8|\.mpd/.test(value);
+  return /storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd|\.m3u8|\.mpd|\.ts(?:\s|$|\?)/.test(value);
 };
 
 export const streamRank = (item: any) => {
@@ -550,6 +688,15 @@ export const sourceIdentityForStream = (item: any, seedUrl = '') => {
   const baseUrl = item?.sourceUrl || item?.pageUrl || seedUrl;
   const candidateRaw = String(item?.url || '');
   const underlyingUrl = unwrapProxyMediaUrl(candidateRaw, baseUrl) || candidateRaw;
+  const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem(item, seedUrl);
+  if (brightcoveCanonical) {
+    try {
+      const parsed = new URL(brightcoveCanonical);
+      return `brightcove:${parsed.pathname.split('/').filter(Boolean)[0] || ''}:${parsed.searchParams.get('videoId') || ''}`;
+    } catch {
+      return brightcoveCanonical;
+    }
+  }
 
   if (item?.wistiaHashedId) return `wistia:${item.wistiaHashedId}`;
 
@@ -684,9 +831,20 @@ export const getVisibleVideoCards = (videos: any[], seedUrl = '') => {
       if (!url) return null;
       const sourceStreamUrl = item.sourceStreamUrl ? normalizeMediaUrl(item.sourceStreamUrl, item.sourceUrl || item.pageUrl || seedUrl) : '';
       const sourceUrl = item.sourceUrl ? normalizeMediaUrl(item.sourceUrl, seedUrl) : '';
+      const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem({ ...item, url, sourceStreamUrl, sourceUrl }, seedUrl);
       return {
         ...item,
-        url,
+        url: brightcoveCanonical || url,
+        ...(brightcoveCanonical
+          ? {
+              embedUrl: brightcoveCanonical,
+              provider: 'brightcove',
+              type: 'brightcove',
+              title: /^tracker(?:\s*\d+)?$/i.test(String(item?.title || item?.name || '').trim())
+                ? 'Brightcove video'
+                : item?.title || item?.name || 'Brightcove video',
+            }
+          : {}),
         ...(sourceStreamUrl ? { sourceStreamUrl } : {}),
         ...(sourceUrl ? { sourceUrl } : {}),
       };
@@ -694,6 +852,8 @@ export const getVisibleVideoCards = (videos: any[], seedUrl = '') => {
     .filter(Boolean)
     .filter((item: any) => {
       const url = String(item.url || '');
+      if (isTransportStreamSegmentUrl(url)) return false;
+      if (isBrightcoveNoiseUrl(url) && !canonicalBrightcovePlayerUrlFromItem(item, seedUrl)) return false;
       if (isFalseVimeoUtilityUrl(url)) return false;
       if (item.isVimeoDirect || item.isYouTubeDirect || item.isWistiaDirect) return true;
       if (item.isDirect || item.isYouTubeMerged || item.isMp4Proxy) return true;

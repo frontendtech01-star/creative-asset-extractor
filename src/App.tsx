@@ -146,6 +146,48 @@ const clearExtractSession = () => {
 };
 
 const initialUrl = '';
+
+const cleanUrlToken = (value: string) =>
+  String(value || '').trim().replace(/[),\].;]+$/g, '');
+
+const parseWebsiteExtractionInput = (value: string) => {
+  const raw = String(value || '').trim();
+  const tokens = raw.match(/(?:https?|socks4?|socks5):\/\/[^\s|]+/gi)?.map(cleanUrlToken).filter(Boolean) || [];
+  let targetUrl = '';
+  let proxyUrl = '';
+
+  tokens.forEach((token, index) => {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(token);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) return;
+
+    const protocol = parsed.protocol.toLowerCase();
+    if (/^socks[45]?:$/.test(protocol)) {
+      if (!proxyUrl) proxyUrl = token;
+      return;
+    }
+
+    const normalizedTarget = resolveWebsitePreviewUrl(token);
+    if (!targetUrl && normalizedTarget) {
+      targetUrl = normalizedTarget;
+      return;
+    }
+
+    // One visible input can carry a proxy after the website URL:
+    // https://site.com | http://user:pass@proxy.example:8080
+    if (!proxyUrl && index > 0 && (protocol === 'http:' || protocol === 'https:')) {
+      proxyUrl = token;
+    }
+  });
+
+  if (!targetUrl) targetUrl = resolveWebsitePreviewUrl(raw);
+  return { targetUrl, proxyUrl };
+};
+
 const preloadExtractorChunks = () => {
   void import('./components/ImageExtractor');
   void import('./components/FontExtractor');
@@ -496,12 +538,20 @@ export default function App() {
   const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [productName, setProductName] = useState('Creative Asset Extractor');
-  const [videoDownloaderAutoStart, setVideoDownloaderAutoStart] = useState<{ id: number; url: string } | null>(null);
+  const [videoDownloaderAutoStart, setVideoDownloaderAutoStart] = useState<{
+    id: number;
+    url: string;
+    startTime?: string;
+    endTime?: string;
+    sourcePageUrl?: string;
+    saveToWebsiteAssets?: boolean;
+  } | null>(null);
   const releaseCheckedRef = React.useRef(false);
   const extractJobSeq = React.useRef(0);
   const extractAbortRef = React.useRef<AbortController | null>(null);
   const userEditedUrlRef = React.useRef(false);
   const lastAutoFilledUrlRef = React.useRef(initialUrl.trim());
+  const clipboardAutoFillPausedRef = React.useRef(false);
   const videoDownloaderAutoStartSeq = React.useRef(0);
 
   React.useEffect(() => {
@@ -527,6 +577,7 @@ export default function App() {
   }, []);
 
   const applyDetectedClipboardUrl = React.useCallback((raw: string) => {
+    if (clipboardAutoFillPausedRef.current) return;
     const parsed = parseClipboardUrl(raw);
     if (!parsed) return;
 
@@ -569,6 +620,7 @@ export default function App() {
 
   const handleUseClipboardUrl = () => {
     if (!pendingClipboardUrl) return;
+    clipboardAutoFillPausedRef.current = false;
     setUrl(pendingClipboardUrl);
     lastAutoFilledUrlRef.current = pendingClipboardUrl;
     userEditedUrlRef.current = false;
@@ -577,6 +629,7 @@ export default function App() {
   };
 
   const handleUrlChange = (value: string) => {
+    clipboardAutoFillPausedRef.current = false;
     setUrl(value);
     const trimmed = value.trim();
     if (trimmed !== lastAutoFilledUrlRef.current) {
@@ -586,7 +639,8 @@ export default function App() {
   };
 
   const handleExtractFromOpenWebsite = async () => {
-    const rawTarget = String(url || '').trim();
+    const { targetUrl, proxyUrl } = parseWebsiteExtractionInput(url);
+    const rawTarget = targetUrl || String(url || '').trim();
     let directVideoTarget = '';
     try {
       directVideoTarget = new URL(rawTarget).href;
@@ -608,7 +662,7 @@ export default function App() {
       return;
     }
 
-    const target = resolveWebsitePreviewUrl(url);
+    const target = targetUrl || resolveWebsitePreviewUrl(url);
     if (!target) {
       setError('Enter a public website URL to extract.');
       return;
@@ -628,7 +682,7 @@ export default function App() {
       const response = await apiFetch('/api/browser-tabs/chrome/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: target }),
+        body: JSON.stringify({ url: target, proxyUrl: proxyUrl || undefined }),
       });
       const data = await parseApiBody(response);
       if (!response.ok || !data?.ok) {
@@ -874,9 +928,9 @@ export default function App() {
     setClipboardDetected(false);
     userEditedUrlRef.current = false;
     lastAutoFilledUrlRef.current = '';
+    clipboardAutoFillPausedRef.current = true;
     clearExtractSession();
     clearPersistedClipboardUrl();
-    void refreshClipboardUrl();
   };
 
   const handleResetApp = async () => {
@@ -893,6 +947,8 @@ export default function App() {
   };
 
   const handleClearWebsiteDownloads = async () => {
+    const confirmed = window.confirm('Delete downloaded files and the extracted website folder?');
+    if (!confirmed) return;
     const sourcePageUrl = extractedUrl || url;
     try {
       if (sourcePageUrl.trim()) {
@@ -979,7 +1035,9 @@ export default function App() {
   ) => {
     const requestController = new AbortController();
     const abortRequest = () => requestController.abort();
-    const requestUrl = options?.targetUrl || url;
+    const parsedInput = parseWebsiteExtractionInput(options?.targetUrl || url);
+    const requestUrl = parsedInput.targetUrl || options?.targetUrl || url;
+    const requestProxyUrl = parsedInput.proxyUrl;
     const isYouTube = isYouTubeExtractUrl(requestUrl);
     const timeoutMs = isYouTube
       ? 240000
@@ -1000,10 +1058,10 @@ export default function App() {
     try {
       const payload =
         options?.mode === 'quick'
-          ? { url: requestUrl, mode: 'quick', extractionMode: 'full' }
+          ? { url: requestUrl, mode: 'quick', extractionMode: 'full', proxyUrl: requestProxyUrl || undefined }
           : options?.mode === 'static'
-            ? { url: requestUrl, mode: 'static', extractionMode: 'full' }
-            : { url: requestUrl, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode };
+            ? { url: requestUrl, mode: 'static', extractionMode: 'full', proxyUrl: requestProxyUrl || undefined }
+            : { url: requestUrl, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode, proxyUrl: requestProxyUrl || undefined };
       const response = await apiFetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1400,7 +1458,7 @@ export default function App() {
                 onClick={() => setMainNav('website-extraction')}
                 className={cn(
                   'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
-                  mainSection === 'website-extraction' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                  mainSection === 'website-extraction' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
                 )}
               >
                 <Globe className="h-3.5 w-3.5" />
@@ -1411,7 +1469,7 @@ export default function App() {
                 onClick={() => setMainNav('video-downloader')}
                 className={cn(
                   'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
-                  mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                  mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
                 )}
               >
                 <Download className="h-3.5 w-3.5" />
@@ -1420,7 +1478,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void handleResetApp()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 min-w-[9.5rem]"
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white min-w-[9.5rem]"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 Reset
@@ -1428,7 +1486,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => openFeedback()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 min-w-[9.5rem]"
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white min-w-[9.5rem]"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 Feedback
@@ -1439,7 +1497,7 @@ export default function App() {
                 className={cn(
                   'relative inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition min-w-[9.5rem]',
                   releaseUpdateAvailable
-                    ? 'border border-blue-800 bg-blue-700 text-white ring-2 ring-blue-200 hover:bg-blue-800'
+                    ? 'release-blink-once border border-blue-800 bg-blue-700 text-white ring-2 ring-blue-200 hover:bg-blue-800'
                     : 'border border-blue-700 bg-blue-600 text-white hover:bg-blue-700'
                 )}
               >
@@ -1462,9 +1520,9 @@ export default function App() {
         {mainSection === 'website-extraction' ? (
         <>
         <div className="mx-auto mb-8 max-w-5xl">
-          <WebsiteExtracterToolbar
-            url={url}
-            onUrlChange={handleUrlChange}
+	          <WebsiteExtracterToolbar
+	            url={url}
+	            onUrlChange={handleUrlChange}
             onClearDownloads={handleClearWebsiteDownloads}
             onExtractFromOpenWebsite={handleExtractFromOpenWebsite}
             loading={loading}
@@ -1616,6 +1674,16 @@ export default function App() {
                     seedUrl={extractedUrl}
                     hideManualSearch
                     onDownloadReady={showDownloadReadyNotice}
+                    onOpenInDownloader={(request) => {
+                      setMainNav('video-downloader');
+                      videoDownloaderAutoStartSeq.current += 1;
+                      setVideoDownloaderAutoStart({
+                        id: videoDownloaderAutoStartSeq.current,
+                        url: request.url,
+                        sourcePageUrl: request.sourcePageUrl,
+                        saveToWebsiteAssets: request.saveToWebsiteAssets,
+                      });
+                    }}
                   />
                 </div>
                 <div className={activeTab === 'colors' ? '' : 'hidden'}>

@@ -1,8 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe, XCircle } from 'lucide-react';
-import { apiFetchWithTimeout, MERGE_PREP_TIMEOUT_MS } from '../lib/api';
 import { getDesktopBridge } from '../lib/desktopBridge';
-import { isDirectVideoAssetUrl, isPlatformHostedUrl, isUsableExtractedVideo, isWistiaHelperResourceUrl } from '../lib/visibleVideos';
+import {
+  canonicalBrightcovePlayerUrlFromItem,
+  isDirectVideoAssetUrl,
+  isPlatformHostedUrl,
+  isTransportStreamSegmentUrl,
+  isUsableExtractedVideo,
+  isWistiaHelperResourceUrl,
+} from '../lib/visibleVideos';
 import {
   cancelDownloaderJob,
   startDownloaderJob,
@@ -46,9 +52,29 @@ const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
   }
 };
 
+const isWebsitePlatformDownloadUrl = (rawUrl: string) => {
+  try {
+    const host = new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
+    return (
+      host.includes('youtube.com') ||
+      host === 'youtu.be' ||
+      host.includes('vimeo.com') ||
+      host.includes('facebook.com') ||
+      host === 'fb.watch' ||
+      host === 'players.brightcove.net' ||
+      host.endsWith('.players.brightcove.net') ||
+      host === 'ispot.tv' ||
+      host.endsWith('.ispot.tv')
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
   if (!value) return true;
+  if (isTransportStreamSegmentUrl(value)) return true;
   if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#@]|$)/i.test(value)) return true;
   if (isWistiaHelperResourceUrl(value)) return true;
   try {
@@ -68,6 +94,11 @@ const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
 };
 
 const isTechnicalVideoItem = (video: any) => {
+  const title = String(video?.title || video?.name || video?.label || '').trim();
+  const hasCanonicalBrightcove = Boolean(canonicalBrightcovePlayerUrlFromItem(video));
+  if (!hasCanonicalBrightcove && /^(?:tracker(?:\s*\d+)?|(?:master|rendition)\.m3u8(?:\s*\d+)?|(?:segment|seg|fragment|chunk)[^/\s]*\.ts(?:\s*\d+)?)$/i.test(title)) {
+    return true;
+  }
   const candidates = [
     video?.url,
     video?.embedUrl,
@@ -80,7 +111,35 @@ const isTechnicalVideoItem = (video: any) => {
   return candidates.some((candidate) => typeof candidate === 'string' && isTechnicalPlayerResourceUrl(candidate));
 };
 
+const normalizeExtractedVideoCard = (video: any, seedUrl: string) => {
+  const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem(video, seedUrl);
+  if (!brightcoveCanonical) return video;
+  const title = String(video?.title || video?.name || '').trim();
+  return {
+    ...video,
+    url: brightcoveCanonical,
+    embedUrl: brightcoveCanonical,
+    provider: 'brightcove',
+    type: 'brightcove',
+    title: /^tracker(?:\s*\d+)?$/i.test(title) ? 'Brightcove video' : title || 'Brightcove video',
+  };
+};
+
+const dedupeVisibleVideoCards = (items: any[], seedUrl: string) => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem(item, seedUrl);
+    const key = brightcoveCanonical || String(item?.url || item?.embedUrl || '').trim();
+    if (!key) return false;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const resolvePlatformVideoUrl = (video: any) => {
+  const brightcoveCanonical = canonicalBrightcovePlayerUrlFromItem(video);
+  if (brightcoveCanonical) return brightcoveCanonical;
   const candidates = [
     video?.embedUrl,
     video?.url,
@@ -261,11 +320,13 @@ export default function VideoExtractor({
   seedUrl = '',
   hideManualSearch = false,
   onDownloadReady,
+  onOpenInDownloader,
 }: {
   videos: any[];
   seedUrl?: string;
   hideManualSearch?: boolean;
   onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
+  onOpenInDownloader?: (request: { url: string; sourcePageUrl?: string; saveToWebsiteAssets?: boolean }) => void;
 }) {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [activeCardJob, setActiveCardJob] = useState<{ cardUrl: string; job: DownloaderJob } | null>(null);
@@ -276,8 +337,11 @@ export default function VideoExtractor({
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
-  const visibleVideos = videos.filter(
-    (video) => !isTechnicalVideoItem(video) && isUsableExtractedVideo(video, seedUrl)
+  const visibleVideos = dedupeVisibleVideoCards(
+    videos
+      .map((video) => normalizeExtractedVideoCard(video, seedUrl))
+      .filter((video) => !isTechnicalVideoItem(video) && isUsableExtractedVideo(video, seedUrl)),
+    seedUrl
   );
 
   useEffect(() => {
@@ -296,6 +360,14 @@ export default function VideoExtractor({
   const handleDownload = async (video: any, title: string, quality: DownloaderQuality = 'fhd') => {
     const cardUrl = String(video?.url || '');
     const request = resolveVideoDownloadRequest(video, seedUrl);
+    if (onOpenInDownloader && isWebsitePlatformDownloadUrl(request.url)) {
+      onOpenInDownloader({
+        url: request.url,
+        sourcePageUrl: seedUrl || request.sourcePageUrl,
+        saveToWebsiteAssets: true,
+      });
+      return;
+    }
     setDownloading(cardUrl);
     setDownloadResult(null);
     try {
@@ -341,6 +413,20 @@ export default function VideoExtractor({
     } catch (error: any) {
       setDownloadResult({ url: cardUrl, message: error?.message || 'Could not cancel download.', error: true });
     }
+  };
+
+  const handleOpenInDownloader = (video: any) => {
+    const request = resolveVideoDownloadRequest(video, seedUrl);
+    const cardUrl = String(video?.url || '');
+    if (!request.url) {
+      setDownloadResult({ url: cardUrl, message: 'No downloadable video link was found.', error: true });
+      return;
+    }
+    onOpenInDownloader?.({
+      url: request.url,
+      sourcePageUrl: seedUrl || request.sourcePageUrl,
+      saveToWebsiteAssets: true,
+    });
   };
 
   const handleBulkDownload = async () => {
@@ -391,31 +477,37 @@ export default function VideoExtractor({
           )
         );
         try {
-          const response = await apiFetchWithTimeout(
-            item.request.endpoint,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                url: item.request.url,
-                title: item.title,
-                sourcePageUrl: seedUrl || item.request.sourcePageUrl,
-                quality: 'fhd',
-                saveToWebsiteAssets: true,
-              }),
-            },
-            MERGE_PREP_TIMEOUT_MS,
-            'Bulk MP4 download timed out. Please retry.'
-          );
-          const data = await response.json();
-          if (!response.ok || !data?.ok || !data?.displayPath) throw new Error(data?.error || 'Download failed');
+          const started = await startDownloaderJob({
+            url: item.request.url,
+            quality: 'fhd',
+            title: item.title,
+            sourcePageUrl: seedUrl || item.request.sourcePageUrl,
+            saveToWebsiteAssets: true,
+          });
+          const completedJob = await waitForDownloaderJob(started, (job) => {
+            setBulkJobs((current) =>
+              current.map((existing) =>
+                existing.id === item.id
+                  ? {
+                      ...existing,
+                      status: job.status === 'completed' ? 'completed' : job.status === 'error' ? 'error' : 'running',
+                      progress: job.progress || existing.progress,
+                      message: job.message || existing.message,
+                      error: job.error,
+                    }
+                  : existing
+              )
+            );
+          });
+          if (completedJob.status === 'cancelled') throw new Error('Download cancelled');
+          if (completedJob.status === 'error' || !completedJob.result?.displayPath) throw new Error(completedJob.error || 'Download failed');
           const done: WebsiteBulkDownloadJob = {
             id: item.id,
             title: item.title,
             url: item.request.url,
             status: 'completed',
             progress: 100,
-            message: data.reused ? `Already saved: ${data.displayPath}` : `Saved: ${data.displayPath}`,
+            message: `Saved: ${completedJob.result.displayPath}`,
           };
           completed.push(done);
           setBulkJobs((current) => current.map((job) => (job.id === item.id ? done : job)));
@@ -779,6 +871,17 @@ export default function VideoExtractor({
                         )}
                       </button>
                       <div className="flex gap-2">
+                        {onOpenInDownloader ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenInDownloader(video)}
+                            className="min-w-0 flex-1 flex items-center gap-2 border border-blue-200 bg-blue-50 text-blue-800 px-3 py-2 rounded-xl font-medium text-xs hover:bg-blue-100 transition-colors"
+                            title="Open this link in Video Downloader"
+                          >
+                            <Download className="w-4 h-4 shrink-0" />
+                            <span className="truncate">Video Downloader</span>
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => void handleOpenEmbeddedLink(embeddedLink || video.url)}

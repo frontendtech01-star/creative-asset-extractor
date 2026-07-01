@@ -490,10 +490,12 @@ export const buildFontZipItem = (font: any, toFormat: FontZipOutputFormat, filen
   };
 };
 
-/** ZIP includes original + converted targets per source format rules. */
+/** ZIP keeps the extracted source font by default. Bulk conversion can be slow on Typekit/Google fonts. */
 export const buildFontZipItems = (font: any, filenameBase?: string) => {
   const base = filenameBase || getFontFilenameBase(font);
   const source = resolveFontSourceFormat(font);
-  const targets = getFontConversionOutputs(source);
-  return targets.map((toFormat) => buildFontZipItem(font, toFormat, base));
+  const target = FONT_ZIP_OUTPUT_FORMATS.includes(source as FontZipOutputFormat)
+    ? (source as FontZipOutputFormat)
+    : 'woff2';
+  return [buildFontZipItem(font, target, base)];
 };

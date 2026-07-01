@@ -90,7 +90,6 @@ export function LatestReleaseModal({
                     <li>Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.</li>
                     <li>Speeds up repeated video checks with cached downloader inspection results.</li>
                     <li>Cancel active downloads and clear downloaded platform folders.</li>
-                    <li>Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.</li>
                   </ul>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                     <button

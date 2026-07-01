@@ -7,13 +7,15 @@
 ## Features and capabilities
 
 - Extract images, fonts, colors and videos from websites.
-- Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.
+- Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.
 - Save fast, Mac-compatible 1080p H.264 videos.
-- Filters blank or encoded website player cards such as Apple placeholder players.
+- Filters blank, tracker, segment and encoded website player cards.
+- Preserves SVG downloads as Illustrator-friendly editable SVG files.
+- Keeps extracted font ZIP downloads fast by saving the fetched webfont format directly.
+- Gives Chromium a short settle wait so loader-heavy pages can finish images, fonts and content before extraction.
+- Supports optional proxy-assisted website extraction when needed.
 - Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.
-- Speeds up repeated video checks with cached downloader inspection results.
 - Cancel active downloads and clear downloaded files with their platform folders.
-- Desktop installers include Chromium, FFmpeg, FFprobe, yt-dlp and aria2c.
 - Install the app from the Mac DMG.
 
 ## Open on macOS

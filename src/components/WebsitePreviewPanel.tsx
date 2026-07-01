@@ -27,7 +27,7 @@ export function WebsiteExtracterToolbar({
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
         <input
-          type="url"
+          type="text"
           value={url}
           onChange={(event) => onUrlChange(event.target.value)}
           placeholder="https://example.com"

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, FolderOpen, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, ExternalLink, FolderOpen, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
   VIDEO_PLATFORMS,
@@ -66,6 +66,41 @@ const jobProgressWidth = (job: DownloaderJob) => {
 
 const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
 
+const YOUTUBE_FALLBACK_URL = 'https://yt5s.in/en271/';
+
+const isYouTubeUrl = (value: string) => {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'youtu.be' || host.endsWith('.youtu.be') || host === 'youtube.com' || host.endsWith('.youtube.com');
+  } catch {
+    return /(?:youtube\.com|youtu\.be)/i.test(value);
+  }
+};
+
+function YouTubeFallbackLink({ url, compact = false }: { url: string; compact?: boolean }) {
+  if (!url || !isYouTubeUrl(url)) return null;
+
+  const copySourceUrl = () => {
+    void navigator.clipboard?.writeText(url).catch(() => undefined);
+  };
+
+  return (
+    <a
+      href={YOUTUBE_FALLBACK_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={copySourceUrl}
+      className={`inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white font-semibold text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 ${
+        compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-sm'
+      }`}
+      title="Copies the YouTube URL and opens the backup downloader"
+    >
+      <ExternalLink className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+      Open YT5S backup
+    </a>
+  );
+}
+
 function DownloadJobCard({
   job,
   compact = false,
@@ -113,6 +148,13 @@ function DownloadJobCard({
         {job.speed ? <span>{job.speed}</span> : null}
         {job.eta && !isComplete ? <span>ETA {job.eta}</span> : null}
       </div>
+
+      {isError && isYouTubeUrl(job.url) ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <YouTubeFallbackLink url={job.url} compact />
+          <span className="text-xs text-amber-800">If YouTube blocks this video, the URL is copied before opening the backup page.</span>
+        </div>
+      ) : null}
 
       {(job.status === 'queued' || job.status === 'running' || job.status === 'paused') ? (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -253,6 +295,10 @@ type AutoStartRequest = {
   id: number;
   url: string;
   quality?: DownloaderQuality;
+  startTime?: string;
+  endTime?: string;
+  sourcePageUrl?: string;
+  saveToWebsiteAssets?: boolean;
 };
 
 type VideoDownloaderPageProps = {
@@ -343,6 +389,8 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
   };
 
   const handleClearDownloads = async () => {
+    const confirmed = window.confirm('Delete all downloaded videos and extracted platform folders?');
+    if (!confirmed) return;
     try {
       await clearDownloaderFiles(true);
       setJobs((current) => current.filter((job) => job.status !== 'completed' && job.status !== 'error' && job.status !== 'cancelled'));
@@ -378,8 +426,14 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
     }
   };
 
-  const downloadQueue = async (quality: DownloaderQuality = 'fhd', overrideUrls?: string[]) => {
+  const downloadQueue = async (
+    quality: DownloaderQuality = 'fhd',
+    overrideUrls?: string[],
+    trimOverride?: { startTime?: string; endTime?: string; sourcePageUrl?: string; saveToWebsiteAssets?: boolean }
+  ) => {
     const urls = overrideUrls || inputUrls;
+    const requestedStartTime = trimOverride?.startTime ?? startTime;
+    const requestedEndTime = trimOverride?.endTime ?? endTime;
     if (!urls.length) {
       setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
       return;
@@ -405,8 +459,20 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
     try {
       const started =
         urls.length === 1
-          ? { jobs: [await startDownloaderJob({ url: urls[0], quality, startTime, endTime })], errors: [] as Array<{ url: string; error: string }> }
-          : await startBulkDownloaderJobs(urls, quality, { startTime, endTime });
+          ? {
+              jobs: [
+                await startDownloaderJob({
+                  url: urls[0],
+                  quality,
+                  startTime: requestedStartTime,
+                  endTime: requestedEndTime,
+                  sourcePageUrl: trimOverride?.sourcePageUrl,
+                  saveToWebsiteAssets: trimOverride?.saveToWebsiteAssets,
+                }),
+              ],
+              errors: [] as Array<{ url: string; error: string }>,
+            }
+          : await startBulkDownloaderJobs(urls, quality, { startTime: requestedStartTime, endTime: requestedEndTime });
       const createdJobs = started.jobs || [];
       setJobErrors(started.errors || []);
       setJobs(createdJobs);
@@ -447,11 +513,18 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
     if (!autoStartRequest?.url || handledAutoStartIdRef.current === autoStartRequest.id) return;
     handledAutoStartIdRef.current = autoStartRequest.id;
     const nextUrl = autoStartRequest.url.trim();
+    const nextStartTime = String(autoStartRequest.startTime || '').trim();
+    const nextEndTime = String(autoStartRequest.endTime || '').trim();
     setUrlInput(nextUrl);
     setJobErrors([]);
-    setStartTime('');
-    setEndTime('');
-    void downloadQueue(autoStartRequest.quality || 'fhd', [nextUrl]);
+    setStartTime(nextStartTime);
+    setEndTime(nextEndTime);
+    void downloadQueue(autoStartRequest.quality || 'fhd', [nextUrl], {
+      startTime: nextStartTime,
+      endTime: nextEndTime,
+      sourcePageUrl: autoStartRequest.sourcePageUrl,
+      saveToWebsiteAssets: autoStartRequest.saveToWebsiteAssets,
+    });
   }, [autoStartRequest]);
 
   return (
@@ -546,11 +619,22 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
             {jobErrors.length ? (
               <div className="mt-5 space-y-3">
                 {jobErrors.map((item, index) => (
-                  <FriendlyError
-                    key={`${item.url}-${index}`}
-                    message={item.url ? `${item.url}: ${item.error}` : item.error}
-                    onReportIssue={() => requestOpenFeedback()}
-                  />
+                  <div key={`${item.url}-${index}`} className="space-y-2">
+                    <FriendlyError
+                      message={item.url ? `${item.url}: ${item.error}` : item.error}
+                      onReportIssue={() => requestOpenFeedback()}
+                    />
+                    {isYouTubeUrl(item.url) ? (
+                      <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-blue-950">
+                            YouTube blocked this download here. Open the backup page and paste the copied URL.
+                          </p>
+                          <YouTubeFallbackLink url={item.url} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             ) : null}

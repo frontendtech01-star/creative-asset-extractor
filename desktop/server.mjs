@@ -2505,6 +2505,72 @@ var activityLogPath = path3.join(appDataDir, "logs", "activity.jsonl");
 var feedbackScreenshotDir = path3.join(appDataDir, "feedback", "screenshots");
 var MAX_ACTIVITY_LOG_ENTRIES = 100;
 var relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
+var activeExtractionProxyUrl = "";
+var normalizeExtractionProxyUrl = (rawProxyUrl) => {
+  const value = String(rawProxyUrl || "").trim();
+  if (!value) return "";
+  let parsed;
+  try {
+    parsed = new URL2(value);
+  } catch {
+    throw new Error("Proxy URL must include protocol, host, and port. Example: http://user:pass@host:port");
+  }
+  if (!["http:", "https:", "socks4:", "socks5:"].includes(parsed.protocol)) {
+    throw new Error("Proxy protocol must be http, https, socks4, or socks5.");
+  }
+  if (!parsed.hostname || !parsed.port) {
+    throw new Error("Proxy URL must include host and port. Example: http://user:pass@host:port");
+  }
+  return parsed.href;
+};
+var axiosProxyOptions = (rawProxyUrl = activeExtractionProxyUrl) => {
+  const proxyUrl = String(rawProxyUrl || "").trim();
+  if (!proxyUrl) return {};
+  try {
+    const parsed = new URL2(proxyUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return {};
+    return {
+      proxy: {
+        protocol: parsed.protocol.replace(":", ""),
+        host: parsed.hostname,
+        port: Number(parsed.port),
+        ...parsed.username || parsed.password ? {
+          auth: {
+            username: decodeURIComponent(parsed.username),
+            password: decodeURIComponent(parsed.password)
+          }
+        } : {}
+      }
+    };
+  } catch {
+    return {};
+  }
+};
+var proxyServerArg = (rawProxyUrl = activeExtractionProxyUrl) => {
+  const proxyUrl = String(rawProxyUrl || "").trim();
+  if (!proxyUrl) return "";
+  try {
+    const parsed = new URL2(proxyUrl);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+};
+var applyProxyAuthToPage = async (page, rawProxyUrl = activeExtractionProxyUrl) => {
+  const proxyUrl = String(rawProxyUrl || "").trim();
+  if (!proxyUrl) return;
+  try {
+    const parsed = new URL2(proxyUrl);
+    if (!parsed.username && !parsed.password) return;
+    await page.authenticate({
+      username: decodeURIComponent(parsed.username),
+      password: decodeURIComponent(parsed.password)
+    });
+  } catch {
+  }
+};
 var loadProjectEnvFile = () => {
   const candidates = [
     path3.join(process.cwd(), ".env"),
@@ -3427,9 +3493,9 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl) => {
     await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
-    await new Promise((resolve) => setTimeout(resolve, 4e3));
+    await waitForPageContentSettle(page, { minWaitMs: 3e3, readinessTimeoutMs: 2500 });
     await performLazyLoadScroll(page, { stepDelayMs: 700, maxStableRounds: 3, maxDurationMs: 25e3 }).catch(() => void 0);
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await waitForPageContentSettle(page, { minWaitMs: 1200, readinessTimeoutMs: 1500 });
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript());
     const raw = typeof rawText === "string" ? JSON.parse(rawText) : rawText;
     const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : []).filter((image) => image?.url && !String(image?.dataUrl || "").startsWith("data:image/")).map((image) => String(image.url)).filter((url) => /^https?:\/\//i.test(url)).slice(0, 80);
@@ -3542,7 +3608,9 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
 }
 app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
   const requestedUrl = String(req.body?.url || "").trim();
+  const previousProxyUrl = activeExtractionProxyUrl;
   try {
+    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
     const tab = await readChromeClientTab();
     try {
       const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
@@ -3575,6 +3643,12 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
       });
     }
   } catch (error) {
+    if (/proxy url|proxy protocol/i.test(String(error?.message || ""))) {
+      return res.status(400).json({
+        ok: false,
+        error: error?.message || "Invalid proxy URL."
+      });
+    }
     const fallbackUrl = requestedUrl;
     if (fallbackUrl) {
       try {
@@ -3599,6 +3673,8 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
       ok: false,
       error: error?.message || "Unable to extract assets from Chrome."
     });
+  } finally {
+    activeExtractionProxyUrl = previousProxyUrl;
   }
 });
 app.get("/api/activity-log/recent", async (_req, res) => {
@@ -3794,13 +3870,17 @@ var buildGithubReleaseLinks = (githubOwner, githubRepo, version, productName) =>
     htmlUrl: `${repoUrl}/releases/tag/${tagName}`,
     releasesUrl: `${repoUrl}/releases`,
     repoUrl,
-    dmgDownloadUrl: `${repoUrl}/releases/download/${tagName}/${encodeURIComponent(dmgName)}`,
+    dmgDownloadUrl: `${repoUrl}/releases/latest/download/${encodeURIComponent(dmgName)}`,
     dmgAssetName: dmgName
   };
 };
 var parseGithubReleasePayload = (data) => {
   const assets = Array.isArray(data?.assets) ? data.assets : [];
-  const dmgAsset = assets.find((asset) => /\.dmg$/i.test(String(asset?.name || "")));
+  const dmgAsset = assets.filter((asset) => /\.dmg$/i.test(String(asset?.name || ""))).sort((left, right) => {
+    const rightTime = Date.parse(String(right?.updated_at || right?.created_at || "")) || 0;
+    const leftTime = Date.parse(String(left?.updated_at || left?.created_at || "")) || 0;
+    return rightTime - leftTime;
+  })[0];
   return {
     tagName: String(data?.tag_name || ""),
     name: String(data?.name || data?.tag_name || "Latest release"),
@@ -4032,6 +4112,7 @@ var fetchQuickSiteHtml = async (siteUrl) => {
         maxRedirects: 5,
         validateStatus: () => true,
         httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
         headers: {
           "User-Agent": userAgent,
           "Accept-Language": "en-US,en;q=0.9",
@@ -4064,6 +4145,7 @@ var fetchSiteHtml = async (siteUrl) => {
         maxRedirects: 5,
         validateStatus: () => true,
         httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
         headers: {
           "User-Agent": userAgent,
           "Accept-Language": "en-US,en;q=0.9",
@@ -4155,6 +4237,42 @@ var waitForRenderedSiteHtml = async (page) => {
   await new Promise((resolve) => setTimeout(resolve, 400));
   return page.content();
 };
+var waitForPageContentSettle = async (page, options = {}) => {
+  const minWaitMs = Math.max(0, Number(options.minWaitMs || 2500));
+  const readinessTimeoutMs = Math.max(500, Number(options.readinessTimeoutMs || 2e3));
+  await new Promise((resolve) => setTimeout(resolve, minWaitMs));
+  await page.evaluate(async (timeoutMs) => {
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const waitForFonts = async () => {
+      try {
+        if (document.fonts?.ready) await Promise.race([document.fonts.ready, delay(timeoutMs)]);
+      } catch {
+      }
+    };
+    const waitForImages = async () => {
+      const started = Date.now();
+      let lastPendingCount = Number.POSITIVE_INFINITY;
+      let stableRounds = 0;
+      while (Date.now() - started < timeoutMs) {
+        const pending = Array.from(document.images || []).filter((img) => {
+          if (!img) return false;
+          if (img.complete && img.naturalWidth > 0) return false;
+          const rect = img.getBoundingClientRect();
+          const hasSource = Boolean(img.currentSrc || img.src || img.getAttribute("data-src") || img.getAttribute("srcset"));
+          return hasSource && rect.width > 0 && rect.height > 0;
+        }).length;
+        if (pending === 0) return;
+        if (pending === lastPendingCount) stableRounds += 1;
+        else stableRounds = 0;
+        if (stableRounds >= 2) return;
+        lastPendingCount = pending;
+        await delay(350);
+      }
+    };
+    await Promise.race([Promise.allSettled([waitForFonts(), waitForImages()]), delay(timeoutMs)]);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  }, readinessTimeoutMs).catch(() => void 0);
+};
 var PUPPETEER_BROWSER_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
@@ -4181,11 +4299,12 @@ var puppeteerWarmupStatus = {
   state: "idle",
   updatedAt: (/* @__PURE__ */ new Date()).toISOString()
 };
-var launchFreshPuppeteerBrowser = async () => {
+var launchFreshPuppeteerBrowser = async (proxyUrl = "") => {
   const executablePath = resolvePuppeteerExecutablePath();
+  const proxyArg = proxyServerArg(proxyUrl);
   const launchOptions = {
     headless: true,
-    args: PUPPETEER_BROWSER_ARGS,
+    args: proxyArg ? [...PUPPETEER_BROWSER_ARGS, `--proxy-server=${proxyArg}`] : PUPPETEER_BROWSER_ARGS,
     ignoreDefaultArgs: ["--enable-automation"],
     ...executablePath ? { executablePath } : {}
   };
@@ -4247,7 +4366,7 @@ var releaseSharedPuppeteerBrowser = async (options = {}) => {
     scheduleSharedPuppeteerBrowserIdleClose();
   }
 };
-var launchPuppeteerBrowser = async () => acquireSharedPuppeteerBrowser();
+var launchPuppeteerBrowser = async (proxyUrl = "") => proxyUrl ? launchFreshPuppeteerBrowser(proxyUrl) : acquireSharedPuppeteerBrowser();
 var acquireSingleWebsitePage = async (browser) => {
   const pages = await browser.pages().catch(() => []);
   const page = pages.find((candidate) => {
@@ -4293,9 +4412,21 @@ var fetchSiteHtmlViaCurl = async (siteUrl) => {
   let best = { html: "", score: -1 };
   for (const userAgent of PAGE_FETCH_USER_AGENTS) {
     try {
+      const proxyUrl = activeExtractionProxyUrl;
       const { stdout } = await execFileAsync2(
         "curl",
-        ["-sL", "--max-time", "8", "-A", userAgent, "-H", "Accept: text/html,application/xhtml+xml", siteUrl],
+        [
+          "-k",
+          "-sL",
+          "--max-time",
+          "8",
+          ...proxyUrl ? ["--proxy", proxyUrl] : [],
+          "-A",
+          userAgent,
+          "-H",
+          "Accept: text/html,application/xhtml+xml",
+          siteUrl
+        ],
         { maxBuffer: 25 * 1024 * 1024 }
       );
       const html = String(stdout || "");
@@ -4406,8 +4537,9 @@ var fetchSiteHtmlViaBrowser = async (siteUrl) => {
   let browser = null;
   let page = null;
   try {
-    browser = await launchPuppeteerBrowser();
+    browser = await launchPuppeteerBrowser(activeExtractionProxyUrl);
     page = await acquireSingleWebsitePage(browser);
+    await applyProxyAuthToPage(page);
     await applyPuppeteerStealth(page);
     await page.goto(siteUrl, { waitUntil: "domcontentloaded", timeout: 25e3 }).catch(() => void 0);
     return await waitForRenderedSiteHtml(page);
@@ -4627,6 +4759,7 @@ var fetchCssSourceCandidates = async (siteUrl, preloadedHtml = "", options = {})
       const cssResponse = await axios.get(current, {
         timeout: options.fast ? 6e3 : 8e3,
         httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
         validateStatus: () => true,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -4705,6 +4838,7 @@ var fetchImportedFontProviderFonts = async (siteUrl, html) => {
       const response = await axios.get(url, {
         timeout: 8e3,
         httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
         validateStatus: (status) => status === 200,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -4889,6 +5023,31 @@ var detectImageFormatFromBuffer = (buffer) => {
   const head = buffer.slice(0, 256).toString("utf8").trim().toLowerCase();
   if (head.startsWith("<svg") || head.includes("<svg")) return "svg";
   return "";
+};
+var normalizeSvgBufferForIllustrator = (buffer) => {
+  if (!buffer?.length || detectImageFormatFromBuffer(buffer) !== "svg") return buffer;
+  let svg = buffer.toString("utf8").replace(/^\uFEFF/, "").trim();
+  const svgStart = svg.search(/<svg\b/i);
+  if (svgStart > 0) {
+    const prefix = svg.slice(0, svgStart).trim();
+    if (!/^<\?xml\b|^<!--/i.test(prefix)) svg = svg.slice(svgStart).trim();
+  }
+  svg = svg.replace(/<script\b[\s\S]*?<\/script>/gi, "");
+  const tagMatch = svg.match(/<svg\b[^>]*>/i);
+  if (!tagMatch) return buffer;
+  let tag = tagMatch[0];
+  if (!/\sxmlns=/.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  if (/\bxlink:href=/i.test(svg) && !/\sxmlns:xlink=/.test(tag)) {
+    tag = tag.replace(/<svg\b/i, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+  }
+  if (!/\sxml:space=/.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xml:space="preserve"');
+  svg = svg.replace(tagMatch[0], tag);
+  if (!/^<\?xml\b/i.test(svg)) {
+    svg = `<?xml version="1.0" encoding="UTF-8"?>
+${svg}`;
+  }
+  return Buffer.from(`${svg.trim()}
+`, "utf8");
 };
 var isLikelyImageAssetUrl = (url, contentType = "") => {
   const lowered = String(url || "").toLowerCase();
@@ -6010,8 +6169,9 @@ var resolveFontRefererPage = (cssSource = "", pageUrl = "") => {
 var fetchRemoteFontBufferViaBrowser = async (url, refererPage = "") => {
   let browser = null;
   try {
-    browser = await launchPuppeteerBrowser();
+    browser = await launchPuppeteerBrowser(activeExtractionProxyUrl);
     const page = await acquireSingleWebsitePage(browser);
+    await applyProxyAuthToPage(page);
     await applyPuppeteerStealth(page);
     const landing = String(refererPage || "").trim() || (() => {
       try {
@@ -6377,6 +6537,79 @@ var fetchRemoteImageBufferViaCurl = async (url, refererPageUrl = "") => {
   }
   return null;
 };
+var fetchImageFromRenderedPage = async (page, url) => {
+  const dataUrl = await page.evaluate(async (targetUrl) => {
+    const normalize = (value) => {
+      try {
+        const parsed = new URL2(value, location.href);
+        parsed.hash = "";
+        return parsed.href;
+      } catch {
+        return String(value || "");
+      }
+    };
+    const target = normalize(targetUrl);
+    const targetPath = (() => {
+      try {
+        return new URL2(target).pathname;
+      } catch {
+        return "";
+      }
+    })();
+    const imageElements = Array.from(document.images || []);
+    const exactMatch = imageElements.find((img2) => {
+      const candidates = [img2.currentSrc, img2.src, img2.getAttribute("src"), img2.getAttribute("data-src")].map((candidate) => normalize(String(candidate || ""))).filter(Boolean);
+      return candidates.some((candidate) => candidate === target);
+    });
+    const pathMatch = exactMatch || imageElements.find((img2) => {
+      const candidates = [img2.currentSrc, img2.src, img2.getAttribute("src"), img2.getAttribute("data-src")].map((candidate) => normalize(String(candidate || ""))).filter(Boolean);
+      return candidates.some((candidate) => {
+        try {
+          return targetPath && new URL2(candidate).pathname === targetPath;
+        } catch {
+          return false;
+        }
+      });
+    });
+    const blobToDataUrl = (blob) => new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(blob);
+    });
+    try {
+      const response = await fetch(target, { credentials: "include", cache: "force-cache" });
+      const contentType2 = String(response.headers.get("content-type") || "").toLowerCase();
+      if (response.ok && contentType2.startsWith("image/")) {
+        const blob = await response.blob();
+        if (blob.size > 0 && blob.size <= 15 * 1024 * 1024) {
+          const fetchedDataUrl = await blobToDataUrl(blob);
+          if (fetchedDataUrl.startsWith("data:image/")) return fetchedDataUrl;
+        }
+      }
+    } catch {
+    }
+    const img = pathMatch;
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return "";
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) return "";
+      context.drawImage(img, 0, 0);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return "";
+    }
+  }, url);
+  if (!String(dataUrl || "").startsWith("data:image/")) return null;
+  const buffer = decodeDataImageBuffer(String(dataUrl));
+  if (!buffer?.length) return null;
+  const contentType = String(dataUrl).match(/^data:([^;,]+)/i)?.[1] || "image/png";
+  if (!isValidImageBuffer(buffer, contentType)) return null;
+  return { buffer, contentType };
+};
 var fetchRemoteImageBufferViaBrowser = async (url, refererPageUrl = "") => {
   let browser = null;
   try {
@@ -6392,7 +6625,12 @@ var fetchRemoteImageBufferViaBrowser = async (url, refererPageUrl = "") => {
       }
     }
     await page.goto(landing, { waitUntil: "domcontentloaded", timeout: 3e4 }).catch(() => void 0);
-    await new Promise((resolve) => setTimeout(resolve, 1800));
+    await waitForPageContentSettle(page, { minWaitMs: 2800, readinessTimeoutMs: 2200 });
+    const renderedImage = await fetchImageFromRenderedPage(page, url).catch(() => null);
+    if (renderedImage) {
+      await writeCachedOriginalImageFromBuffer(url, renderedImage.buffer, renderedImage.contentType);
+      return renderedImage;
+    }
     const response = await page.goto(url, { waitUntil: "networkidle2", timeout: 3e4 }).catch(() => null);
     if (!response || response.status() < 200 || response.status() >= 400) return null;
     const buffer = Buffer.from(await response.buffer());
@@ -6689,8 +6927,9 @@ var saveBufferToDownloads = async (buffer, filename, label = "Download", sourceP
   if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
     throw new Error(`${label} produced an empty file.`);
   }
+  const writeBuffer = detectImageFormatFromBuffer(buffer) === "svg" || /\.svg$/i.test(filename) ? normalizeSvgBufferForIllustrator(buffer) : buffer;
   const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind, subfolder });
-  await fsp3.writeFile(target.filePath, buffer);
+  await fsp3.writeFile(target.filePath, writeBuffer);
   const stat = await validateSavedAssetFile(target.filePath, label);
   return {
     ok: true,
@@ -6704,7 +6943,12 @@ var saveBufferToDownloads = async (buffer, filename, label = "Download", sourceP
 var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download", sourcePageUrl, kind = "default") => {
   if (!sourcePath) throw new Error(`${label} cache path is missing.`);
   const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
-  await fsp3.copyFile(sourcePath, target.filePath);
+  if (/\.svg$/i.test(filename) || /\.svg$/i.test(sourcePath)) {
+    const sourceBuffer = await fsp3.readFile(sourcePath);
+    await fsp3.writeFile(target.filePath, normalizeSvgBufferForIllustrator(sourceBuffer));
+  } else {
+    await fsp3.copyFile(sourcePath, target.filePath);
+  }
   const stat = await validateSavedAssetFile(target.filePath, label);
   return {
     ok: true,
@@ -6838,8 +7082,9 @@ var writeOriginalCachedAsset = async (url, kind, buffer, options = {}) => {
   if (kind === "font" && !isValidFontOriginalBuffer(buffer, options.contentType || "")) {
     return "";
   }
+  const writeBuffer = kind === "image" && detectImageFormatFromBuffer(buffer) === "svg" ? normalizeSvgBufferForIllustrator(buffer) : buffer;
   const ext = kind === "image" ? safeExtFromAssetType(
-    detectImageFormatFromBuffer(buffer) || inferImageTypeFromUrl(normalized, options.contentType || "") || options.hintType || "bin"
+    detectImageFormatFromBuffer(writeBuffer) || inferImageTypeFromUrl(normalized, options.contentType || "") || options.hintType || "bin"
   ) : safeExtFromAssetType(getFontFormatFromUrlOrType(normalized, options.contentType || "") || options.hintType || "bin");
   const desired = deriveAssetFilename({
     url: normalized.startsWith("http") ? normalized : url,
@@ -6852,7 +7097,7 @@ var writeOriginalCachedAsset = async (url, kind, buffer, options = {}) => {
   const existingFiles = await fsp3.readdir(cacheDir).catch(() => []);
   const used = new Set(existingFiles.filter((name) => !name.startsWith(".")));
   const filename = uniqueFilenameInSet(desired, used);
-  await fsp3.writeFile(path3.join(cacheDir, filename), buffer);
+  await fsp3.writeFile(path3.join(cacheDir, filename), writeBuffer);
   const index = await loadOriginalCacheIndex(kind);
   index[originalCacheLookupKey(normalized)] = filename;
   await saveOriginalCacheIndex(kind, index);
@@ -7303,7 +7548,7 @@ var convertFontBufferOffThread = async (buffer, fromFormat, toFormat) => new Pro
     reject(error);
   });
 });
-var convertFontBuffer = async (url, buffer, fromFormat, toFormat, contentType = "") => {
+var convertFontBuffer = async (url, buffer, fromFormat, toFormat, contentType = "", preferInlineConversion = false) => {
   const detected = detectFontFormatFromBuffer(buffer);
   let readFormat = detected || normalizeFontFormat(fromFormat, contentType);
   if (!["ttf", "woff", "woff2", "eot", "otf", "svg"].includes(readFormat)) {
@@ -7312,21 +7557,33 @@ var convertFontBuffer = async (url, buffer, fromFormat, toFormat, contentType = 
   if (readFormat === toFormat) {
     return buffer;
   }
+  const convertInline = async () => {
+    const { buffer: innerBuffer, format: innerFormat } = await getInnerFontBuffer(buffer, readFormat);
+    return writeFontBuffer(innerBuffer, innerFormat, toFormat);
+  };
+  if (preferInlineConversion) {
+    try {
+      return await convertInline();
+    } catch (inlineError) {
+      return convertFontBufferOffThread(buffer, readFormat, toFormat);
+    }
+  }
   try {
     return await convertFontBufferOffThread(buffer, readFormat, toFormat);
   } catch (workerError) {
-    const { buffer: innerBuffer, format: innerFormat } = await getInnerFontBuffer(buffer, readFormat);
-    return writeFontBuffer(innerBuffer, innerFormat, toFormat);
+    return convertInline();
   }
 };
 var convertFontAsset = async (url, toFormat, originalFormat = "unknown", preferredBase, extras = {}) => {
-  const maxAttempts = 3;
+  const normalizedTarget = normalizeFontFormat(toFormat);
+  const normalizedOriginal = normalizeFontFormat(originalFormat);
+  const maxAttempts = normalizedTarget && normalizedTarget === normalizedOriginal ? 1 : 2;
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await withTimeout(
         getCachedConvertedFont(url, toFormat, originalFormat, preferredBase, extras),
-        2e4 + attempt * 8e3,
+        extras.timeoutMs || 1e4 + attempt * 5e3,
         `Font conversion (${toFormat})`
       );
     } catch (error) {
@@ -7407,7 +7664,14 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   const detected = detectFontFormatFromBuffer(fetched.buffer);
   let fromFormat = detected || normalizeFontFormat(originalFormat || getFontFormatFromUrlOrType(url, fetched.contentType), fetched.contentType);
   try {
-    outputBuffer = await convertFontBuffer(url, fetched.buffer, fromFormat, normalizedTarget, fetched.contentType);
+    outputBuffer = await convertFontBuffer(
+      url,
+      fetched.buffer,
+      fromFormat,
+      normalizedTarget,
+      fetched.contentType,
+      Boolean(extras.preferInlineConversion)
+    );
   } catch (convertError) {
     if (cacheOnly) throw convertError;
     const siblingUrl = url.replace(/\.(ttf|woff2?|eot|otf|svg)(\?|$)/i, `.${normalizedTarget}$2`);
@@ -7415,7 +7679,14 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
       const sibling = await fetchAssetBuffer(siblingUrl, extras.originalUrl || "", { cacheOnly, refererPageUrl: refererPage });
       const siblingDetected = detectFontFormatFromBuffer(sibling.buffer);
       const siblingFrom = siblingDetected || normalizeFontFormat(getFontFormatFromUrlOrType(siblingUrl, sibling.contentType), sibling.contentType);
-      outputBuffer = await convertFontBuffer(siblingUrl, sibling.buffer, siblingFrom, normalizedTarget, sibling.contentType);
+      outputBuffer = await convertFontBuffer(
+        siblingUrl,
+        sibling.buffer,
+        siblingFrom,
+        normalizedTarget,
+        sibling.contentType,
+        Boolean(extras.preferInlineConversion)
+      );
     } else {
       throw convertError;
     }
@@ -8605,7 +8876,8 @@ var enrichAssetsFromHtml = async (html, targetUrl, assets, options = {}) => {
   const resolvedPagePrimaryThumb = pagePrimaryThumb ? resolveUrl(targetUrl, pagePrimaryThumb) || pagePrimaryThumb : "";
   const pageTitle = $('meta[property="og:title"]').attr("content") || $('meta[name="twitter:title"]').attr("content") || $("title").first().text().trim() || "Video link";
   extractVimeoUrlsFromText(html, targetUrl).forEach((vimeoUrl) => assets.vimeoCandidateUrls.add(vimeoUrl));
-  extractWistiaIdsFromText(html, targetUrl).forEach((wistiaId) => assets.wistiaCandidateIds.add(wistiaId));
+  extractWistiaIdsFromText(`${targetUrl}
+${html}`, targetUrl).forEach((wistiaId) => assets.wistiaCandidateIds.add(wistiaId));
   if (!options.videosOnly) {
     assets.images.push(...extractImagesFromDom($, targetUrl));
     assets.images.push(...extractImagesFromHtmlString(html, targetUrl));
@@ -8720,6 +8992,7 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
   let colors = [];
   const vimeoCandidateUrls = /* @__PURE__ */ new Set();
   const wistiaCandidateIds = /* @__PURE__ */ new Set();
+  extractWistiaIdsFromText(targetUrl, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
   const html = preloadedHtml || await withTimeout(fetchSiteHtml(targetUrl), 28e3, `Static HTML fetch for ${targetUrl}`).catch(() => "");
   if (!html) {
     return extractReaderFallbackAssets(targetUrl, { videosOnly: options.videosOnly });
@@ -13152,7 +13425,7 @@ app.get("/api/section-frame", async (req, res) => {
   }
 });
 app.post("/api/extract", async (req, res) => {
-  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody } = req.body;
+  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, proxyUrl } = req.body;
   const needsDeepCrawl = /fabindia\.com|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = crawlModeBody === "deep" || needsDeepCrawl ? "deep" : "fast";
   const isFastCrawl = crawlMode !== "deep";
@@ -13166,6 +13439,8 @@ app.post("/api/extract", async (req, res) => {
   try {
     const targetUrl = new URL2(url).href;
     assertPublicAssetUrl(targetUrl);
+    const extractionProxyUrl = normalizeExtractionProxyUrl(proxyUrl);
+    activeExtractionProxyUrl = extractionProxyUrl;
     lastExtractedSourceUrl = targetUrl;
     extractKey = crypto2.createHash("sha256").update(targetUrl).digest("hex").slice(0, 16);
     progressMgr = ExtractionProgressManager.create(extractKey);
@@ -13475,7 +13750,7 @@ app.post("/api/extract", async (req, res) => {
     }
     const browserBudgetMs = isFastCrawl ? 3e4 : 12e4;
     activeExtractProgress?.setPhase("loading");
-    quickExtractPromise = quickExtractInWorker(targetUrl).catch(() => null);
+    quickExtractPromise = extractionProxyUrl ? Promise.resolve(null) : quickExtractInWorker(targetUrl).catch(() => null);
     const browserExtractPromise = withTimeout(
       (async () => {
         browser = await launchPuppeteerBrowser();
@@ -13626,9 +13901,14 @@ app.post("/api/extract", async (req, res) => {
         });
         if (!navigated) {
           await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: pageLoadTimeout }).catch(() => void 0);
-          await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 1500 : 2500));
+          await waitForPageContentSettle(page, {
+            minWaitMs: isFastCrawl ? 2500 : 3200,
+            readinessTimeoutMs: isFastCrawl ? 2e3 : 3e3
+          });
         } else if (isFastCrawl) {
-          await new Promise((resolve) => setTimeout(resolve, 2e3));
+          await waitForPageContentSettle(page, { minWaitMs: 2500, readinessTimeoutMs: 2e3 });
+        } else {
+          await waitForPageContentSettle(page, { minWaitMs: 3e3, readinessTimeoutMs: 3e3 });
         }
         const initialHtml = await page.content().catch(() => "");
         if (pageHtmlLooksBlocked(initialHtml)) {
@@ -13637,7 +13917,10 @@ app.post("/api/extract", async (req, res) => {
             waitUntil: isFastCrawl ? "domcontentloaded" : "networkidle2",
             timeout: isFastCrawl ? 15e3 : 45e3
           }).catch(() => void 0);
-          await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 1500 : 2500));
+          await waitForPageContentSettle(page, {
+            minWaitMs: isFastCrawl ? 2500 : 3200,
+            readinessTimeoutMs: isFastCrawl ? 1800 : 2600
+          });
         }
         activeExtractProgress?.setPhase("dom");
         activeExtractProgress?.setTask("Scanning page DOM and network assets");
@@ -13971,7 +14254,8 @@ app.post("/api/extract", async (req, res) => {
         const resolvedPagePrimaryThumb = pagePrimaryThumb ? resolveUrl(targetUrl, pagePrimaryThumb) || pagePrimaryThumb : "";
         const pageTitle = $('meta[property="og:title"]').attr("content") || $('meta[name="twitter:title"]').attr("content") || $("title").first().text().trim() || "Video link";
         extractVimeoUrlsFromText(html, targetUrl).forEach((vimeoUrl) => vimeoCandidateUrls.add(vimeoUrl));
-        extractWistiaIdsFromText(html, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
+        extractWistiaIdsFromText(`${targetUrl}
+${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
         if (!videosOnly) {
           images.push(...extractImagesFromDom($, targetUrl));
           images.push(...extractImagesFromHtmlString(html, targetUrl));
@@ -14111,6 +14395,7 @@ app.post("/api/extract", async (req, res) => {
           let embeddedPage;
           try {
             embeddedPage = await acquireSingleWebsitePage(browser);
+            await applyProxyAuthToPage(embeddedPage);
             embeddedPage.on("response", handlePageResponse);
             await embeddedPage.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             await embeddedPage.setRequestInterception(true);
@@ -14410,6 +14695,9 @@ app.post("/api/extract", async (req, res) => {
   } catch (error) {
     progressMgr?.fail(String(error?.message || "Extraction failed"));
     console.error("Extraction error:", error.message);
+    if (/proxy url|proxy protocol/i.test(String(error?.message || ""))) {
+      return res.status(400).json({ error: error.message });
+    }
     if (/private or local asset urls are blocked|only http\(s\) asset urls are allowed/i.test(String(error?.message || ""))) {
       return res.status(403).json({ error: error.message });
     }
@@ -15192,7 +15480,7 @@ app.get("/api/convert-font", async (req, res) => {
         "font",
         fontFamilyFolder
       );
-      return res.json(saved);
+      return res.json({ ...saved, format: converted.format });
     }
     let contentType = "application/octet-stream";
     if (converted.format === "woff2") contentType = "font/woff2";
@@ -15228,6 +15516,7 @@ app.get("/api/convert-font", async (req, res) => {
         );
         return res.json({
           ...saved,
+          format: original.format,
           warning: "WOFF2 converter unavailable. Downloading original font only."
         });
       } catch {
@@ -15252,6 +15541,7 @@ app.get("/api/convert-font", async (req, res) => {
         );
         return res.json({
           ...saved,
+          format: original.format,
           warning: "Font conversion failed. Original file saved."
         });
       } catch {
@@ -15307,7 +15597,7 @@ app.post("/api/convert-font-buffer", async (req, res) => {
         "font",
         typeof familyFolder === "string" ? familyFolder : ""
       );
-      return res.json(saved);
+      return res.json({ ...saved, format: normalizedTarget });
     }
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Type", contentType);
@@ -16895,9 +17185,13 @@ app.post("/api/download-zip", async (req, res) => {
         if (rawUrl.startsWith("data:")) {
           const matches = rawUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
           if (matches && matches.length === 3) {
-            const buffer = Buffer.from(matches[2], "base64");
+            let buffer = Buffer.from(matches[2], "base64");
             let ext = matches[1].split("/")[1]?.split("+")[0] || "bin";
             if (ext === "jpeg") ext = "jpg";
+            if (ext === "svg" || ext === "svg+xml") {
+              ext = "svg";
+              buffer = normalizeSvgBufferForIllustrator(buffer);
+            }
             const filename = typeof item === "object" ? deriveAssetFilename({
               metadataFilename: typeof item.filename === "string" ? item.filename : item.metadataFilename,
               preferredBase: typeof item.filenameBase === "string" ? item.filenameBase : void 0,
@@ -16919,7 +17213,9 @@ app.post("/api/download-zip", async (req, res) => {
             refererPageUrl: resolveFontRefererPage(
               typeof item.cssSource === "string" ? item.cssSource : "",
               zipPageUrl || ""
-            ) || void 0
+            ) || void 0,
+            preferInlineConversion: true,
+            timeoutMs: 65e3
           };
           const toFormat = normalizeFontFormat(String(item.toFormat || "ttf"));
           const originalFormat = normalizeFontFormat(String(item.originalFormat || "unknown"));
@@ -16946,15 +17242,42 @@ app.post("/api/download-zip", async (req, res) => {
           } catch (cacheError) {
             const reason = String(cacheError?.message || cacheError || "");
             if (!cacheProbe && /not cached|valid font|decode|conversion|timeout|fetch/i.test(reason)) {
-              converted2 = await runFontZipConvert(false);
+              try {
+                converted2 = await runFontZipConvert(false);
+              } catch (retryError) {
+                const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url2);
+                if (!fallbackFormat || fallbackFormat === toFormat) throw retryError;
+                converted2 = await convertFontAsset(
+                  url2,
+                  fallbackFormat,
+                  originalFormat,
+                  filenameBase,
+                  {
+                    ...fontExtras,
+                    ...cacheProbe ? { prefetched: cacheProbe } : {}
+                  }
+                );
+              }
             } else {
-              throw cacheError;
+              const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url2);
+              if (!fallbackFormat || fallbackFormat === toFormat) throw cacheError;
+              converted2 = await convertFontAsset(
+                url2,
+                fallbackFormat,
+                originalFormat,
+                filenameBase,
+                {
+                  ...fontExtras,
+                  ...cacheProbe ? { prefetched: cacheProbe } : {}
+                }
+              );
             }
           }
           if (!converted2.buffer?.length) {
-            throw new Error(`Converted font is empty (${toFormat})`);
+            throw new Error(`Font file is empty (${converted2?.format || toFormat})`);
           }
-          return { ok: true, entry: { name: zipName, buffer: converted2.buffer } };
+          const entryName = converted2.format && converted2.format !== toFormat ? buildFontZipEntryName(filenameBase, converted2.format, familyFolder) : zipName;
+          return { ok: true, entry: { name: entryName, buffer: converted2.buffer } };
         }
         if (isImageConversion) {
           const requestedCachePath = typeof item.cachedPath === "string" ? item.cachedPath.trim() : "";
@@ -17013,7 +17336,8 @@ app.post("/api/download-zip", async (req, res) => {
               throw new Error("ZIP entry must not use WEBP/AVIF extension when PNG/JPG conversion was requested");
             }
           }
-          return { ok: true, entry: { name: converted2.filename, buffer: converted2.buffer } };
+          const entryBuffer = detectImageFormatFromBuffer(converted2.buffer) === "svg" ? normalizeSvgBufferForIllustrator(converted2.buffer) : converted2.buffer;
+          return { ok: true, entry: { name: converted2.filename, buffer: entryBuffer } };
         }
         if (isVideoAsset) {
           return {
@@ -17046,6 +17370,8 @@ app.post("/api/download-zip", async (req, res) => {
           const familyFolder = typeof item?.familyFolder === "string" ? item.familyFolder : filenameBase;
           const runFontZipFetch = (cacheOnly) => convertFontAsset(url, "ttf", sourceFormat, filenameBase, {
             originalUrl: manifestUrl,
+            preferInlineConversion: true,
+            timeoutMs: 65e3,
             ...cacheOnly ? zipCacheOnly : {}
           });
           let converted2;

@@ -83,8 +83,11 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Font converter controls', fontExtractor, 'getAvailableFontDownloadFormats');
   assertIncludes('Font converter controls', fontExtractor, 'resolveFontTargetFormat');
   assertIncludes('Font converter controls', fontExtractor, 'selectedFormats');
-  assertIncludes('Font ZIP multi-format output', fontExtractor, 'buildFontZipItems');
-  assertIncludes('Font ZIP multi-format output', fontExtractor, 'saved as TTF and WOFF');
+  assertIncludes('Font dropdown format output', fontExtractor, '<select');
+  assertIncludes('Font dropdown format output', fontExtractor, 'buildFontZipItem');
+  assertIncludes('Font dropdown format output', fontExtractor, 'getInstallableFontFormat(font, selectedFormats)');
+  assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'getZipDownloadFormats');
+  assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'saved as TTF and WOFF');
   assertIncludes('Native video duplicate download guard', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Downloader reset API client', videoDownloader, "method: 'DELETE'");
   assertIncludes('Website-to-video handoff', app, 'isDirectVideoPlatformUrl(directVideoTarget)');
@@ -221,6 +224,62 @@ const checkWistiaJunkPlayersRemoved = async () => {
   ok('Wistia junk player cards are removed');
 };
 
+const checkBrightcoveTrackerLinksCanonicalized = async () => {
+  const visibleVideos = await import('../src/lib/visibleVideos.ts');
+  const seedUrl = 'https://www.carvykti.com/receiving-carvykti/#expectCARVYKTIJourney';
+  const staleBrightcoveVideos = [
+    {
+      url: 'https://metrics.brightcove.com/v2/tracker?domain=videocloud&account=4317630935001&video=6394961629112&player=players.brightcove.net%2F4317630935001%2Fdefault_default',
+      title: 'tracker 1',
+      provider: 'brightcove',
+      type: 'brightcove',
+    },
+    {
+      url: 'https://metrics.brightcove.com/v2/tracker?domain=videocloud&account=4317630935001&video=6394961629112&player=players.brightcove.net%2F4317630935001%2Fdefault_default',
+      title: 'tracker 2',
+      provider: 'brightcove',
+      type: 'brightcove',
+    },
+    {
+      url: 'https://videos-cdn.brightcove.net/accounts/4317630935001/videos/6394961629112/master.m3u8',
+      title: 'master.m3u8 1',
+      provider: 'brightcove',
+      type: 'm3u8',
+    },
+    {
+      url: 'https://videos-cdn.brightcove.net/accounts/4317630935001/videos/6394961629112/segment0.ts',
+      title: 'segment0.ts 1',
+      provider: 'brightcove',
+      type: 'ts',
+    },
+    {
+      url: 'https://videos-cdn.brightcove.net/accounts/4317630935001/videos/6389044856112/segment0.ts',
+      title: 'segment0.ts 2',
+      provider: 'brightcove',
+      type: 'ts',
+    },
+    {
+      url: 'https://players.brightcove.net/4317630935001/default_default/index.html?videoId=6389044856112',
+      title: '6389044856112',
+      provider: 'brightcove',
+      type: 'brightcove',
+    },
+  ];
+  const cards = visibleVideos.getVisibleVideoCards(staleBrightcoveVideos, seedUrl);
+  const urls = cards.map((video) => String(video?.url || ''));
+  if (urls.some((url) => /metrics\.brightcove\.com|master\.m3u8|rendition\.m3u8|segment\d*\.ts/i.test(url))) {
+    fail(`Brightcove tracker/manifest junk leaked into visible cards: ${urls.join(', ')}`);
+  }
+  const expected = [
+    'https://players.brightcove.net/4317630935001/default_default/index.html?videoId=6394961629112',
+    'https://players.brightcove.net/4317630935001/default_default/index.html?videoId=6389044856112',
+  ];
+  if (cards.length !== expected.length || !expected.every((url) => urls.includes(url))) {
+    fail(`expected canonical Brightcove player URLs only, got ${urls.join(', ')}`);
+  }
+  ok('Brightcove tracker cards canonicalize to clean player links');
+};
+
 const main = async () => {
   const health = await fetch(`${BASE}/`, { headers: { 'X-VDX-Local-Request': '1' } }).catch(() => null);
   if (!health?.ok) fail(`Server not reachable at ${BASE}`);
@@ -231,6 +290,7 @@ const main = async () => {
   await checkDownloaderResetApi();
   await checkFontCardBackfill();
   await checkWistiaJunkPlayersRemoved();
+  await checkBrightcoveTrackerLinksCanonicalized();
   await runCommand('node', ['scripts/smoke-video-ui.mjs'], { SMOKE_BASE_URL: BASE });
   console.log('\nPASS: feedback regressions are covered');
 };

@@ -83,12 +83,13 @@ try {
   });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
 
-  await page.waitForSelector('input[type="url"]', { timeout: 30000 });
-  await page.click('input[type="url"]');
+  const websiteUrlInputSelector = 'input[placeholder^="https://example.com"]';
+  await page.waitForSelector(websiteUrlInputSelector, { timeout: 30000 });
+  await page.click(websiteUrlInputSelector);
   await page.keyboard.down(process.platform === 'darwin' ? 'Meta' : 'Control');
   await page.keyboard.press('KeyA');
   await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control');
-  await page.type('input[type="url"]', TARGET_URL);
+  await page.type(websiteUrlInputSelector, TARGET_URL);
   await clickButtonByText(page, 'Extract From Open Website');
   await page.waitForFunction(
     () =>
