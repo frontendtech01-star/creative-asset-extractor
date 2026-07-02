@@ -154,6 +154,9 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Toyota 360 frame extraction', server, '360-sequence');
   assertIncludes('Toyota 360 frame extraction', server, 'jellies');
   assertIncludes('Toyota 360 frame extraction', server, 'MAX_IMAGE_SEQUENCE_FRAMES');
+  assertIncludes('Lexus 360 frame extraction', server, 'assetscs');
+  assertIncludes('Lexus 360 frame extraction', server, 'visualizer');
+  assertIncludes('Lexus 360 frame extraction', server, 'defaultImageSequenceCountForUrl');
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
   assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');

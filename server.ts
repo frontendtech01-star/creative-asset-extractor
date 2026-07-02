@@ -1261,19 +1261,25 @@ const buildChromeTabAssetCaptureScript = () => `
     if (!target) return [];
     let parsed;
     try { parsed = new URL(target); } catch { return []; }
-    if (!/(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(parsed.href)) return [];
-    const match = parsed.pathname.match(/^(.*\\/)(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
+    if (!/(?:threesixty|360|jellies|vehicle|toyota|lexus|aemassets|assetscs|visualizer)/i.test(parsed.href)) return [];
+    const numericLeafMatch = parsed.pathname.match(/^(.*\\/)(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
+    const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
+    const match = numericLeafMatch || prefixedLeafMatch;
     if (!match) return [];
     const frame = Number(match[2]);
     if (!Number.isFinite(frame) || frame < 1) return [];
     const parts = match[1].split('/').filter(Boolean);
     const pathCount = Number(parts[parts.length - 1] || 0);
-    const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : 0);
+    const hasExplicitFrameCountPath = Boolean(numericLeafMatch && pathCount >= 2 && pathCount <= 120);
+    const hasPrefixedFrameName = Boolean(prefixedLeafMatch);
+    if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
+    const fallbackCount = /lexus|assetscs|visualizer/i.test(parsed.href) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(parsed.href) ? 36 : 0;
+    const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : fallbackCount);
     if (!count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_, index) => {
       const clone = new URL(parsed.href);
       clone.pathname = match[1] + (index + 1) + match[3];
-      return clone.href;
+      return { url: clone.href, frame: index + 1, count };
     });
   };
   const collect360FromRoot = (root) => {
@@ -1291,9 +1297,11 @@ const buildChromeTabAssetCaptureScript = () => `
       });
     });
     candidates.forEach((candidate) => {
-      expand360Sequence(candidate, count).forEach((frameUrl, index) => addImage(frameUrl, {
+      expand360Sequence(candidate, count).forEach((frame) => addImage(frame.url, {
         source: '360-sequence',
-        alt: '360 frame ' + (index + 1),
+        alt: '360 frame ' + frame.frame,
+        sequenceFrame: frame.frame,
+        sequenceCount: frame.count,
       }));
     });
   };
@@ -1341,9 +1349,11 @@ const buildChromeTabAssetCaptureScript = () => `
   });
   Array.from(document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]')).forEach(collect360FromRoot);
   Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
-    expand360Sequence(entry.name, 0).forEach((frameUrl, index) => addImage(frameUrl, {
+    expand360Sequence(entry.name, 0).forEach((frame) => addImage(frame.url, {
       source: '360-sequence',
-      alt: '360 frame ' + (index + 1),
+      alt: '360 frame ' + frame.frame,
+      sequenceFrame: frame.frame,
+      sequenceCount: frame.count,
     }));
   });
 
@@ -1585,7 +1595,7 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
 
 const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
   const executablePath = resolvePuppeteerExecutablePath();
-  const userDataDir = path.join(os.tmpdir(), 'creative-asset-extractor-browser-profile');
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-asset-extractor-browser-profile-'));
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
   try {
     browser = await puppeteer.launch({
@@ -1605,9 +1615,9 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
-    await waitForPageContentSettle(page, { minWaitMs: 3000, readinessTimeoutMs: 2500 });
-    await performLazyLoadScroll(page, { stepDelayMs: 700, maxStableRounds: 3, maxDurationMs: 25000 }).catch(() => undefined);
-    await waitForPageContentSettle(page, { minWaitMs: 1200, readinessTimeoutMs: 1500 });
+    await waitForPageContentSettle(page, { minWaitMs: 1800, readinessTimeoutMs: 1200 });
+    await performLazyLoadScroll(page, { stepDelayMs: 450, maxStableRounds: 2, maxDurationMs: 12000 }).catch(() => undefined);
+    await waitForPageContentSettle(page, { minWaitMs: 700, readinessTimeoutMs: 900 });
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript() as any);
     const raw = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
     const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : [])
@@ -1649,6 +1659,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
     return await normalizeBrowserSessionExtraction(raw, targetUrl, 'controlled-browser-session');
   } finally {
     await browser?.close().catch(() => undefined);
+    await fsp.rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
   }
 };
 
@@ -3555,7 +3566,14 @@ const addSrcsetCandidates = (images: any[], srcset: string | undefined, baseUrl:
 const MAX_IMAGE_SEQUENCE_FRAMES = 120;
 
 const isLikely360SequenceUrl = (value: string) =>
-  /(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(String(value || ''));
+  /(?:threesixty|360|jellies|vehicle|toyota|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ''));
+
+const defaultImageSequenceCountForUrl = (value: string) => {
+  const url = String(value || '');
+  if (/lexus|assetscs|visualizer/i.test(url)) return 18;
+  if (/toyota|jellies|threesixty|360|aemassets/i.test(url)) return 36;
+  return 0;
+};
 
 const expandImageSequenceUrl = (rawUrl: string, baseUrl: string, hintedCount = 0) => {
   const absolute = resolveUrl(baseUrl, String(rawUrl || '').replace(/&amp;/g, '&').trim());
@@ -3566,23 +3584,32 @@ const expandImageSequenceUrl = (rawUrl: string, baseUrl: string, hintedCount = 0
   } catch {
     return [];
   }
-  const match = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const match = numericLeafMatch || prefixedLeafMatch;
   if (!match) return [];
   const frame = Number(match[2]);
   if (!Number.isFinite(frame) || frame < 1) return [];
   const pathParts = match[1].split('/').filter(Boolean);
   const pathCount = Number(pathParts[pathParts.length - 1] || 0);
+  const hasExplicitFrameCountPath = numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES;
+  const hasPrefixedFrameName = Boolean(prefixedLeafMatch);
+  if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
   const count =
     hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES
       ? hintedCount
       : pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES
         ? pathCount
-        : 0;
+        : defaultImageSequenceCountForUrl(absolute);
   if (!count || frame > count) return [];
   return Array.from({ length: count }, (_, index) => {
     const clone = new URL(parsed.href);
     clone.pathname = `${match[1]}${index + 1}${match[3]}`;
-    return clone.href;
+    return {
+      url: clone.href,
+      frame: index + 1,
+      count,
+    };
   });
 };
 
@@ -3597,16 +3624,18 @@ const extractImageSequencesFromText = (text: string, targetUrl: string) => {
   const seen = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = urlRegex.exec(source)) !== null) {
-    expandImageSequenceUrl(match[0], targetUrl, hintedCount).forEach((frameUrl) => {
+    expandImageSequenceUrl(match[0], targetUrl, hintedCount).forEach((frame) => {
+      const frameUrl = frame.url;
       if (seen.has(frameUrl)) return;
       seen.add(frameUrl);
-      const frameMatch = frameUrl.match(/\/(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i);
       images.push({
         url: frameUrl,
         type: inferImageTypeFromUrl(frameUrl) || getAssetTypeFromUrl(frameUrl, 'png'),
         filename: filenameFromUrlPath(frameUrl),
         source: '360-sequence',
-        alt: frameMatch?.[1] ? `360 frame ${frameMatch[1]}` : '360 frame',
+        alt: `360 frame ${frame.frame}`,
+        sequenceFrame: frame.frame,
+        sequenceCount: frame.count,
         status: DEFAULT_ASSET_STATUS,
       });
     });
@@ -4839,6 +4868,20 @@ const browserLikeHeaders = (targetUrl: string, refererPage = '') => {
 
 const isLikelyFontAssetUrl = (url: string) => /\.(woff2?|ttf|otf|eot)(\?|$)/i.test(String(url || ''));
 
+const imageAcceptHeaderForUrl = (url: string) => {
+  const value = String(url || '').toLowerCase();
+  if (/[?&]fmt=(?:png|png-alpha)(?:&|$)/i.test(value) || /\.png(?:[?#]|$)/i.test(value)) {
+    return 'image/png,image/apng,image/*,*/*;q=0.8';
+  }
+  if (/[?&]fmt=jpe?g(?:&|$)/i.test(value) || /\.jpe?g(?:[?#]|$)/i.test(value)) {
+    return 'image/jpeg,image/*,*/*;q=0.8';
+  }
+  if (/[?&]fmt=webp(?:&|$)/i.test(value) || /\.webp(?:[?#]|$)/i.test(value)) {
+    return 'image/webp,image/*,*/*;q=0.8';
+  }
+  return 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+};
+
 const isValidFontOriginalBuffer = (buffer: Buffer, contentType = '') => {
   if (!buffer || buffer.length < 128) return false;
   if (/text\/html|application\/json|text\/plain/i.test(String(contentType || ''))) return false;
@@ -5312,12 +5355,13 @@ const resolveImageFetchReferer = (url: string, refererPageUrl = '') => {
 
 const fetchRemoteImageBufferViaHttp = async (url: string, refererPageUrl = '') => {
   const referer = resolveImageFetchReferer(url, refererPageUrl);
+  const accept = imageAcceptHeaderForUrl(url);
   for (const userAgent of PAGE_FETCH_USER_AGENTS) {
     try {
       const response = await fetch(url, {
         headers: {
           'User-Agent': userAgent,
-          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          Accept: accept,
           ...(referer ? { Referer: referer } : {}),
         },
         signal: AbortSignal.timeout(15000),
@@ -5339,6 +5383,7 @@ const fetchRemoteImageBufferViaHttp = async (url: string, refererPageUrl = '') =
 
 const fetchRemoteImageBufferViaCurl = async (url: string, refererPageUrl = '') => {
   const referer = resolveImageFetchReferer(url, refererPageUrl);
+  const accept = imageAcceptHeaderForUrl(url);
 
   for (const userAgent of PAGE_FETCH_USER_AGENTS) {
     try {
@@ -5349,7 +5394,7 @@ const fetchRemoteImageBufferViaCurl = async (url: string, refererPageUrl = '') =
         '-A',
         userAgent,
         '-H',
-        'Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        `Accept: ${accept}`,
         ...(referer ? ['-H', `Referer: ${referer}`] : []),
         url,
       ];
@@ -6055,6 +6100,14 @@ const uniqueZipPathInSet = (zipPath: string, used: Set<string>) => {
   candidate = safeDir ? `${safeDir}/${base}-${index}${ext}` : `${base}-${index}${ext}`;
   used.add(candidate);
   return candidate;
+};
+
+const reconcileZipEntryNameWithBuffer = (zipEntryName: string, buffer: Buffer) => {
+  const normalized = String(zipEntryName || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  const file = parts.length ? parts.pop()! : 'asset.bin';
+  const reconciledFile = reconcileImageFilenameWithBuffer(file, buffer);
+  return parts.length ? `${parts.join('/')}/${reconciledFile}` : reconciledFile;
 };
 
 const uniqueDownloadFilePath = async (
@@ -7591,7 +7644,11 @@ const canonicalImageDedupKey = (url: string) => {
       return `${host}:${parsed.pathname}?context=${contextParam}`.toLowerCase();
     }
     if (isLikely360SequenceUrl(raw)) {
-      return `${host}:sequence:${parsed.pathname}${parsed.search}`.toLowerCase();
+      const sequencePath = parsed.pathname
+        .replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, '/')
+        .replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, '/')
+        .replace(/\/{2,}/g, '/');
+      return `sequence:${sequencePath}`.toLowerCase();
     }
     if (leaf && !isOpaqueGeneratedImageLeaf(leaf)) {
       return `${host}:file:${leaf}`;
@@ -7623,6 +7680,20 @@ const scoreImageRecord = (img: any) => {
   if (img?.cachedUrl) score += 50;
   if (img?.status === 'downloaded') score += 40;
   if (img?.filename || img?.alt || img?.name) score += 20;
+  try {
+    const parsed = new URL(url);
+    const width = Number(parsed.searchParams.get('wid') || parsed.searchParams.get('width') || parsed.searchParams.get('w') || 0);
+    const height = Number(parsed.searchParams.get('hei') || parsed.searchParams.get('height') || parsed.searchParams.get('h') || 0);
+    const quality = Number(parsed.searchParams.get('qlt') || parsed.searchParams.get('quality') || parsed.searchParams.get('q') || 0);
+    if (width > 0) score += Math.min(30, Math.round(width / 80));
+    if (height > 0) score += Math.min(12, Math.round(height / 80));
+    if (quality > 0) score += Math.min(10, Math.round(quality / 10));
+    const fmt = String(parsed.searchParams.get('fmt') || parsed.searchParams.get('format') || '').toLowerCase();
+    if (/jpg|jpeg|png/.test(fmt)) score += 5;
+    if (/webp|avif/.test(fmt)) score += 2;
+  } catch {
+    // Keep base score.
+  }
   if (!/-\d+x\d+\./i.test(url)) score += 12;
   if (/\.(?:png|jpe?g|webp|avif)(\?|$)/i.test(url)) score += 8;
   if (/[?&]context=/i.test(url)) score += 30;
@@ -7970,19 +8041,26 @@ const extractRenderedDomAssetsFromPage = async (
     const SRCSET_ATTRS = ['srcset', 'data-srcset', 'data-lazy-srcset'];
     const expand360Sequence = (raw: string | null | undefined, countHint = 0) => {
       const target = _.toAbsolute(String(raw || '').replace(/&amp;/g, '&'));
-      if (!target || !/(?:threesixty|360|jellies|vehicle|toyota|aemassets)/i.test(target)) return [];
+      if (!target || !/(?:threesixty|360|jellies|vehicle|toyota|lexus|aemassets|assetscs|visualizer)/i.test(target)) return [];
       let parsed: URL;
       try {
         parsed = new URL(target);
       } catch {
         return [];
       }
-      const match = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+      const match =
+        parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i) ||
+        parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
       if (!match) return [];
       const frame = Number(match[2]);
       const parts = match[1].split('/').filter(Boolean);
       const pathCount = Number(parts[parts.length - 1] || 0);
-      const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : 0);
+      const fallbackCount = /lexus|assetscs|visualizer/i.test(target)
+        ? 18
+        : /toyota|jellies|threesixty|360|aemassets/i.test(target)
+          ? 36
+          : 0;
+      const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : fallbackCount);
       if (!Number.isFinite(frame) || frame < 1 || !count || count > 120 || frame > count) return [];
       return Array.from({ length: count }, (_unused, index) => {
         const clone = new URL(parsed.href);
@@ -8231,6 +8309,7 @@ const warmExtractedAssetList = async (
   const imageWarmPriority = (img: any) => {
     const url = String(img?.url || '');
     if (url.startsWith('data:')) return 0;
+    if (String(img?.source || '').includes('360-sequence') || isLikely360SequenceUrl(url)) return 6;
     if (/\.(?:jpe?g|png|webp|gif|avif)(\?|$)/i.test(url)) return 3;
     if (/\/wp-content\/uploads\//i.test(url)) return 2;
     return 1;
@@ -8596,7 +8675,8 @@ const dedupeExtractedAssets = async (
     }
     warmExtractedAssetsInBackground(uniqueImages as any[], uniqueFonts as any[], targetUrl);
   } else {
-    const imageLimit = Math.min(uniqueImages.length, 200);
+    const hasImageSequence = uniqueImages.some((img: any) => String(img?.source || '').includes('360-sequence') || isLikely360SequenceUrl(String(img?.url || '')));
+    const imageLimit = Math.min(uniqueImages.length, hasImageSequence ? 360 : 200);
     const fontLimit = Math.min(uniqueFonts.length, 80);
     await warmExtractedAssetList(uniqueImages as any[], uniqueFonts as any[], {
       imageLimit,
@@ -15175,7 +15255,7 @@ app.post('/api/extract', async (req, res) => {
       console.warn('Page JS error during extraction:', pageErr?.message || pageErr || 'unknown');
     });
 
-    const pageLoadTimeout = isFastCrawl ? 15000 : 60000;
+    const pageLoadTimeout = isFastCrawl ? 12000 : 60000;
     const pageWaitUntil = isFastCrawl ? 'domcontentloaded' : 'networkidle2';
     const navigated = await page
       .goto(targetUrl, { waitUntil: pageWaitUntil as 'domcontentloaded' | 'networkidle2', timeout: pageLoadTimeout })
@@ -15186,11 +15266,11 @@ app.post('/api/extract', async (req, res) => {
     if (!navigated) {
       await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: pageLoadTimeout }).catch(() => undefined);
       await waitForPageContentSettle(page, {
-        minWaitMs: isFastCrawl ? 2500 : 3200,
-        readinessTimeoutMs: isFastCrawl ? 2000 : 3000,
+        minWaitMs: isFastCrawl ? 1400 : 3200,
+        readinessTimeoutMs: isFastCrawl ? 1200 : 3000,
       });
     } else if (isFastCrawl) {
-      await waitForPageContentSettle(page, { minWaitMs: 2500, readinessTimeoutMs: 2000 });
+      await waitForPageContentSettle(page, { minWaitMs: 1400, readinessTimeoutMs: 1200 });
     } else {
       await waitForPageContentSettle(page, { minWaitMs: 3000, readinessTimeoutMs: 3000 });
     }
@@ -15205,21 +15285,21 @@ app.post('/api/extract', async (req, res) => {
         })
         .catch(() => undefined);
       await waitForPageContentSettle(page, {
-        minWaitMs: isFastCrawl ? 2500 : 3200,
-        readinessTimeoutMs: isFastCrawl ? 1800 : 2600,
+        minWaitMs: isFastCrawl ? 1500 : 3200,
+        readinessTimeoutMs: isFastCrawl ? 1200 : 2600,
       });
     }
 
     activeExtractProgress?.setPhase('dom');
     activeExtractProgress?.setTask('Scanning page DOM and network assets');
-    const scrollBudgetMs = isFastCrawl ? 25000 : 45000;
+    const scrollBudgetMs = isFastCrawl ? 12000 : 45000;
     const needsScroll = await pageNeedsLazyLoadScroll(page, initialHtml);
     if (needsScroll) {
       activeExtractProgress?.setPhase('scroll');
       activeExtractProgress?.setTask('Scrolling for lazy-loaded assets');
       await performLazyLoadScroll(page, {
-        stepDelayMs: isFastCrawl ? 700 : 800,
-        maxStableRounds: isFastCrawl ? 3 : 4,
+        stepDelayMs: isFastCrawl ? 450 : 800,
+        maxStableRounds: isFastCrawl ? 2 : 4,
         maxDurationMs: scrollBudgetMs,
       });
       await page
@@ -15243,7 +15323,7 @@ app.post('/api/extract', async (req, res) => {
         await new Promise((resolve) => setTimeout(resolve, 900));
       }
     } else {
-      await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 1200 : 1800));
+      await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 500 : 1800));
     }
 
     try {
@@ -15322,15 +15402,20 @@ app.post('/api/extract', async (req, res) => {
       // Ignore rendered DOM scan failures.
     }
 
-    // Multi-pass: scroll again, wait, collect more images — up to 3 rounds
+    // Multi-pass: scroll again only when the fast pass still looks sparse.
     {
       let prevCount = images.length;
-      for (let pass = 0; pass < 3; pass++) {
+      const shouldRunExtraPasses =
+        !isFastCrawl ||
+        images.length < 12 ||
+        (Date.now() - lastNewAssetAt < 2500 && images.length < 40);
+      const maxPasses = isFastCrawl ? 1 : 3;
+      for (let pass = 0; shouldRunExtraPasses && pass < maxPasses; pass++) {
         try {
           await performLazyLoadScroll(page, {
-            stepDelayMs: 500,
+            stepDelayMs: isFastCrawl ? 350 : 500,
             maxStableRounds: 2,
-            maxDurationMs: 15000,
+            maxDurationMs: isFastCrawl ? 7000 : 15000,
           });
         } catch (scrollErr: any) {
           console.warn(`Multi-pass scroll round ${pass + 1} failed:`, scrollErr?.message || scrollErr);
@@ -19237,11 +19322,19 @@ app.post('/api/download-zip', async (req, res) => {
           const requestedCachePath = typeof item.cachedPath === 'string' ? item.cachedPath.trim() : '';
           const requestUrl = requestedCachePath || rawUrl;
           const url = assertAssetUrlAllowed(requestUrl);
-          const cacheProbe =
+          let cacheProbe =
             (await readAssetBufferFromCache(url, 'image')) ||
             (manifestUrl && manifestUrl !== requestUrl
               ? await readAssetBufferFromCache(manifestUrl, 'image')
               : null);
+          if (!cacheProbe && !String(url || '').startsWith('data:')) {
+            const ensured = await withTimeout(
+              ensureImageCachedForDownload(url, manifestUrl || url, zipPageUrl),
+              45000,
+              `ZIP image cache fetch for ${manifestUrl || url}`
+            ).catch(() => null);
+            cacheProbe = ensured?.cached || null;
+          }
           if (cacheProbe) zipImageStats.cached += 1;
           console.debug('[image-zip:item]', {
             id: typeof item.id === 'string' ? item.id : undefined,
@@ -19250,6 +19343,58 @@ app.post('/api/download-zip', async (req, res) => {
             cachePath: requestedCachePath || (await getAssetCacheDebugPath(url, 'image')),
             cache: cacheProbe ? 'hit' : 'miss',
           });
+          if (item?.preserveOriginal === true || String(item?.preserveOriginal || '').toLowerCase() === 'true') {
+            if (!cacheProbe || !isValidImageBuffer(cacheProbe.buffer, cacheProbe.contentType)) {
+              throw new Error(`Downloaded asset is not a valid image: ${manifestUrl || url}`);
+            }
+            let sourceFormat = normalizeRasterFormat(
+              detectImageFormatFromBuffer(cacheProbe.buffer) ||
+                inferImageTypeFromContentType(cacheProbe.contentType) ||
+                inferImageTypeFromUrl(manifestUrl || url, cacheProbe.contentType) ||
+                getAssetTypeFromUrl(manifestUrl || url, 'bin')
+            );
+            const preferredZipName = typeof item.zipEntryName === 'string' ? item.zipEntryName.trim() : '';
+            const requestedZipFormat = normalizeRasterFormat(
+              preferredZipName.match(/\.([a-z0-9]+)$/i)?.[1] ||
+                String(item.filename || item.metadataFilename || '').match(/\.([a-z0-9]+)$/i)?.[1] ||
+                ''
+            );
+            let entryBuffer = sourceFormat === 'svg'
+              ? normalizeSvgBufferForIllustrator(cacheProbe.buffer)
+              : cacheProbe.buffer;
+            if (['png', 'jpg'].includes(requestedZipFormat) && sourceFormat !== requestedZipFormat) {
+              const converted = await withTimeout(
+                getCachedConvertedImage(url, requestedZipFormat, {
+                  prefetched: {
+                    buffer: cacheProbe.buffer,
+                    contentType: cacheProbe.contentType || guessContentTypeFromPath(String(item.cachedPath || url)) || 'application/octet-stream',
+                  },
+                  filenameBase: typeof item.filenameBase === 'string' ? item.filenameBase : undefined,
+                  originalUrl: manifestUrl,
+                  metadataFilename: typeof item.metadataFilename === 'string' ? item.metadataFilename : undefined,
+                  refererPageUrl: zipPageUrl || undefined,
+                  skipBrowser: zipSkipBrowser,
+                }),
+                zipImageConvertTimeoutMs,
+                `ZIP image preserve conversion for ${manifestUrl || url}`
+              );
+              entryBuffer = converted.buffer;
+              sourceFormat = normalizeRasterFormat(converted.format || requestedZipFormat);
+            }
+            const fallbackName = buildDownloadFilename(
+              manifestUrl || url,
+              sourceFormat,
+              typeof item.filenameBase === 'string' ? item.filenameBase : undefined,
+              {
+                metadataFilename: typeof item.metadataFilename === 'string' ? item.metadataFilename : undefined,
+                contentDisposition: (cacheProbe as any).contentDisposition,
+              }
+            );
+            const entryName = preferredZipName
+              ? reconcileZipEntryNameWithBuffer(preferredZipName, entryBuffer)
+              : reconcileImageFilenameWithBuffer(fallbackName, entryBuffer, cacheProbe.contentType);
+            return { ok: true, entry: { name: entryName, buffer: entryBuffer } };
+          }
           const zipTargetFormat = normalizeRasterFormat(
             typeof item.selectedFormat === 'string'
               ? item.selectedFormat
@@ -19309,7 +19454,11 @@ app.post('/api/download-zip', async (req, res) => {
           const entryBuffer = detectImageFormatFromBuffer(converted.buffer) === 'svg'
             ? normalizeSvgBufferForIllustrator(converted.buffer)
             : converted.buffer;
-          return { ok: true, entry: { name: reconcileImageFilenameWithBuffer(converted.filename, entryBuffer), buffer: entryBuffer } };
+          const preferredZipName = typeof item.zipEntryName === 'string' ? item.zipEntryName.trim() : '';
+          const entryName = preferredZipName
+            ? reconcileZipEntryNameWithBuffer(preferredZipName, entryBuffer)
+            : reconcileImageFilenameWithBuffer(converted.filename, entryBuffer);
+          return { ok: true, entry: { name: entryName, buffer: entryBuffer } };
         }
 
         if (isVideoAsset) {
@@ -19402,7 +19551,11 @@ app.post('/api/download-zip', async (req, res) => {
         const entryBuffer = detectImageFormatFromBuffer(converted.buffer) === 'svg'
           ? normalizeSvgBufferForIllustrator(converted.buffer)
           : converted.buffer;
-        return { ok: true, entry: { name: reconcileImageFilenameWithBuffer(converted.filename, entryBuffer), buffer: entryBuffer } };
+        const preferredZipName = typeof item?.zipEntryName === 'string' ? item.zipEntryName.trim() : '';
+        const entryName = preferredZipName
+          ? reconcileZipEntryNameWithBuffer(preferredZipName, entryBuffer)
+          : reconcileImageFilenameWithBuffer(converted.filename, entryBuffer);
+        return { ok: true, entry: { name: entryName, buffer: entryBuffer } };
       } catch (e: any) {
         console.error(`Failed to add ${rawUrl} to zip:`, e.message || e);
         if (isImageConversion) zipImageStats.skipped += 1;
