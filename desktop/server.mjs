@@ -172,16 +172,17 @@ var LEGACY_CREATIVE_ASSET_SUBFOLDERS = [
 ];
 var LEGACY_IMAGE_SUBFOLDERS = ["Originals", "Thumbnails"];
 var DISPOSABLE_FOLDER_ENTRIES = /* @__PURE__ */ new Set([".DS_Store"]);
+var resolveDownloadsRoot = () => String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path.join(os.homedir(), "Downloads");
 var resolveCreativeAssetsRoot = (sourcePageUrl, options = {}) => {
   const folderName = buildCreativeAssetsFolderName(String(sourcePageUrl || "").trim());
-  return path.join(os.homedir(), "Downloads", folderName);
+  return path.join(resolveDownloadsRoot(), folderName);
 };
 var resolveCreativeAssetsDir = (sourcePageUrl, subfolder, options = {}) => {
   const root = resolveCreativeAssetsRoot(sourcePageUrl, options);
   return subfolder ? path.join(root, subfolder) : root;
 };
 var resolvePlatformVideoAssetsDir = (platform) => {
-  const root = path.join(os.homedir(), "Downloads", buildPlatformCreativeAssetsFolderName(platform));
+  const root = path.join(resolveDownloadsRoot(), buildPlatformCreativeAssetsFolderName(platform));
   return path.join(root, VIDEO_ASSET_SUBFOLDER);
 };
 var removeDirectoryWhenEmpty = async (directory) => {
@@ -2500,7 +2501,7 @@ var cachedImageDir = path3.join(appCacheRoot, "images");
 var cachedFontDir = path3.join(appCacheRoot, "fonts");
 var cachedImageOriginalDir = path3.join(appCacheRoot, "images-original");
 var cachedFontOriginalDir = path3.join(appCacheRoot, "fonts-original");
-var downloadsDir = path3.join(os3.homedir(), "Downloads");
+var downloadsDir = String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path3.join(os3.homedir(), "Downloads");
 var lastExtractedSourceUrl = "";
 var activeExtractProgress = null;
 var readSourcePageUrl = (req, explicit) => {
@@ -3210,10 +3211,74 @@ var buildChromeTabAssetCaptureScript = () => `
     return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
   };
   const imageMap = new Map();
+  const isJpeg2000Variant = (value) => {
+    const raw = String(value || '').replace(/&amp;/g, '&');
+    if (/\\.(?:jp2|j2k|jpf|jpx)(?:$|[?#])/i.test(raw)) return true;
+    try {
+      const parsed = new URL(raw);
+      const fmt = String(parsed.searchParams.get('fmt') || parsed.searchParams.get('format') || parsed.searchParams.get('fm') || '').toLowerCase();
+      return /^(?:jp2|j2k|jpf|jpx|jpeg2000|jpeg2000-alpha)$/.test(fmt);
+    } catch {
+      return /[?&](?:fmt|format|fm)=(?:jp2|j2k|jpf|jpx|jpeg2000|jpeg2000-alpha)(?:&|$)/i.test(raw);
+    }
+  };
+  const isLikelyImageCandidate = (value) => {
+    const raw = String(value || '').replace(/&amp;/g, '&').trim();
+    if (!raw || /%7b|%7d|[{}]/i.test(raw)) return false;
+    if (/\\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(raw)) return false;
+    try {
+      const parsed = new URL(raw);
+      const path = parsed.pathname.replace(/\\/{2,}/g, '/');
+      const hasImageExt = /\\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.href);
+      const hasImageFormat = /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
+      const isImageService = /\\/is\\/image\\/|\\/image\\/|\\/images?\\/|\\/img\\/|\\/media\\/|\\/assets?\\/|\\/content\\/dam\\/|\\/\\.imaging\\//i.test(path);
+      if (!hasImageExt && !hasImageFormat && !isImageService) return false;
+      if (!hasImageExt && /\\/\\d{1,3}(?:&|$)/.test(path)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const sequenceImageKey = (value) => {
+    try {
+      const parsed = new URL(String(value || '').replace(/&amp;/g, '&'));
+      const path = parsed.pathname
+        .replace(/^\\/content\\/dam\\/toyota\\/(?=jellies\\/)/i, '/')
+        .replace(/^\\/is\\/image\\/toyota\\/toyota\\/(?=jellies\\/)/i, '/')
+        .replace(/\\/{2,}/g, '/');
+      if (/\\/\\d{1,3}\\/\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) return 'sequence:' + path.toLowerCase();
+      if (/(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href) && /[-_]\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) {
+        return 'sequence:' + path.toLowerCase();
+      }
+    } catch {
+      // Ignore malformed values.
+    }
+    return '';
+  };
+  const imageVariantScore = (value) => {
+    try {
+      const parsed = new URL(String(value || '').replace(/&amp;/g, '&'));
+      const width = Number(parsed.searchParams.get('wid') || parsed.searchParams.get('width') || parsed.searchParams.get('w') || 0);
+      const height = Number(parsed.searchParams.get('hei') || parsed.searchParams.get('height') || parsed.searchParams.get('h') || 0);
+      const quality = Number(parsed.searchParams.get('qlt') || parsed.searchParams.get('quality') || parsed.searchParams.get('q') || 0);
+      const fmt = String(parsed.searchParams.get('fmt') || parsed.searchParams.get('format') || '').toLowerCase();
+      const formatPenalty = /jp2|j2k|jpf|jpx|jpeg2000/.test(fmt) || /\\.(?:jp2|j2k|jpf|jpx)(?:$|[?#])/i.test(parsed.href)
+        ? -100000
+        : 0;
+      return width + height + quality + (/png|jpe?g/.test(fmt) ? 50 : /webp|avif/.test(fmt) ? 25 : 0) + formatPenalty;
+    } catch {
+      return 0;
+    }
+  };
   const addImage = (value, meta = {}) => {
     const target = absoluteUrl(value);
-    if (!target || imageMap.has(target)) return;
-    imageMap.set(target, {
+    if (!target) return;
+    if (isJpeg2000Variant(target)) return;
+    if (!isLikelyImageCandidate(target)) return;
+    const key = sequenceImageKey(target) || target;
+    const existing = imageMap.get(key);
+    if (existing && imageVariantScore(existing.url) >= imageVariantScore(target)) return;
+    imageMap.set(key, {
       url: target,
       filename: filenameFromUrl(target, 'preview-image.png'),
       width: Number(meta.width || 0) || undefined,
@@ -3256,6 +3321,7 @@ var buildChromeTabAssetCaptureScript = () => `
     let parsed;
     try { parsed = new URL(target); } catch { return []; }
     if (!/(?:threesixty|360|jellies|vehicle|toyota|lexus|aemassets|assetscs|visualizer)/i.test(parsed.href)) return [];
+    if (parsed.pathname.includes('//')) return [];
     const numericLeafMatch = parsed.pathname.match(/^(.*\\/)(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
     const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\\d{1,3})(\\.(?:png|jpe?g|webp|avif))$/i);
     const match = numericLeafMatch || prefixedLeafMatch;
@@ -3264,11 +3330,18 @@ var buildChromeTabAssetCaptureScript = () => `
     if (!Number.isFinite(frame) || frame < 1) return [];
     const parts = match[1].split('/').filter(Boolean);
     const pathCount = Number(parts[parts.length - 1] || 0);
-    const hasExplicitFrameCountPath = Boolean(numericLeafMatch && pathCount >= 2 && pathCount <= 120);
-    const hasPrefixedFrameName = Boolean(prefixedLeafMatch);
+    const hinted = Number(countHint || 0);
+    const commonSequenceCounts = new Set([4, 18, 24, 36, 72, 120]);
+    const hasExplicitFrameCountPath = Boolean(
+      numericLeafMatch &&
+        pathCount >= 2 &&
+        pathCount <= 120 &&
+        ((hinted >= 2 && hinted <= 120 && pathCount === hinted) || commonSequenceCounts.has(pathCount))
+    );
+    const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href));
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
     const fallbackCount = /lexus|assetscs|visualizer/i.test(parsed.href) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(parsed.href) ? 36 : 0;
-    const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : fallbackCount);
+    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
     if (!count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_, index) => {
       const clone = new URL(parsed.href);
@@ -3498,7 +3571,7 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
   const pageUrl = String(raw?.url || sourceUrl || "").trim();
   const imageRows = Array.isArray(raw?.images) ? raw.images : [];
   const images = await Promise.all(
-    imageRows.filter((image) => String(image?.url || "").trim()).map(async (image, index) => {
+    imageRows.filter((image) => String(image?.url || "").trim()).filter((image) => !hasMalformedImageSequencePath(String(image?.url || "").trim())).map(async (image, index) => {
       const url = String(image.url || "").trim();
       const type = String(image.type || "").trim() || getAssetTypeFromUrl(url, "png");
       const filename = String(image.filename || "").trim() || `browser-image-${index + 1}.${type}`;
@@ -3665,11 +3738,80 @@ var hasRenderedFontFamilyWithoutCard = (extracted) => {
   );
   return Array.from(renderedFamilies).some((family) => !cardFamilies.has(family));
 };
+var isImageSequenceCandidateUrl = (value) => /(?:threesixty|360|jellies|vehicle|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ""));
+var imageSequenceMergeKey = (item) => {
+  const raw = String(item?.url || item?.src || "").trim();
+  if (!raw || !isImageSequenceCandidateUrl(raw)) return raw;
+  try {
+    const parsed = new URL2(raw);
+    const normalizedPath = parsed.pathname.replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, "/").replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, "/").replace(/\/{2,}/g, "/");
+    const hostKey = /\/jellies\/(?:max|relative)\//i.test(normalizedPath) ? "toyota-assets" : parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const countedFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\/(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (countedFrame && Number(countedFrame[2]) >= 2 && Number(countedFrame[2]) <= MAX_IMAGE_SEQUENCE_FRAMES) {
+      return `sequence:${hostKey}:${countedFrame[1].toLowerCase()}:${Number(countedFrame[3])}`;
+    }
+    const leafFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (leafFrame) {
+      return `sequence:${hostKey}:${leafFrame[1].toLowerCase()}:${Number(leafFrame[2])}`;
+    }
+    const prefixedFrame = normalizedPath.match(/^(.*[-_])(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (prefixedFrame && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(raw)) {
+      return `sequence:${hostKey}:${prefixedFrame[1].toLowerCase()}:${Number(prefixedFrame[2])}`;
+    }
+  } catch {
+    return raw;
+  }
+  return raw;
+};
+var imageCandidateScore = (item) => {
+  const width = Number(item?.width || 0) || 0;
+  const height = Number(item?.height || 0) || 0;
+  const area = width * height;
+  if (area > 0) return area;
+  try {
+    const parsed = new URL2(String(item?.url || item?.src || ""));
+    const wid = Number(parsed.searchParams.get("wid") || parsed.searchParams.get("width") || 0) || 0;
+    const hei = Number(parsed.searchParams.get("hei") || parsed.searchParams.get("height") || 0) || 0;
+    if (wid > 0 && hei > 0) return wid * hei;
+    return wid || hei || 0;
+  } catch {
+    return 0;
+  }
+};
+var mergeImageRowsByBestSequenceFrame = (left = [], right = []) => {
+  const rows = /* @__PURE__ */ new Map();
+  [...left, ...right].forEach((item) => {
+    const key = imageSequenceMergeKey(item);
+    if (!key) return;
+    const current = rows.get(key);
+    if (!current || imageCandidateScore(item) >= imageCandidateScore(current)) {
+      rows.set(key, item);
+    }
+  });
+  return Array.from(rows.values());
+};
+var browserTabMatchesRequestedUrl = (tabUrl, requestedUrl) => {
+  const requested = String(requestedUrl || "").trim();
+  const current = String(tabUrl || "").trim();
+  if (!requested) return true;
+  if (!current) return false;
+  try {
+    const requestedParsed = new URL2(requested);
+    const currentParsed = new URL2(current);
+    return requestedParsed.hostname.replace(/^www\./, "").toLowerCase() === currentParsed.hostname.replace(/^www\./, "").toLowerCase() && requestedParsed.pathname.replace(/\/+$/, "") === currentParsed.pathname.replace(/\/+$/, "");
+  } catch {
+    return current === requested;
+  }
+};
 async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
   const hasAssets = extracted?.images?.length || 0 || (extracted?.icons?.length || 0) || (extracted?.fonts?.length || 0) || (extracted?.videos?.length || 0);
   const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
   const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
-  if (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill || !fallbackUrl) return extracted;
+  const needsImageSequenceBackfill = [
+    ...Array.isArray(extracted?.images) ? extracted.images : [],
+    ...Array.isArray(extracted?.icons) ? extracted.icons : []
+  ].some((item) => isImageSequenceCandidateUrl(String(item?.url || item?.src || "")));
+  if (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill || !fallbackUrl) return extracted;
   const staticAssets = await withTimeout(
     extractStaticAssets(fallbackUrl, "", { fast: true }),
     35e3,
@@ -3686,8 +3828,8 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
   };
   return {
     ...extracted,
-    images: mergeByUrl(extracted?.images, staticAssets?.images),
-    icons: mergeByUrl(extracted?.icons, staticAssets?.icons),
+    images: mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images),
+    icons: mergeImageRowsByBestSequenceFrame(extracted?.icons, staticAssets?.icons),
     videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
     fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
     colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
@@ -3707,6 +3849,9 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
     activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
     const tab = await readChromeClientTab();
     try {
+      if (requestedUrl && !browserTabMatchesRequestedUrl(tab.url || "", requestedUrl)) {
+        throw new Error("Active Chrome tab does not match the pasted URL.");
+      }
       const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
       const raw = JSON.parse(rawText || "{}");
       const fallbackUrl = raw?.url || tab.url || requestedUrl;
@@ -3769,6 +3914,55 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
     });
   } finally {
     activeExtractionProxyUrl = previousProxyUrl;
+  }
+});
+app.post("/api/resolve-font-links", async (req, res) => {
+  const urls = Array.isArray(req.body?.urls) ? req.body.urls : [];
+  const pageUrl = String(req.body?.sourcePageUrl || "").trim();
+  const cssUrls = Array.from(new Set(
+    urls.map((url) => String(url || "").trim()).filter((url) => /^https?:\/\//i.test(url)).filter((url) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com\/css/i.test(url))
+  )).slice(0, 20);
+  if (cssUrls.length === 0) {
+    return res.json({ ok: true, fonts: [] });
+  }
+  try {
+    const resolved = await mapWithConcurrency(cssUrls, 4, async (cssUrl) => {
+      try {
+        assertPublicAssetUrl(cssUrl);
+        const response = await withTimeout(
+          axios.get(cssUrl, {
+            timeout: 12e3,
+            responseType: "text",
+            maxContentLength: 4 * 1024 * 1024,
+            httpsAgent: relaxedHttpsAgent,
+            headers: {
+              "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+              Accept: "text/css,*/*;q=0.1",
+              Referer: pageUrl || cssUrl
+            }
+          }),
+          14e3,
+          `Resolve font CSS ${cssUrl}`
+        );
+        return extractFontsFromCss(String(response.data || ""), cssUrl).map((font) => ({
+          ...font,
+          cssSource: cssUrl,
+          originalFilename: filenameFromUrlPath2(String(font?.url || ""))
+        }));
+      } catch (error) {
+        return [{
+          cssSource: cssUrl,
+          error: String(error?.message || error || "Font CSS fetch failed")
+        }];
+      }
+    });
+    const flat = resolved.flat();
+    const fonts = flat.filter((font) => font?.url && isSupportedFontAsset(font));
+    const uniqueFonts = Array.from(new Map(fonts.map((font) => [String(font.url), font])).values());
+    const failures = flat.filter((entry) => entry?.error);
+    return res.json({ ok: true, fonts: uniqueFonts, failures });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error?.message || "Unable to resolve font links." });
   }
 });
 app.get("/api/activity-log/recent", async (_req, res) => {
@@ -5065,7 +5259,7 @@ var isSupportedImageExtension = (ext) => {
   return SUPPORTED_IMAGE_EXTENSIONS.includes(normalized);
 };
 var decodeCssUrlValue = (value) => String(value || "").trim().replace(/^['"]|['"]$/g, "").replace(/\\(.)/g, "$1").trim();
-var PRESERVE_IMAGE_QUERY_KEYS = /[?&](?:context|id|mediaid|assetid|uuid|hash|token|sig|signature|expires|exp|key)=/i;
+var PRESERVE_IMAGE_QUERY_KEYS = /[?&](?:context|id|mediaid|assetid|uuid|hash|token|sig|signature|expires|exp|key|fmt|format|fm|wid|width|w|hei|height|h|qlt|quality|q|bg|extend|crop|fit|resize)=/i;
 var sanitizeExtractedImageUrl = (value) => {
   const cleaned = decodeCssUrlValue(value).trim();
   const extMatch = cleaned.match(/^([^"'()<>\s;]+(?:\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'()<>\s;?]+)*)?)(\?[^"'()\s;>]*)?/i);
@@ -5166,6 +5360,24 @@ var getAssetTypeFromUrl = (url, fallback = "unknown") => {
   return type;
 };
 var isObviousNonImageUrl = (url) => /\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m3u8|mpd|html?)(\?|$)/i.test(String(url || ""));
+var isMalformedImageCandidateUrl = (url) => {
+  const raw = String(url || "").replace(/&amp;/g, "&").trim();
+  if (!raw) return true;
+  const lowered = raw.toLowerCase();
+  if (/%7b|%7d|[{}]/i.test(raw)) return true;
+  if (/\.(?:mp4|webm|mov|m4v|mkv|m3u8|mpd)(?:[?#]|$)/i.test(lowered)) return true;
+  try {
+    const parsed = new URL2(raw);
+    const path4 = parsed.pathname.replace(/\/{2,}/g, "/");
+    const hasImageType = Boolean(inferImageTypeFromUrl(raw));
+    const looksLikeImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path4) || /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
+    if (!hasImageType && !looksLikeImageService) return true;
+    if (!hasImageType && /\/\d{1,3}(?:&|$)/.test(path4)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+};
 var createImageAsset = (urlStr, baseUrl, meta = {}, options = {}) => {
   if (!urlStr) return null;
   const trimmed = sanitizeExtractedImageUrl(urlStr);
@@ -5178,8 +5390,10 @@ var createImageAsset = (urlStr, baseUrl, meta = {}, options = {}) => {
   const absoluteUrl = resolveUrl(baseUrl, trimmed);
   if (!absoluteUrl) return null;
   if (isObviousNonImageUrl(absoluteUrl)) return null;
+  if (isMalformedImageCandidateUrl(absoluteUrl)) return null;
   if (isJunkImageUrl(absoluteUrl)) return null;
-  if (!options.permissive && !isLikelyImageAssetUrl(absoluteUrl)) return null;
+  if (hasMalformedImageSequencePath(absoluteUrl)) return null;
+  if (!isLikelyImageAssetUrl(absoluteUrl)) return null;
   const type = inferImageTypeFromUrl(absoluteUrl) || getAssetTypeFromUrl(absoluteUrl, "img");
   const filename = filenameFromUrlPath2(absoluteUrl);
   return {
@@ -5205,7 +5419,17 @@ var addSrcsetCandidates = (images, srcset, baseUrl) => {
   }
 };
 var MAX_IMAGE_SEQUENCE_FRAMES = 120;
-var isLikely360SequenceUrl = (value) => /(?:threesixty|360|jellies|vehicle|toyota|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ""));
+var isLikely360SequenceUrl = (value) => /(?:threesixty|360|jellies|vehicle|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ""));
+var hasMalformedImageSequencePath = (value) => {
+  const raw = String(value || "").replace(/&amp;/g, "&").trim();
+  if (!raw || !isLikely360SequenceUrl(raw)) return false;
+  try {
+    const parsed = new URL2(raw);
+    return /\/{2,}/.test(parsed.pathname);
+  } catch {
+    return /\/{2,}/.test(raw.split("?")[0] || "");
+  }
+};
 var defaultImageSequenceCountForUrl = (value) => {
   const url = String(value || "");
   if (/lexus|assetscs|visualizer/i.test(url)) return 18;
@@ -5221,6 +5445,7 @@ var expandImageSequenceUrl = (rawUrl, baseUrl, hintedCount = 0) => {
   } catch {
     return [];
   }
+  if (parsed.pathname.includes("//")) return [];
   const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const match = numericLeafMatch || prefixedLeafMatch;
@@ -5229,10 +5454,15 @@ var expandImageSequenceUrl = (rawUrl, baseUrl, hintedCount = 0) => {
   if (!Number.isFinite(frame) || frame < 1) return [];
   const pathParts = match[1].split("/").filter(Boolean);
   const pathCount = Number(pathParts[pathParts.length - 1] || 0);
-  const hasExplicitFrameCountPath = numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES;
-  const hasPrefixedFrameName = Boolean(prefixedLeafMatch);
+  const commonSequenceCounts = /* @__PURE__ */ new Set([4, 18, 24, 36, 72, 120]);
+  const hasExplicitFrameCountPath = Boolean(
+    numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES && (hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES && pathCount === hintedCount || commonSequenceCounts.has(pathCount))
+  );
+  const hasPrefixedFrameName = Boolean(
+    prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(absolute)
+  );
   if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
-  const count = hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES ? hintedCount : pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES ? pathCount : defaultImageSequenceCountForUrl(absolute);
+  const count = hasExplicitFrameCountPath ? pathCount : hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES ? hintedCount : defaultImageSequenceCountForUrl(absolute);
   if (!count || frame > count) return [];
   return Array.from({ length: count }, (_, index) => {
     const clone = new URL2(parsed.href);
@@ -8235,9 +8465,22 @@ var deriveIndicationFromIsi = (isiText) => {
   return "";
 };
 var isBotWallImageUrl = (url) => /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || "")) || /^data:image\/svg\+xml/i.test(String(url || ""));
+var isJpeg2000ImageVariantUrl = (url) => {
+  const lowered = String(url || "").toLowerCase();
+  if (!lowered) return false;
+  if (/\.(?:jp2|j2k|jpf|jpx)(?:$|[?#])/i.test(lowered)) return true;
+  try {
+    const parsed = new URL2(String(url || "").replace(/&amp;/g, "&"));
+    const fmt = String(parsed.searchParams.get("fmt") || parsed.searchParams.get("format") || parsed.searchParams.get("fm") || "").toLowerCase();
+    return /^(?:jp2|j2k|jpf|jpx|jpeg2000|jpeg2000-alpha)$/.test(fmt);
+  } catch {
+    return /[?&](?:fmt|format|fm)=(?:jp2|j2k|jpf|jpx|jpeg2000|jpeg2000-alpha)(?:&|$)/i.test(lowered);
+  }
+};
 var isJunkImageUrl = (url) => {
   const lowered = String(url || "").toLowerCase();
   if (!lowered) return true;
+  if (isJpeg2000ImageVariantUrl(url)) return true;
   if (/^https?:\/\/[^/]+\/jcr:content\.(?:png|jpe?g|webp|gif|svg|avif)(?:$|[?#])/i.test(lowered)) return true;
   if (/^https?:\/\/[^/]+\/jcr:content(?:$|[?#])/i.test(lowered)) return true;
   return false;
@@ -8321,12 +8564,14 @@ var scoreImageRecord = (img) => {
     if (height > 0) score += Math.min(12, Math.round(height / 80));
     if (quality > 0) score += Math.min(10, Math.round(quality / 10));
     const fmt = String(parsed.searchParams.get("fmt") || parsed.searchParams.get("format") || "").toLowerCase();
+    if (/jp2|j2k|jpf|jpx|jpeg2000/.test(fmt)) score -= 1e4;
     if (/jpg|jpeg|png/.test(fmt)) score += 5;
     if (/webp|avif/.test(fmt)) score += 2;
   } catch {
   }
   if (!/-\d+x\d+\./i.test(url)) score += 12;
   if (/\.(?:png|jpe?g|webp|avif)(\?|$)/i.test(url)) score += 8;
+  if (/\.(?:jp2|j2k|jpf|jpx)(?:$|[?#])/i.test(url)) score -= 1e4;
   if (/[?&]context=/i.test(url)) score += 30;
   if (!/\.ashx(\?|$)/i.test(url)) score += 4;
   return score;
@@ -8595,9 +8840,26 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
         return value.startsWith("http") ? value : "";
       }
     },
+    isLikelyImageCandidate(raw) {
+      const value = String(raw || "").replace(/&amp;/g, "&").trim();
+      if (!value || /%7b|%7d|[{}]/i.test(value)) return false;
+      if (/\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(value)) return false;
+      try {
+        const parsed = new URL2(value);
+        const path4 = parsed.pathname.replace(/\/{2,}/g, "/");
+        const hasImageExt = /\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.href);
+        const hasImageFormat = /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
+        const isImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path4);
+        if (!hasImageExt && !hasImageFormat && !isImageService) return false;
+        if (!hasImageExt && /\/\d{1,3}(?:&|$)/.test(path4)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    },
     addImage(raw) {
       const abs = _.toAbsolute(String(raw || ""));
-      if (abs) imageUrls.add(abs);
+      if (abs && _.isLikelyImageCandidate(abs)) imageUrls.add(abs);
     },
     addSrcsetCandidates(raw) {
       if (!raw) return;
@@ -8643,13 +8905,23 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     } catch {
       return [];
     }
+    if (parsed.pathname.includes("//")) return [];
     const match = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i) || parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
     if (!match) return [];
     const frame = Number(match[2]);
     const parts = match[1].split("/").filter(Boolean);
     const pathCount = Number(parts[parts.length - 1] || 0);
+    const hinted = Number(countHint || 0);
+    const commonSequenceCounts = /* @__PURE__ */ new Set([4, 18, 24, 36, 72, 120]);
+    const hasExplicitFrameCountPath = Boolean(
+      pathCount >= 2 && pathCount <= 120 && (hinted >= 2 && hinted <= 120 && pathCount === hinted || commonSequenceCounts.has(pathCount))
+    );
+    const hasPrefixedFrameName = Boolean(
+      /^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i.test(parsed.pathname) && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(target)
+    );
+    if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
     const fallbackCount = /lexus|assetscs|visualizer/i.test(target) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(target) ? 36 : 0;
-    const count = Number(countHint || 0) || (pathCount >= 2 && pathCount <= 120 ? pathCount : fallbackCount);
+    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
     if (!Number.isFinite(frame) || frame < 1 || !count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_unused, index) => {
       const clone = new URL2(parsed.href);
@@ -9035,13 +9307,33 @@ var isLikelyBlankEmbeddedVideoCard = (video, targetUrl = "") => {
   return /(?:embedded\s+player|video\s+player)/i.test(String(video?.type || video?.provider || video?.label || "")) && !candidates.some((candidate) => /youtube\.com|youtu\.be|vimeo\.com|wistia\.com|brightcove|facebook\.com|instagram\.com|x\.com|twitter\.com|tiktok\.com/i.test(candidate));
 };
 var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fallbackThumb = "", options = {}) => {
+  const normalizedTargetImageUrl = (() => {
+    try {
+      const parsed = new URL2(targetUrl);
+      parsed.hash = "";
+      return parsed.href.replace(/\/+$/, "");
+    } catch {
+      return String(targetUrl || "").replace(/[#?].*$/, "").replace(/\/+$/, "");
+    }
+  })();
+  const isUsableExtractedImage = (img) => {
+    const url = String(img?.url || "").trim();
+    if (!url || isBotWallImageUrl(url) || isJunkImageUrl(url)) return false;
+    try {
+      const parsed = new URL2(url);
+      parsed.hash = "";
+      if (parsed.href.replace(/\/+$/, "") === normalizedTargetImageUrl) return false;
+    } catch {
+    }
+    return true;
+  };
   const iconPool = [...options.extraIcons || [], ...images.filter((item) => classifyAssetIconCandidate(item))];
   const imagePool = images.filter((item) => !classifyAssetIconCandidate(item));
   const uniqueIcons = dedupeImagesByCanonicalKey(
-    Array.from(new Set(iconPool.map((item) => item.url))).map((url) => iconPool.find((item) => item.url === url)).filter(Boolean).filter((img) => !isBotWallImageUrl(String(img?.url || ""))).filter((img) => !isJunkImageUrl(String(img?.url || "")))
+    Array.from(new Set(iconPool.map((item) => item.url))).map((url) => iconPool.find((item) => item.url === url)).filter(Boolean).filter(isUsableExtractedImage)
   );
   const uniqueImages = dedupeImagesByCanonicalKey(
-    Array.from(new Set(imagePool.map((item) => item.url))).map((url) => imagePool.find((item) => item.url === url)).filter(Boolean).filter((img) => !isBotWallImageUrl(String(img?.url || ""))).filter((img) => !isJunkImageUrl(String(img?.url || "")))
+    Array.from(new Set(imagePool.map((item) => item.url))).map((url) => imagePool.find((item) => item.url === url)).filter(Boolean).filter(isUsableExtractedImage)
   );
   const videoKey = (video) => {
     const raw = String(video?.url || video?.sourceStreamUrl || video?.sourceUrl || "");
@@ -9150,16 +9442,14 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     }
     warmExtractedAssetsInBackground(uniqueImages, uniqueFonts, targetUrl);
   } else {
-    const hasImageSequence = uniqueImages.some((img) => String(img?.source || "").includes("360-sequence") || isLikely360SequenceUrl(String(img?.url || "")));
-    const imageLimit = Math.min(uniqueImages.length, hasImageSequence ? 360 : 200);
     const fontLimit = Math.min(uniqueFonts.length, 80);
-    await warmExtractedAssetList(uniqueImages, uniqueFonts, {
-      imageLimit,
+    await warmExtractedAssetList([], uniqueFonts, {
+      imageLimit: 0,
       fontLimit,
-      budgetMs: Math.min(18e4, 2e4 + imageLimit * 240 + fontLimit * 200)
+      budgetMs: Math.min(3e4, 8e3 + fontLimit * 200)
     }, targetUrl);
     warmExtractedAssetsInBackground(
-      uniqueImages.slice(imageLimit),
+      uniqueImages,
       uniqueFonts.slice(fontLimit),
       targetUrl
     );
@@ -9169,32 +9459,6 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     if (!url || url.startsWith("data:")) return withAssetStatus(asset);
     let cachedUrl = await readExistingOriginalAssetUrl(url, kind);
     let enriched = asset;
-    if (!cachedUrl && kind === "image" && !options.fast) {
-      try {
-        const warmed = await withTimeout(
-          warmCachedOriginalAssetForExtraction(
-            url,
-            "image",
-            inferImageTypeFromUrl(url, String(asset?.type || "")) || getAssetTypeFromUrl(url, asset?.type || "bin"),
-            { refererPageUrl: targetUrl }
-          ),
-          4500,
-          `Attach image cache for ${url}`
-        );
-        if (warmed?.ok && warmed.cachedUrl) {
-          cachedUrl = warmed.cachedUrl;
-          enriched = {
-            ...enriched,
-            cachedUrl: warmed.cachedUrl,
-            status: "downloaded",
-            ...warmed.bytes ? { bytes: warmed.bytes } : {},
-            ...warmed.width ? { width: warmed.width } : {},
-            ...warmed.height ? { height: warmed.height } : {}
-          };
-        }
-      } catch {
-      }
-    }
     if (cachedUrl && kind === "image") {
       const cachedBuffer = await readAssetBufferFromCache(url, "image") || await readAssetBufferFromCache(cachedUrl, "image");
       if (cachedBuffer) {
@@ -11475,14 +11739,81 @@ var captureIspotNetworkManifest = async (targetUrl) => {
   }
   return Array.from(manifests)[0] || "";
 };
+var buildIspotYtDlpUnifiedCard = async (targetUrl, fallback = {}) => {
+  const info = await withTimeout(
+    youtubedl(targetUrl, {
+      dumpSingleJson: true,
+      ...buildYtDlpQueryOptions(targetUrl, targetUrl),
+      noPlaylist: true
+    }),
+    45e3,
+    `iSpot yt-dlp fallback for ${targetUrl}`
+  );
+  const formats = Array.isArray(info?.formats) ? info.formats : [];
+  const requestedDownloads = Array.isArray(info?.requested_downloads) ? info.requested_downloads : [];
+  const candidates = [
+    ...formats,
+    ...requestedDownloads,
+    ...info?.url ? [{ url: info.url, ext: info.ext, vcodec: info.vcodec, acodec: info.acodec, height: info.height, width: info.width, tbr: info.tbr }] : []
+  ].map((candidate) => {
+    const url = sanitizeStreamUrl(String(candidate?.url || ""), targetUrl);
+    return url ? { ...candidate, url } : null;
+  }).filter(Boolean).filter((candidate) => !isExpiredStreamUrl(String(candidate.url))).filter((candidate) => streamHasVideo(candidate)).filter((candidate) => {
+    const raw = String(candidate.url || "");
+    const ext = String(candidate.ext || "").toLowerCase();
+    return isLikelyDirectVideoStreamUrl(raw) || isLikelyVideoAssetUrl(raw) || ext === "mp4" || ext === "m3u8";
+  });
+  const selected = await firstValidStreamCandidate(sortCandidatesForQuality(candidates, "fhd"), targetUrl, targetUrl) || sortCandidatesForQuality(candidates, "fhd")[0];
+  if (!selected?.url) return null;
+  const selectedHeight = selected.height || parseCandidateHeight(selected);
+  const selectedWidth = selected.width || parseCandidateWidth(selected);
+  const title = String(info?.title || fallback.title || "").trim() || pageTitleFromUrl(targetUrl) || "iSpot.tv video";
+  const thumbnail = sanitizeStreamUrl(String(info?.thumbnail || fallback.thumbnail || ""), targetUrl) || String(info?.thumbnail || fallback.thumbnail || "");
+  const directUrl = String(selected.url);
+  const type = getVideoFormatFromUrlOrType(directUrl, String(selected.contentType || selected.ext || ""));
+  const qualityKey = selectedHeight && selectedHeight >= 1080 ? "fhd" : selectedHeight && selectedHeight >= 720 ? "hd" : "best";
+  return enforceMp4VideoPayload({
+    url: directUrl,
+    sourceStreamUrl: directUrl,
+    sourceUrl: targetUrl,
+    pageUrl: targetUrl,
+    provider: "ispot",
+    platform: "ispot",
+    type: type || selected.ext || "mp4",
+    title,
+    thumbnail,
+    resolution: selectedHeight ? `${selectedHeight}p` : selected.format_note || "Best Quality",
+    width: selectedWidth,
+    height: selectedHeight,
+    qualityRequested: qualityKey,
+    displayQualityKey: qualityKey,
+    displayQualityLabel: qualityKey === "fhd" ? "FHD" : qualityKey === "hd" ? "HD" : "Best Quality",
+    hasAudio: streamHasAudio(selected),
+    audioAvailable: streamHasAudio(selected),
+    noAudio: !streamHasAudio(selected),
+    isDirect: true,
+    isDirectAsset: isDirectProgressiveVideoUrl(directUrl),
+    verifiedPlayable: true,
+    filesize: selected.filesize || selected.filesize_approx || selected.contentLength,
+    formatId: selected.format_id || selected.id,
+    fallbackSource: "yt-dlp"
+  });
+};
 var buildIspotUnifiedCard = async (targetUrl) => {
   const html = await withTimeout(fetchSiteHtml(targetUrl), 3e4, `iSpot video discovery for ${targetUrl}`);
   const unescaped = String(html || "").replace(/\\u002F/gi, "/").replace(/\\\//g, "/").replace(/&amp;/g, "&");
-  const manifestMatch = unescaped.match(/https?:\/\/videos-cdn\.ispot\.tv\/[^"'<>\\\s]+?\.m3u8(?:\?[^"'<>\\\s]*)?/i) || unescaped.match(/https?:\/\/[^"'<>\\\s]+?\.m3u8(?:\?[^"'<>\\\s]*)?/i);
-  const manifestUrl = (manifestMatch?.[0] ? sanitizeStreamUrl(manifestMatch[0], targetUrl) : "") || await captureIspotNetworkManifest(targetUrl);
-  if (!manifestUrl) throw new Error("No downloadable iSpot.tv video stream was found on this ad page.");
   const title = unescaped.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i)?.[1] || unescaped.match(/<title[^>]*>([^<]+)/i)?.[1] || pageTitleFromUrl(targetUrl);
   const thumbnail = unescaped.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1] || "";
+  const manifestMatch = unescaped.match(/https?:\/\/videos-cdn\.ispot\.tv\/[^"'<>\\\s]+?\.m3u8(?:\?[^"'<>\\\s]*)?/i) || unescaped.match(/https?:\/\/[^"'<>\\\s]+?\.m3u8(?:\?[^"'<>\\\s]*)?/i);
+  const manifestUrl = (manifestMatch?.[0] ? sanitizeStreamUrl(manifestMatch[0], targetUrl) : "") || await captureIspotNetworkManifest(targetUrl);
+  if (!manifestUrl) {
+    const ytDlpFallback = await buildIspotYtDlpUnifiedCard(targetUrl, { title, thumbnail }).catch((error) => {
+      console.warn("iSpot yt-dlp fallback failed:", error?.message || error);
+      return null;
+    });
+    if (ytDlpFallback?.url) return ytDlpFallback;
+    throw new Error("No downloadable iSpot.tv video stream was found on this ad page.");
+  }
   const variants = await extractHlsVariants(manifestUrl, targetUrl).catch(() => []);
   const best = [...variants].sort((a, b) => Number(b.height || 0) - Number(a.height || 0))[0];
   const height = Number(best?.height || 0) || void 0;
@@ -17825,6 +18156,23 @@ app.post("/api/download-zip", async (req, res) => {
           const sourceFormat = getFontFormatFromUrlOrType(url);
           const filenameBase = typeof item?.filenameBase === "string" ? item.filenameBase : "font";
           const familyFolder = typeof item?.familyFolder === "string" ? item.familyFolder : filenameBase;
+          if (item?.preserveOriginal === true || String(item?.preserveOriginal || "").toLowerCase() === "true") {
+            const fetched = await fetchRemoteFontBuffer(url, zipPageUrl || "");
+            const detectedFormat = detectFontFormatFromBuffer(fetched.buffer) || sourceFormat || "font";
+            const metadataFilename = typeof item?.metadataFilename === "string" ? item.metadataFilename : void 0;
+            const preferredZipName2 = typeof item?.zipEntryName === "string" ? item.zipEntryName.trim() : "";
+            const fallbackName = buildDownloadFilename(manifestUrl || url, detectedFormat, filenameBase, {
+              metadataFilename,
+              contentDisposition: fetched.contentDisposition
+            });
+            return {
+              ok: true,
+              entry: {
+                name: preferredZipName2 || fallbackName,
+                buffer: fetched.buffer
+              }
+            };
+          }
           const runFontZipFetch = (cacheOnly) => convertFontAsset(url, "ttf", sourceFormat, filenameBase, {
             originalUrl: manifestUrl,
             preferInlineConversion: true,
