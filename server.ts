@@ -1347,8 +1347,7 @@ const buildChromeTabAssetCaptureScript = () => `
     );
     const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href));
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
-    const fallbackCount = /lexus|assetscs|visualizer/i.test(parsed.href) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(parsed.href) ? 36 : 0;
-    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
+    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
     if (!count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_, index) => {
       const clone = new URL(parsed.href);
@@ -1378,6 +1377,104 @@ const buildChromeTabAssetCaptureScript = () => `
         sequenceCount: frame.count,
       }));
     });
+  };
+  const collectToyotaColorizerSwatchSequences = (root) => {
+    const countHint = Number(root?.getAttribute?.('data-image-count') || root?.querySelector?.('[data-image-count]')?.getAttribute('data-image-count') || 0);
+    if (!countHint || countHint > 120) return;
+    const activeSwatch = root.querySelector?.('.color-selector__swatch[data-active="true"][data-model-grade]');
+    const activeGrade = String(activeSwatch?.getAttribute?.('data-model-grade') || '').trim().toLowerCase();
+    const activeModel = String(activeSwatch?.getAttribute?.('data-model-code') || '').trim().toLowerCase();
+    const activeYear = String(activeSwatch?.getAttribute?.('data-model-year') || '').trim();
+    const mediaUrls = [];
+    root.querySelectorAll?.('.threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]').forEach((node) => {
+      ['currentSrc', 'src'].forEach((key) => {
+        if (node[key]) mediaUrls.push(node[key]);
+      });
+      ['src', 'srcset', 'data-src', 'data-srcset'].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (!value) return;
+        String(value).split(',').forEach((part) => mediaUrls.push(part.trim().split(/\\s+/)[0]));
+      });
+    });
+    const template = mediaUrls
+      .map((raw) => absoluteUrl(raw))
+      .filter(Boolean)
+      .map((raw) => {
+        try {
+          const parsed = new URL(raw.replace(/&amp;/g, '&'));
+          const match = parsed.pathname.replace(/\\/{2,}/g, '/').match(/^(.*\\/jellies\\/max\\/(\\d{4})\\/([^/]+)\\/)(?:(?!\\d+\\/)[^/]+\\/)?(\\d+)\\/([^/]+)\\/(\\d+)\\/(\\d+)(\\.(?:png|jpe?g|webp|avif))$/i);
+          if (!match) return null;
+          return {
+            href: parsed.href,
+            prefix: match[1],
+            year: match[2],
+            model: match[3],
+            style: match[4],
+            count: Number(match[6]),
+            suffix: match[8],
+          };
+        } catch {
+          return null;
+        }
+      })
+      .find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
+    if (!template || !activeGrade) return;
+    const gradeStyles = new Map();
+    const rememberGradeStyle = (raw) => {
+      const target = absoluteUrl(raw);
+      if (!target) return;
+      try {
+        const parsed = new URL(target.replace(/&amp;/g, '&'));
+        const match = parsed.pathname.replace(/\\/{2,}/g, '/').match(/\\/jellies\\/max\\/\\d{4}\\/[^/]+\\/([^/]+)\\/(\\d+)\\/([^/]+)\\/(?:\\d+\\/)?\\d+\\.(?:png|jpe?g|webp|avif)$/i);
+        if (!match) return;
+        const grade = String(match[1] || '').toLowerCase();
+        const style = String(match[2] || '');
+        if (!grade || !style) return;
+        const styles = gradeStyles.get(grade) || new Set();
+        styles.add(style);
+        gradeStyles.set(grade, styles);
+      } catch {
+        // Ignore malformed image URLs.
+      }
+    };
+    document.querySelectorAll('img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
+      ['currentSrc', 'src'].forEach((key) => {
+        if (node[key]) rememberGradeStyle(node[key]);
+      });
+      ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (!value) return;
+        String(value).split(',').forEach((part) => rememberGradeStyle(part.trim().split(/\\s+/)[0]));
+      });
+    });
+    Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => rememberGradeStyle(entry.name));
+    if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, new Set([template.style]));
+    const swatches = Array.from(root.querySelectorAll?.('.color-selector__swatch[data-color-code][data-model-grade]') || []);
+    swatches
+      .forEach((swatch) => {
+        const grade = String(swatch.getAttribute('data-model-grade') || '').trim().toLowerCase();
+        const color = String(swatch.getAttribute('data-color-code') || '').trim().toLowerCase();
+        if (!grade || !color) return;
+        const styles = Array.from(gradeStyles.get(grade) || []);
+        if (!styles.length) return;
+        const colorName = String(swatch.getAttribute('data-color-name') || swatch.getAttribute('aria-label') || color).trim();
+        styles.forEach((style) => {
+          for (let frame = 1; frame <= template.count; frame += 1) {
+            try {
+              const clone = new URL(template.href);
+              clone.pathname = template.prefix + grade + '/' + style + '/' + color + '/' + template.count + '/' + frame + template.suffix;
+              addImage(clone.href, {
+                source: '360-sequence',
+                alt: colorName + ' 360 frame ' + frame,
+                sequenceFrame: frame,
+                sequenceCount: template.count,
+              });
+            } catch {
+              // Ignore malformed generated frame URLs.
+            }
+          }
+        });
+      });
   };
 
   Array.from(document.images || []).forEach((img) => {
@@ -1422,6 +1519,7 @@ const buildChromeTabAssetCaptureScript = () => `
     if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name, { source: initiator || 'performance' });
   });
   Array.from(document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]')).forEach(collect360FromRoot);
+  Array.from(document.querySelectorAll('.colorizer, [class*="colorizer"]')).forEach(collectToyotaColorizerSwatchSequences);
   Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
     expand360Sequence(entry.name, 0).forEach((frame) => addImage(frame.url, {
       source: '360-sequence',
@@ -1505,7 +1603,17 @@ const buildChromeTabAssetCaptureScript = () => `
     addColor(style.stroke, weight);
   });
 
-  const images = Array.from(imageMap.values()).slice(0, 320);
+  const images = Array.from(imageMap.values())
+    .sort((a, b) => {
+      const aSequence = String(a?.source || '').includes('360-sequence') ? 1 : 0;
+      const bSequence = String(b?.source || '').includes('360-sequence') ? 1 : 0;
+      if (aSequence !== bSequence) return bSequence - aSequence;
+      const aFrame = Number(a?.sequenceFrame || 0);
+      const bFrame = Number(b?.sequenceFrame || 0);
+      if (aSequence && bSequence && aFrame !== bFrame) return aFrame - bFrame;
+      return 0;
+    })
+    .slice(0, 1600);
   return JSON.stringify({
     ok: true,
     url: location.href,
@@ -1620,6 +1728,7 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
       };
       })
   );
+  const expandedImages = await expandAvailableImageSequences(images, pageUrl || sourceUrl);
   const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
   const fontUsage = rawFonts
     .filter((font: any) => !String(font?.url || '').trim() && String(font?.family || '').trim())
@@ -1653,7 +1762,7 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
   );
 
   return {
-    images,
+    images: expandedImages,
     icons: [],
     fonts,
     fontUsage: Array.from(fontUsageByKey.values()),
@@ -3822,9 +3931,7 @@ const hasMalformedImageSequencePath = (value: string) => {
 };
 
 const defaultImageSequenceCountForUrl = (value: string) => {
-  const url = String(value || '');
-  if (/lexus|assetscs|visualizer/i.test(url)) return 18;
-  if (/toyota|jellies|threesixty|360|aemassets/i.test(url)) return 36;
+  String(value || '');
   return 0;
 };
 
@@ -8005,6 +8112,197 @@ const dedupeImagesByCanonicalKey = (images: any[]) => {
   );
 };
 
+const parseExpandableImageSequence = (rawUrl: string) => {
+  const value = String(rawUrl || '').replace(/&amp;/g, '&').trim();
+  if (!value || !isLikely360SequenceUrl(value)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.pathname.includes('//')) return null;
+  const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const match = numericLeafMatch || prefixedLeafMatch;
+  if (!match) return null;
+  const frame = Number(match[2]);
+  if (!Number.isFinite(frame) || frame < 1 || frame > MAX_IMAGE_SEQUENCE_FRAMES) return null;
+  const pathParts = match[1].split('/').filter(Boolean);
+  const pathCount = Number(pathParts[pathParts.length - 1] || 0);
+  const hasExplicitCountPath = Boolean(numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES);
+  return {
+    href: parsed.href,
+    prefix: match[1],
+    suffix: match[3],
+    frame,
+    explicitCount: hasExplicitCountPath ? pathCount : 0,
+    numericLeaf: Boolean(numericLeafMatch),
+    key: `${parsed.origin}${match[1]}*${match[3]}?${parsed.searchParams.toString()}`.toLowerCase(),
+  };
+};
+
+const imageSequenceFrameUrl = (seedUrl: string, frame: number) => {
+  const parsed = parseExpandableImageSequence(seedUrl);
+  if (!parsed) return '';
+  try {
+    const clone = new URL(parsed.href);
+    clone.pathname = `${parsed.prefix}${frame}${parsed.suffix}`;
+    return clone.href;
+  } catch {
+    return '';
+  }
+};
+
+const toyotaCountedImageSequenceFrameUrl = (seedUrl: string, frame: number, count = 36) => {
+  const parsed = parseExpandableImageSequence(seedUrl);
+  if (!parsed || parsed.explicitCount > 0 || !parsed.numericLeaf) return '';
+  if (!/\/jellies\/(?:max|relative)\//i.test(parsed.href)) return '';
+  if (count < 2 || count > MAX_IMAGE_SEQUENCE_FRAMES) return '';
+  try {
+    const clone = new URL(parsed.href);
+    clone.pathname = `${parsed.prefix}${count}/${frame}${parsed.suffix}`;
+    return clone.href;
+  } catch {
+    return '';
+  }
+};
+
+const isRemoteImageUrlAvailable = async (url: string, refererPageUrl = '') => {
+  const referer = resolveImageFetchReferer(url, refererPageUrl);
+  const accept = imageAcceptHeaderForUrl(url);
+  const headers = {
+    'User-Agent': PAGE_FETCH_USER_AGENTS[0],
+    Accept: accept,
+    ...(referer ? { Referer: referer } : {}),
+  };
+  const check = async (method: 'HEAD' | 'GET') => {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        ...headers,
+        ...(method === 'GET' ? { Range: 'bytes=0-511' } : {}),
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!response.ok && response.status !== 206) return false;
+    const type = String(response.headers.get('content-type') || '').toLowerCase();
+    if (type && !type.includes('image/')) return false;
+    return true;
+  };
+  try {
+    if (await check('HEAD')) return true;
+  } catch {
+    // Some asset hosts do not allow HEAD.
+  }
+  try {
+    return await check('GET');
+  } catch {
+    return false;
+  }
+};
+
+const expandAvailableImageSequences = async (items: any[], targetUrl: string) => {
+  const byGroup = new Map<string, { seed: any; parsed: NonNullable<ReturnType<typeof parseExpandableImageSequence>>; observedFrames: Set<number> }>();
+  for (const item of items) {
+    const url = String(item?.url || '').trim();
+    const parsed = parseExpandableImageSequence(url);
+    if (!parsed) continue;
+    if (parsed.explicitCount > 0) continue;
+    if (!/(?:toyota|jellies|mazda|lexus|assetscs|visualizer|threesixty|360)/i.test(url)) continue;
+    const isToyotaJellySequence = /\/jellies\/(?:max|relative)\//i.test(url);
+    const isPrefixedVisualizerSequence =
+      /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(url) &&
+      /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i.test(url);
+    if (!isToyotaJellySequence && !isPrefixedVisualizerSequence) continue;
+    const group = byGroup.get(parsed.key) || { seed: item, parsed, observedFrames: new Set<number>() };
+    group.observedFrames.add(parsed.frame);
+    byGroup.set(parsed.key, group);
+  }
+  const groups = [...byGroup.values()].slice(0, 48);
+  if (groups.length === 0) return items;
+  const existingUrls = new Set(items.map((item) => String(item?.url || '').trim()).filter(Boolean));
+  const discovered: any[] = [];
+  const replacedGroupKeys = new Set<string>();
+  await mapWithConcurrency(groups, 4, async (group) => {
+    const seedUrl = String(group.seed?.url || '');
+    const isToyotaJellyGroup = /\/jellies\/(?:max|relative)\//i.test(seedUrl) && group.parsed.explicitCount === 0;
+    const maxProbe = Math.min(MAX_IMAGE_SEQUENCE_FRAMES, Math.max(36, ...Array.from(group.observedFrames)));
+    const toyotaCountedCandidates = isToyotaJellyGroup
+      ? Array.from({ length: Math.min(36, MAX_IMAGE_SEQUENCE_FRAMES) }, (_unused, index) => index + 1)
+          .map((frame) => ({ frame, url: toyotaCountedImageSequenceFrameUrl(seedUrl, frame, 36), counted: true }))
+          .filter((candidate) => candidate.url && !existingUrls.has(candidate.url))
+      : [];
+    const toyotaCountedChecks = toyotaCountedCandidates.length
+      ? await mapWithConcurrency(toyotaCountedCandidates, 8, async (candidate) => ({
+          ...candidate,
+          ok: await isRemoteImageUrlAvailable(candidate.url, targetUrl),
+        }))
+      : [];
+    const countedValidFrames = new Set<number>();
+    toyotaCountedChecks.filter((check) => check.ok).forEach((check) => countedValidFrames.add(check.frame));
+    const useToyotaCountedSequence = countedValidFrames.size >= Math.max(8, group.observedFrames.size + 1);
+    const candidates = useToyotaCountedSequence ? [] : Array.from({ length: maxProbe }, (_unused, index) => index + 1)
+      .filter((frame) => !group.observedFrames.has(frame))
+      .map((frame) => ({ frame, url: imageSequenceFrameUrl(seedUrl, frame) }))
+      .filter((candidate) => candidate.url && !existingUrls.has(candidate.url));
+    const checks = await mapWithConcurrency(candidates, 8, async (candidate) => ({
+      ...candidate,
+      ok: await isRemoteImageUrlAvailable(candidate.url, targetUrl),
+    }));
+    const validFrames = useToyotaCountedSequence ? countedValidFrames : new Set<number>(group.observedFrames);
+    if (!useToyotaCountedSequence) checks.filter((check) => check.ok).forEach((check) => validFrames.add(check.frame));
+    const sortedFrames = [...validFrames].filter((frame) => frame >= 1).sort((a, b) => a - b);
+    // Keep every frame that the site actually exposes. Some 360 viewers skip
+    // frame numbers or only expose a small subset for alternate trims/colors;
+    // stopping at the first missing frame hides valid later frames.
+    const frameSet = sortedFrames;
+    const count = Math.max(...frameSet);
+    if (count < 2) return;
+    // Toyota product pages expose many 1-4 frame angle-preview image groups
+    // under the same jellies path. Only promote Toyota no-count jellies URLs
+    // to a 360 sequence when probing finds a fuller frame run. Otherwise keep
+    // those assets as normal images so they do not crowd the 360 section.
+    if (isToyotaJellyGroup && !useToyotaCountedSequence && count < 8) return;
+    if (useToyotaCountedSequence) replacedGroupKeys.add(group.parsed.key);
+    for (const frame of frameSet) {
+      const url = useToyotaCountedSequence
+        ? toyotaCountedImageSequenceFrameUrl(seedUrl, frame, 36)
+        : imageSequenceFrameUrl(seedUrl, frame);
+      if (!url || existingUrls.has(url)) continue;
+      existingUrls.add(url);
+      discovered.push({
+        ...group.seed,
+        url,
+        type: inferImageTypeFromUrl(url) || getAssetTypeFromUrl(url, String(group.seed?.type || 'jpg')),
+        filename: filenameFromUrlPath(url),
+        source: '360-sequence-probed',
+        alt: `360 frame ${frame}`,
+        sequenceFrame: frame,
+        sequenceCount: count,
+        status: DEFAULT_ASSET_STATUS,
+      });
+    }
+    // Normalize observed seed frames with the actual count too.
+    for (const item of items) {
+      const parsed = parseExpandableImageSequence(String(item?.url || ''));
+      if (!parsed || parsed.key !== group.parsed.key || !frameSet.includes(parsed.frame)) continue;
+      item.source = String(item.source || '').includes('360-sequence') ? item.source : '360-sequence-probed';
+      item.sequenceFrame = parsed.frame;
+      item.sequenceCount = count;
+      item.alt = item.alt || `360 frame ${parsed.frame}`;
+    }
+  });
+  const keptItems = replacedGroupKeys.size
+    ? items.filter((item) => {
+        const parsed = parseExpandableImageSequence(String(item?.url || ''));
+        return !parsed || !replacedGroupKeys.has(parsed.key);
+      })
+    : items;
+  return discovered.length ? [...keptItems, ...discovered] : keptItems;
+};
+
 const probeSvgDimensions = (buffer: Buffer) => {
   try {
     const text = buffer.slice(0, 8192).toString('utf8');
@@ -8373,12 +8671,7 @@ const extractRenderedDomAssetsFromPage = async (
           /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(target)
       );
       if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
-      const fallbackCount = /lexus|assetscs|visualizer/i.test(target)
-        ? 18
-        : /toyota|jellies|threesixty|360|aemassets/i.test(target)
-          ? 36
-          : 0;
-      const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
+      const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
       if (!Number.isFinite(frame) || frame < 1 || !count || count > 120 || frame > count) return [];
       return Array.from({ length: count }, (_unused, index) => {
         const clone = new URL(parsed.href);
@@ -8407,6 +8700,104 @@ const extractRenderedDomAssetsFromPage = async (
       candidates.forEach((candidate) => {
         expand360Sequence(candidate, count).forEach((frameUrl) => _.addImage(frameUrl));
       });
+    };
+    const collectToyotaColorizerSwatchSequences = (root: Element) => {
+      const countHint = Number(
+        root.getAttribute('data-image-count') ||
+          root.querySelector('[data-image-count]')?.getAttribute('data-image-count') ||
+          0
+      );
+      if (!countHint || countHint > 120) return;
+      const activeSwatch = root.querySelector('.color-selector__swatch[data-active="true"][data-model-grade]');
+      const activeGrade = String(activeSwatch?.getAttribute('data-model-grade') || '').trim().toLowerCase();
+      const activeModel = String(activeSwatch?.getAttribute('data-model-code') || '').trim().toLowerCase();
+      const activeYear = String(activeSwatch?.getAttribute('data-model-year') || '').trim();
+      if (!activeGrade) return;
+      const mediaUrls: string[] = [];
+      root.querySelectorAll('.threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]').forEach((node) => {
+        const anyNode = node as any;
+        ['currentSrc', 'src'].forEach((key) => {
+          if (anyNode[key]) mediaUrls.push(anyNode[key]);
+        });
+        ['src', 'srcset', 'data-src', 'data-srcset'].forEach((attr) => {
+          const value = node.getAttribute(attr);
+          if (!value) return;
+          String(value).split(',').forEach((part) => mediaUrls.push(part.trim().split(/\s+/)[0]));
+        });
+      });
+      const template = mediaUrls
+        .map((raw) => _.toAbsolute(raw))
+        .filter(Boolean)
+        .map((raw) => {
+          try {
+            const parsed = new URL(String(raw).replace(/&amp;/g, '&'));
+            const match = parsed.pathname.replace(/\/{2,}/g, '/').match(/^(.*\/jellies\/max\/(\d{4})\/([^/]+)\/)(?:(?!\d+\/)[^/]+\/)?(\d+)\/([^/]+)\/(\d+)\/(\d+)(\.(?:png|jpe?g|webp|avif))$/i);
+            if (!match) return null;
+            return {
+              href: parsed.href,
+              prefix: match[1],
+              year: match[2],
+              model: match[3],
+              style: match[4],
+              count: Number(match[6]),
+              suffix: match[8],
+            };
+          } catch {
+            return null;
+          }
+        })
+        .find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
+      if (!template) return;
+      const gradeStyles = new Map<string, Set<string>>();
+      const rememberGradeStyle = (raw: string | null | undefined) => {
+        const target = _.toAbsolute(String(raw || '').replace(/&amp;/g, '&'));
+        if (!target) return;
+        try {
+          const parsed = new URL(target);
+          const match = parsed.pathname.replace(/\/{2,}/g, '/').match(/\/jellies\/max\/\d{4}\/[^/]+\/([^/]+)\/(\d+)\/([^/]+)\/(?:\d+\/)?\d+\.(?:png|jpe?g|webp|avif)$/i);
+          if (!match) return;
+          const grade = String(match[1] || '').toLowerCase();
+          const style = String(match[2] || '');
+          if (!grade || !style) return;
+          const styles = gradeStyles.get(grade) || new Set<string>();
+          styles.add(style);
+          gradeStyles.set(grade, styles);
+        } catch {
+          // Ignore malformed image URLs.
+        }
+      };
+      document.querySelectorAll('img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
+        const anyNode = node as any;
+        ['currentSrc', 'src'].forEach((key) => {
+          if (anyNode[key]) rememberGradeStyle(anyNode[key]);
+        });
+        ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
+          const value = node.getAttribute(attr);
+          if (!value) return;
+          String(value).split(',').forEach((part) => rememberGradeStyle(part.trim().split(/\s+/)[0]));
+        });
+      });
+      Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => rememberGradeStyle((entry as PerformanceResourceTiming).name));
+      if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, new Set<string>([template.style]));
+      Array.from(root.querySelectorAll('.color-selector__swatch[data-color-code][data-model-grade]'))
+        .forEach((swatch) => {
+          const grade = String(swatch.getAttribute('data-model-grade') || '').trim().toLowerCase();
+          const color = String(swatch.getAttribute('data-color-code') || '').trim().toLowerCase();
+          if (!grade || !color) return;
+          const styles = Array.from(gradeStyles.get(grade) || []);
+          if (!styles.length) return;
+          styles.forEach((style) => {
+            for (let frame = 1; frame <= template.count; frame += 1) {
+              try {
+                const clone = new URL(template.href);
+                clone.pathname = `${template.prefix}${grade}/${style}/${color}/${template.count}/${frame}${template.suffix}`;
+                _.addImage(clone.href);
+              } catch {
+                // Ignore malformed generated frame URLs.
+              }
+            }
+          });
+        });
     };
 
     document.querySelectorAll('img').forEach((img) => {
@@ -8523,6 +8914,9 @@ const extractRenderedDomAssetsFromPage = async (
 
     document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]').forEach((root) => {
       collect360FromRoot(root);
+    });
+    document.querySelectorAll('.colorizer, [class*="colorizer"]').forEach((root) => {
+      collectToyotaColorizerSwatchSequences(root);
     });
     Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
       expand360Sequence((entry as PerformanceResourceTiming).name, 0).forEach((frameUrl) => _.addImage(frameUrl));
@@ -8876,7 +9270,10 @@ const dedupeExtractedAssets = async (
     return true;
   };
   const iconPool = [...(options.extraIcons || []), ...images.filter((item) => classifyAssetIconCandidate(item))];
-  const imagePool = images.filter((item) => !classifyAssetIconCandidate(item));
+  const imagePool = await expandAvailableImageSequences(
+    images.filter((item) => !classifyAssetIconCandidate(item)),
+    targetUrl
+  );
   const uniqueIcons = dedupeImagesByCanonicalKey(
     Array.from(new Set(iconPool.map((item) => item.url)))
       .map((url) => iconPool.find((item) => item.url === url))

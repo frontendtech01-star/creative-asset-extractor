@@ -387,15 +387,25 @@ var toolPathEnv = (options) => {
   const commonToolDirs = process.platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin"];
   return Array.from(/* @__PURE__ */ new Set([...dirs, ...commonToolDirs])).join(path2.delimiter);
 };
-var cookieAttempts = (platform) => {
-  const attempts = [];
-  const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || "").trim();
-  if (cookiesFile && fs.existsSync(cookiesFile)) attempts.push(["--cookies", cookiesFile]);
-  if (platform === "youtube" || platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
-    attempts.push(["--cookies-from-browser", "chrome"]);
-    if (process.platform === "darwin") attempts.push(["--cookies-from-browser", "safari"]);
-    attempts.push(["--cookies-from-browser", "firefox"]);
+var normalizeCookiesFilePath = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const expanded = raw.startsWith("~/") ? path2.join(os2.homedir(), raw.slice(2)) : raw;
+  try {
+    if (!fs.existsSync(expanded)) return "";
+    if (!fs.statSync(expanded).isFile()) return "";
+    return expanded;
+  } catch {
+    return "";
   }
+};
+var cookieAttempts = (_platform, explicitCookiesFilePath = "") => {
+  const attempts = [];
+  const explicit = normalizeCookiesFilePath(explicitCookiesFilePath);
+  if (explicit) attempts.push(["--cookies", explicit]);
+  const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || "").trim();
+  const envCookiesFile = normalizeCookiesFilePath(cookiesFile);
+  if (envCookiesFile && envCookiesFile !== explicit) attempts.push(["--cookies", envCookiesFile]);
   return attempts;
 };
 var youtubeClientRetryAttempts = () => [
@@ -407,6 +417,81 @@ var youtubeClientRetryAttempts = () => [
   ["--extractor-args", "youtube:player_client=tv_embedded"]
 ];
 var errorText = (error) => [error?.message, error?.stderr, error?.stdout].filter(Boolean).join("\n").trim();
+var decodeBasicHtmlEntities = (value) => String(value || "").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#34;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/gi, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">");
+var decodeInstagramUrlCandidate = (value) => {
+  let decoded = decodeBasicHtmlEntities(String(value || "").trim());
+  try {
+    decoded = JSON.parse(`"${decoded.replace(/"/g, '\\"')}"`);
+  } catch {
+  }
+  return decodeBasicHtmlEntities(decoded).replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=").replace(/\\u0025/gi, "%").replace(/\\\//g, "/").trim();
+};
+var looksLikeInstagramMediaUrl = (value) => {
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return /\.(?:mp4|m3u8)(?:$|\?)/i.test(parsed.href);
+  } catch {
+    return false;
+  }
+};
+var pushInstagramCandidate = (candidates, value) => {
+  const decoded = decodeInstagramUrlCandidate(value);
+  if (looksLikeInstagramMediaUrl(decoded) && !candidates.includes(decoded)) candidates.push(decoded);
+};
+var extractInstagramPublicMediaUrls = (html) => {
+  const candidates = [];
+  const decodedHtml = decodeBasicHtmlEntities(html);
+  const sources = [html, decodedHtml];
+  for (const source of sources) {
+    for (const match of source.matchAll(/<meta\b[^>]*(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["'][^>]*content=["']([^"']+)["'][^>]*>/gi)) {
+      pushInstagramCandidate(candidates, match[1] || "");
+    }
+    for (const match of source.matchAll(/<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["'][^>]*>/gi)) {
+      pushInstagramCandidate(candidates, match[1] || "");
+    }
+    for (const match of source.matchAll(/["'](?:video_url|playback_url|contentUrl|download_url|url)["']\s*:\s*["']([^"']+)["']/gi)) {
+      pushInstagramCandidate(candidates, match[1] || "");
+    }
+    for (const match of source.matchAll(/https?:\\?\/\\?\/[^"'<>\\\s]+(?:\.mp4|\.m3u8)[^"'<>\\\s]*/gi)) {
+      pushInstagramCandidate(candidates, match[0] || "");
+    }
+  }
+  return candidates;
+};
+var resolveInstagramPublicMediaUrls = async (url, jobId) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15e3);
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: "https://www.instagram.com/",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document"
+      }
+    });
+    const html = await response.text();
+    const urls = response.ok ? extractInstagramPublicMediaUrls(html) : [];
+    void writeLog(jobId, {
+      event: "instagram_public_resolver",
+      status: response.status,
+      media_url_count: urls.length,
+      final_url: response.url
+    });
+    return urls;
+  } catch (error) {
+    void writeLog(jobId, { event: "instagram_public_resolver_error", error: errorText(error) });
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 var parseYtDlpProgressLine = (line) => {
   if (line.startsWith("__VDX_PROGRESS__|")) {
     const [, percentText, downloadedText, totalText, speed, eta] = line.split("|");
@@ -429,7 +514,7 @@ var parseYtDlpProgressLine = (line) => {
   };
 };
 var isXGuestTokenError = (message) => /bad guest token|guest token|twitter.*querying api|x\.com.*extract/i.test(message);
-var isAuthLikeError = (message) => /login|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available/i.test(message);
+var isAuthLikeError = (message) => /login|logged-?in|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available|empty media response|media response is empty|accessible in your browser|use --cookies(?:-from-browser)?|checkpoint|challenge_required/i.test(message);
 var isYouTubeUnavailableError = (message) => /(?:\[youtube\].*)?(?:this video is not available|video unavailable|private video|members-only|sign in to confirm|not available in your country|copyright|removed by the uploader)/i.test(
   message
 );
@@ -443,7 +528,7 @@ var friendlyDownloaderError = (platform, message) => {
     return "X.com extraction needs updated engine. Updating extractor or trying fallback route...";
   }
   if (platform === "instagram" && isAuthLikeError(message)) {
-    return "Instagram could not refresh this public post or reel. The post may require a signed-in browser session.";
+    return "Instagram requires cookies.txt for this reel. Paste a valid cookies.txt file path above and try again.";
   }
   if (platform === "facebook" && isAuthLikeError(message)) {
     return "Facebook could not access this public video. Confirm the video is public, then retry.";
@@ -1000,9 +1085,25 @@ var runDownloadWithFallbacks = async (options, job) => {
       lastError = error;
     }
   }
+  if (job.platform === "instagram") {
+    updateJob(job, { message: "Checking Instagram public media..." });
+    const publicMediaUrls = Array.from(
+      new Set((await Promise.all(urls.map((url) => resolveInstagramPublicMediaUrls(url, job.id)))).flat())
+    );
+    for (const mediaUrl of publicMediaUrls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: "Downloading resolved Instagram media..." });
+        return await runDownloadAttempt(options, job, mediaUrl, ["--no-aria2"]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: "fallback_instagram_public_media", media_url: mediaUrl, error: errorText(error) });
+      }
+    }
+  }
   if (isAuthLikeError(errorText(lastError))) {
-    updateJob(job, { message: "Trying with browser cookies..." });
-    for (const cookies of cookieAttempts(job.platform)) {
+    updateJob(job, { message: job.cookiesFilePath ? "Trying with cookies.txt..." : "Cookies.txt required for this source..." });
+    for (const cookies of cookieAttempts(job.platform, job.cookiesFilePath)) {
       for (const url of urls) {
         throwIfJobCancelled(job);
         try {
@@ -1344,6 +1445,11 @@ var createJob = (options, input) => {
   const sourcePageUrl = String(input.sourcePageUrl || "").trim();
   const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
   const { startTime, endTime } = normalizeTrimRange(input.startTime, input.endTime);
+  const rawCookiesFilePath = String(input.cookiesFilePath || "").trim();
+  const cookiesFilePath = normalizeCookiesFilePath(rawCookiesFilePath);
+  if (rawCookiesFilePath && !cookiesFilePath) {
+    throw new Error("Cookies file was not found. Paste a valid cookies.txt file path or leave it blank.");
+  }
   const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : "", startTime, endTime);
   for (const existing of jobs.values()) {
     if (existing.status === "queued" || existing.status === "running") {
@@ -1369,6 +1475,7 @@ var createJob = (options, input) => {
     saveToWebsiteAssets,
     startTime,
     endTime,
+    cookiesFilePath,
     status: "queued",
     progress: 0,
     downloadedBytes: 0,
@@ -1381,7 +1488,10 @@ var createJob = (options, input) => {
   pumpQueue(options);
   return job;
 };
-var publicJob = (job) => ({ ...job });
+var publicJob = (job) => {
+  const { cookiesFilePath: _cookiesFilePath, ...safeJob } = job;
+  return safeJob;
+};
 var trimJobs = () => {
   const sorted = Array.from(jobs.values()).sort((a, b) => b.updatedAt - a.updatedAt);
   for (const job of sorted.slice(100)) jobs.delete(job.id);
@@ -1426,7 +1536,8 @@ var registerVideoDownloaderRoutes = (app2, options) => {
         sourcePageUrl: String(req.body?.sourcePageUrl || "").trim(),
         saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
         startTime: String(req.body?.startTime || "").trim(),
-        endTime: String(req.body?.endTime || "").trim()
+        endTime: String(req.body?.endTime || "").trim(),
+        cookiesFilePath: String(req.body?.cookiesFilePath || "").trim()
       });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
@@ -1441,12 +1552,13 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     ).slice(0, 20);
     const quality = String(req.body?.quality || "fhd").toLowerCase();
     const trimRange = normalizeTrimRange(req.body?.startTime, req.body?.endTime);
+    const cookiesFilePath = String(req.body?.cookiesFilePath || "").trim();
     if (urls.length === 0) return res.status(400).json({ error: "Enter at least one video URL." });
     const created = [];
     const errors = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality, ...trimRange }));
+        created.push(createJob(options, { url, quality, ...trimRange, cookiesFilePath }));
       } catch (error) {
         errors.push({ url, error: error?.message || "Invalid URL" });
       }
@@ -3340,8 +3452,7 @@ var buildChromeTabAssetCaptureScript = () => `
     );
     const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href));
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
-    const fallbackCount = /lexus|assetscs|visualizer/i.test(parsed.href) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(parsed.href) ? 36 : 0;
-    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
+    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
     if (!count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_, index) => {
       const clone = new URL(parsed.href);
@@ -3371,6 +3482,104 @@ var buildChromeTabAssetCaptureScript = () => `
         sequenceCount: frame.count,
       }));
     });
+  };
+  const collectToyotaColorizerSwatchSequences = (root) => {
+    const countHint = Number(root?.getAttribute?.('data-image-count') || root?.querySelector?.('[data-image-count]')?.getAttribute('data-image-count') || 0);
+    if (!countHint || countHint > 120) return;
+    const activeSwatch = root.querySelector?.('.color-selector__swatch[data-active="true"][data-model-grade]');
+    const activeGrade = String(activeSwatch?.getAttribute?.('data-model-grade') || '').trim().toLowerCase();
+    const activeModel = String(activeSwatch?.getAttribute?.('data-model-code') || '').trim().toLowerCase();
+    const activeYear = String(activeSwatch?.getAttribute?.('data-model-year') || '').trim();
+    const mediaUrls = [];
+    root.querySelectorAll?.('.threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]').forEach((node) => {
+      ['currentSrc', 'src'].forEach((key) => {
+        if (node[key]) mediaUrls.push(node[key]);
+      });
+      ['src', 'srcset', 'data-src', 'data-srcset'].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (!value) return;
+        String(value).split(',').forEach((part) => mediaUrls.push(part.trim().split(/\\s+/)[0]));
+      });
+    });
+    const template = mediaUrls
+      .map((raw) => absoluteUrl(raw))
+      .filter(Boolean)
+      .map((raw) => {
+        try {
+          const parsed = new URL(raw.replace(/&amp;/g, '&'));
+          const match = parsed.pathname.replace(/\\/{2,}/g, '/').match(/^(.*\\/jellies\\/max\\/(\\d{4})\\/([^/]+)\\/)(?:(?!\\d+\\/)[^/]+\\/)?(\\d+)\\/([^/]+)\\/(\\d+)\\/(\\d+)(\\.(?:png|jpe?g|webp|avif))$/i);
+          if (!match) return null;
+          return {
+            href: parsed.href,
+            prefix: match[1],
+            year: match[2],
+            model: match[3],
+            style: match[4],
+            count: Number(match[6]),
+            suffix: match[8],
+          };
+        } catch {
+          return null;
+        }
+      })
+      .find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
+    if (!template || !activeGrade) return;
+    const gradeStyles = new Map();
+    const rememberGradeStyle = (raw) => {
+      const target = absoluteUrl(raw);
+      if (!target) return;
+      try {
+        const parsed = new URL(target.replace(/&amp;/g, '&'));
+        const match = parsed.pathname.replace(/\\/{2,}/g, '/').match(/\\/jellies\\/max\\/\\d{4}\\/[^/]+\\/([^/]+)\\/(\\d+)\\/([^/]+)\\/(?:\\d+\\/)?\\d+\\.(?:png|jpe?g|webp|avif)$/i);
+        if (!match) return;
+        const grade = String(match[1] || '').toLowerCase();
+        const style = String(match[2] || '');
+        if (!grade || !style) return;
+        const styles = gradeStyles.get(grade) || new Set();
+        styles.add(style);
+        gradeStyles.set(grade, styles);
+      } catch {
+        // Ignore malformed image URLs.
+      }
+    };
+    document.querySelectorAll('img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
+      ['currentSrc', 'src'].forEach((key) => {
+        if (node[key]) rememberGradeStyle(node[key]);
+      });
+      ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (!value) return;
+        String(value).split(',').forEach((part) => rememberGradeStyle(part.trim().split(/\\s+/)[0]));
+      });
+    });
+    Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => rememberGradeStyle(entry.name));
+    if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, new Set([template.style]));
+    const swatches = Array.from(root.querySelectorAll?.('.color-selector__swatch[data-color-code][data-model-grade]') || []);
+    swatches
+      .forEach((swatch) => {
+        const grade = String(swatch.getAttribute('data-model-grade') || '').trim().toLowerCase();
+        const color = String(swatch.getAttribute('data-color-code') || '').trim().toLowerCase();
+        if (!grade || !color) return;
+        const styles = Array.from(gradeStyles.get(grade) || []);
+        if (!styles.length) return;
+        const colorName = String(swatch.getAttribute('data-color-name') || swatch.getAttribute('aria-label') || color).trim();
+        styles.forEach((style) => {
+          for (let frame = 1; frame <= template.count; frame += 1) {
+            try {
+              const clone = new URL(template.href);
+              clone.pathname = template.prefix + grade + '/' + style + '/' + color + '/' + template.count + '/' + frame + template.suffix;
+              addImage(clone.href, {
+                source: '360-sequence',
+                alt: colorName + ' 360 frame ' + frame,
+                sequenceFrame: frame,
+                sequenceCount: template.count,
+              });
+            } catch {
+              // Ignore malformed generated frame URLs.
+            }
+          }
+        });
+      });
   };
 
   Array.from(document.images || []).forEach((img) => {
@@ -3415,6 +3624,7 @@ var buildChromeTabAssetCaptureScript = () => `
     if (initiator === 'img' || /\\.(png|jpe?g|webp|gif|svg|avif)(?:[?#]|$)/i.test(name)) addImage(name, { source: initiator || 'performance' });
   });
   Array.from(document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]')).forEach(collect360FromRoot);
+  Array.from(document.querySelectorAll('.colorizer, [class*="colorizer"]')).forEach(collectToyotaColorizerSwatchSequences);
   Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
     expand360Sequence(entry.name, 0).forEach((frame) => addImage(frame.url, {
       source: '360-sequence',
@@ -3498,7 +3708,17 @@ var buildChromeTabAssetCaptureScript = () => `
     addColor(style.stroke, weight);
   });
 
-  const images = Array.from(imageMap.values()).slice(0, 320);
+  const images = Array.from(imageMap.values())
+    .sort((a, b) => {
+      const aSequence = String(a?.source || '').includes('360-sequence') ? 1 : 0;
+      const bSequence = String(b?.source || '').includes('360-sequence') ? 1 : 0;
+      if (aSequence !== bSequence) return bSequence - aSequence;
+      const aFrame = Number(a?.sequenceFrame || 0);
+      const bFrame = Number(b?.sequenceFrame || 0);
+      if (aSequence && bSequence && aFrame !== bFrame) return aFrame - bFrame;
+      return 0;
+    })
+    .slice(0, 1600);
   return JSON.stringify({
     ok: true,
     url: location.href,
@@ -3599,6 +3819,7 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
       };
     })
   );
+  const expandedImages = await expandAvailableImageSequences(images, pageUrl || sourceUrl);
   const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
   const fontUsage = rawFonts.filter((font) => !String(font?.url || "").trim() && String(font?.family || "").trim()).map((font) => ({
     family: String(font.family || "").replace(/^["']|["']$/g, "").trim(),
@@ -3623,7 +3844,7 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     Array.from(new Set(metadataFonts.map((font) => String(font?.url || "")))).map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset)
   );
   return {
-    images,
+    images: expandedImages,
     icons: [],
     fonts,
     fontUsage: Array.from(fontUsageByKey.values()),
@@ -5431,9 +5652,7 @@ var hasMalformedImageSequencePath = (value) => {
   }
 };
 var defaultImageSequenceCountForUrl = (value) => {
-  const url = String(value || "");
-  if (/lexus|assetscs|visualizer/i.test(url)) return 18;
-  if (/toyota|jellies|threesixty|360|aemassets/i.test(url)) return 36;
+  String(value || "");
   return 0;
 };
 var expandImageSequenceUrl = (rawUrl, baseUrl, hintedCount = 0) => {
@@ -8591,6 +8810,168 @@ var dedupeImagesByCanonicalKey = (images) => {
     (group) => [...group].sort((a, b) => scoreImageRecord(b) - scoreImageRecord(a))[0]
   );
 };
+var parseExpandableImageSequence = (rawUrl) => {
+  const value = String(rawUrl || "").replace(/&amp;/g, "&").trim();
+  if (!value || !isLikely360SequenceUrl(value)) return null;
+  let parsed;
+  try {
+    parsed = new URL2(value);
+  } catch {
+    return null;
+  }
+  if (parsed.pathname.includes("//")) return null;
+  const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+  const match = numericLeafMatch || prefixedLeafMatch;
+  if (!match) return null;
+  const frame = Number(match[2]);
+  if (!Number.isFinite(frame) || frame < 1 || frame > MAX_IMAGE_SEQUENCE_FRAMES) return null;
+  const pathParts = match[1].split("/").filter(Boolean);
+  const pathCount = Number(pathParts[pathParts.length - 1] || 0);
+  const hasExplicitCountPath = Boolean(numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES);
+  return {
+    href: parsed.href,
+    prefix: match[1],
+    suffix: match[3],
+    frame,
+    explicitCount: hasExplicitCountPath ? pathCount : 0,
+    numericLeaf: Boolean(numericLeafMatch),
+    key: `${parsed.origin}${match[1]}*${match[3]}?${parsed.searchParams.toString()}`.toLowerCase()
+  };
+};
+var imageSequenceFrameUrl = (seedUrl, frame) => {
+  const parsed = parseExpandableImageSequence(seedUrl);
+  if (!parsed) return "";
+  try {
+    const clone = new URL2(parsed.href);
+    clone.pathname = `${parsed.prefix}${frame}${parsed.suffix}`;
+    return clone.href;
+  } catch {
+    return "";
+  }
+};
+var toyotaCountedImageSequenceFrameUrl = (seedUrl, frame, count = 36) => {
+  const parsed = parseExpandableImageSequence(seedUrl);
+  if (!parsed || parsed.explicitCount > 0 || !parsed.numericLeaf) return "";
+  if (!/\/jellies\/(?:max|relative)\//i.test(parsed.href)) return "";
+  if (count < 2 || count > MAX_IMAGE_SEQUENCE_FRAMES) return "";
+  try {
+    const clone = new URL2(parsed.href);
+    clone.pathname = `${parsed.prefix}${count}/${frame}${parsed.suffix}`;
+    return clone.href;
+  } catch {
+    return "";
+  }
+};
+var isRemoteImageUrlAvailable = async (url, refererPageUrl = "") => {
+  const referer = resolveImageFetchReferer(url, refererPageUrl);
+  const accept = imageAcceptHeaderForUrl(url);
+  const headers = {
+    "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+    Accept: accept,
+    ...referer ? { Referer: referer } : {}
+  };
+  const check = async (method) => {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        ...headers,
+        ...method === "GET" ? { Range: "bytes=0-511" } : {}
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(3500)
+    });
+    if (!response.ok && response.status !== 206) return false;
+    const type = String(response.headers.get("content-type") || "").toLowerCase();
+    if (type && !type.includes("image/")) return false;
+    return true;
+  };
+  try {
+    if (await check("HEAD")) return true;
+  } catch {
+  }
+  try {
+    return await check("GET");
+  } catch {
+    return false;
+  }
+};
+var expandAvailableImageSequences = async (items, targetUrl) => {
+  const byGroup = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    const url = String(item?.url || "").trim();
+    const parsed = parseExpandableImageSequence(url);
+    if (!parsed) continue;
+    if (parsed.explicitCount > 0) continue;
+    if (!/(?:toyota|jellies|mazda|lexus|assetscs|visualizer|threesixty|360)/i.test(url)) continue;
+    const isToyotaJellySequence = /\/jellies\/(?:max|relative)\//i.test(url);
+    const isPrefixedVisualizerSequence = /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(url) && /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i.test(url);
+    if (!isToyotaJellySequence && !isPrefixedVisualizerSequence) continue;
+    const group = byGroup.get(parsed.key) || { seed: item, parsed, observedFrames: /* @__PURE__ */ new Set() };
+    group.observedFrames.add(parsed.frame);
+    byGroup.set(parsed.key, group);
+  }
+  const groups = [...byGroup.values()].slice(0, 48);
+  if (groups.length === 0) return items;
+  const existingUrls = new Set(items.map((item) => String(item?.url || "").trim()).filter(Boolean));
+  const discovered = [];
+  const replacedGroupKeys = /* @__PURE__ */ new Set();
+  await mapWithConcurrency(groups, 4, async (group) => {
+    const seedUrl = String(group.seed?.url || "");
+    const isToyotaJellyGroup = /\/jellies\/(?:max|relative)\//i.test(seedUrl) && group.parsed.explicitCount === 0;
+    const maxProbe = Math.min(MAX_IMAGE_SEQUENCE_FRAMES, Math.max(36, ...Array.from(group.observedFrames)));
+    const toyotaCountedCandidates = isToyotaJellyGroup ? Array.from({ length: Math.min(36, MAX_IMAGE_SEQUENCE_FRAMES) }, (_unused, index) => index + 1).map((frame) => ({ frame, url: toyotaCountedImageSequenceFrameUrl(seedUrl, frame, 36), counted: true })).filter((candidate) => candidate.url && !existingUrls.has(candidate.url)) : [];
+    const toyotaCountedChecks = toyotaCountedCandidates.length ? await mapWithConcurrency(toyotaCountedCandidates, 8, async (candidate) => ({
+      ...candidate,
+      ok: await isRemoteImageUrlAvailable(candidate.url, targetUrl)
+    })) : [];
+    const countedValidFrames = /* @__PURE__ */ new Set();
+    toyotaCountedChecks.filter((check) => check.ok).forEach((check) => countedValidFrames.add(check.frame));
+    const useToyotaCountedSequence = countedValidFrames.size >= Math.max(8, group.observedFrames.size + 1);
+    const candidates = useToyotaCountedSequence ? [] : Array.from({ length: maxProbe }, (_unused, index) => index + 1).filter((frame) => !group.observedFrames.has(frame)).map((frame) => ({ frame, url: imageSequenceFrameUrl(seedUrl, frame) })).filter((candidate) => candidate.url && !existingUrls.has(candidate.url));
+    const checks = await mapWithConcurrency(candidates, 8, async (candidate) => ({
+      ...candidate,
+      ok: await isRemoteImageUrlAvailable(candidate.url, targetUrl)
+    }));
+    const validFrames = useToyotaCountedSequence ? countedValidFrames : new Set(group.observedFrames);
+    if (!useToyotaCountedSequence) checks.filter((check) => check.ok).forEach((check) => validFrames.add(check.frame));
+    const sortedFrames = [...validFrames].filter((frame) => frame >= 1).sort((a, b) => a - b);
+    const frameSet = sortedFrames;
+    const count = Math.max(...frameSet);
+    if (count < 2) return;
+    if (isToyotaJellyGroup && !useToyotaCountedSequence && count < 8) return;
+    if (useToyotaCountedSequence) replacedGroupKeys.add(group.parsed.key);
+    for (const frame of frameSet) {
+      const url = useToyotaCountedSequence ? toyotaCountedImageSequenceFrameUrl(seedUrl, frame, 36) : imageSequenceFrameUrl(seedUrl, frame);
+      if (!url || existingUrls.has(url)) continue;
+      existingUrls.add(url);
+      discovered.push({
+        ...group.seed,
+        url,
+        type: inferImageTypeFromUrl(url) || getAssetTypeFromUrl(url, String(group.seed?.type || "jpg")),
+        filename: filenameFromUrlPath2(url),
+        source: "360-sequence-probed",
+        alt: `360 frame ${frame}`,
+        sequenceFrame: frame,
+        sequenceCount: count,
+        status: DEFAULT_ASSET_STATUS
+      });
+    }
+    for (const item of items) {
+      const parsed = parseExpandableImageSequence(String(item?.url || ""));
+      if (!parsed || parsed.key !== group.parsed.key || !frameSet.includes(parsed.frame)) continue;
+      item.source = String(item.source || "").includes("360-sequence") ? item.source : "360-sequence-probed";
+      item.sequenceFrame = parsed.frame;
+      item.sequenceCount = count;
+      item.alt = item.alt || `360 frame ${parsed.frame}`;
+    }
+  });
+  const keptItems = replacedGroupKeys.size ? items.filter((item) => {
+    const parsed = parseExpandableImageSequence(String(item?.url || ""));
+    return !parsed || !replacedGroupKeys.has(parsed.key);
+  }) : items;
+  return discovered.length ? [...keptItems, ...discovered] : keptItems;
+};
 var probeSvgDimensions = (buffer) => {
   try {
     const text = buffer.slice(0, 8192).toString("utf8");
@@ -8920,8 +9301,7 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
       /^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i.test(parsed.pathname) && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(target)
     );
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
-    const fallbackCount = /lexus|assetscs|visualizer/i.test(target) ? 18 : /toyota|jellies|threesixty|360|aemassets/i.test(target) ? 36 : 0;
-    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0) || fallbackCount;
+    const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
     if (!Number.isFinite(frame) || frame < 1 || !count || count > 120 || frame > count) return [];
     return Array.from({ length: count }, (_unused, index) => {
       const clone = new URL2(parsed.href);
@@ -8947,6 +9327,95 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     });
     candidates.forEach((candidate) => {
       expand360Sequence(candidate, count).forEach((frameUrl) => _.addImage(frameUrl));
+    });
+  };
+  const collectToyotaColorizerSwatchSequences = (root) => {
+    const countHint = Number(
+      root.getAttribute("data-image-count") || root.querySelector("[data-image-count]")?.getAttribute("data-image-count") || 0
+    );
+    if (!countHint || countHint > 120) return;
+    const activeSwatch = root.querySelector('.color-selector__swatch[data-active="true"][data-model-grade]');
+    const activeGrade = String(activeSwatch?.getAttribute("data-model-grade") || "").trim().toLowerCase();
+    const activeModel = String(activeSwatch?.getAttribute("data-model-code") || "").trim().toLowerCase();
+    const activeYear = String(activeSwatch?.getAttribute("data-model-year") || "").trim();
+    if (!activeGrade) return;
+    const mediaUrls = [];
+    root.querySelectorAll(".threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]").forEach((node) => {
+      const anyNode = node;
+      ["currentSrc", "src"].forEach((key) => {
+        if (anyNode[key]) mediaUrls.push(anyNode[key]);
+      });
+      ["src", "srcset", "data-src", "data-srcset"].forEach((attr) => {
+        const value = node.getAttribute(attr);
+        if (!value) return;
+        String(value).split(",").forEach((part) => mediaUrls.push(part.trim().split(/\s+/)[0]));
+      });
+    });
+    const template = mediaUrls.map((raw) => _.toAbsolute(raw)).filter(Boolean).map((raw) => {
+      try {
+        const parsed = new URL2(String(raw).replace(/&amp;/g, "&"));
+        const match = parsed.pathname.replace(/\/{2,}/g, "/").match(/^(.*\/jellies\/max\/(\d{4})\/([^/]+)\/)(?:(?!\d+\/)[^/]+\/)?(\d+)\/([^/]+)\/(\d+)\/(\d+)(\.(?:png|jpe?g|webp|avif))$/i);
+        if (!match) return null;
+        return {
+          href: parsed.href,
+          prefix: match[1],
+          year: match[2],
+          model: match[3],
+          style: match[4],
+          count: Number(match[6]),
+          suffix: match[8]
+        };
+      } catch {
+        return null;
+      }
+    }).find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
+    if (!template) return;
+    const gradeStyles = /* @__PURE__ */ new Map();
+    const rememberGradeStyle = (raw) => {
+      const target = _.toAbsolute(String(raw || "").replace(/&amp;/g, "&"));
+      if (!target) return;
+      try {
+        const parsed = new URL2(target);
+        const match = parsed.pathname.replace(/\/{2,}/g, "/").match(/\/jellies\/max\/\d{4}\/[^/]+\/([^/]+)\/(\d+)\/([^/]+)\/(?:\d+\/)?\d+\.(?:png|jpe?g|webp|avif)$/i);
+        if (!match) return;
+        const grade = String(match[1] || "").toLowerCase();
+        const style = String(match[2] || "");
+        if (!grade || !style) return;
+        const styles = gradeStyles.get(grade) || /* @__PURE__ */ new Set();
+        styles.add(style);
+        gradeStyles.set(grade, styles);
+      } catch {
+      }
+    };
+    document.querySelectorAll("img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]").forEach((node) => {
+      const anyNode = node;
+      ["currentSrc", "src"].forEach((key) => {
+        if (anyNode[key]) rememberGradeStyle(anyNode[key]);
+      });
+      ["src", "srcset", "data-src", "data-srcset", "data-lazy-src", "data-image", "data-url"].forEach((attr) => {
+        const value = node.getAttribute(attr);
+        if (!value) return;
+        String(value).split(",").forEach((part) => rememberGradeStyle(part.trim().split(/\s+/)[0]));
+      });
+    });
+    Array.from(performance.getEntriesByType("resource") || []).forEach((entry) => rememberGradeStyle(entry.name));
+    if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, /* @__PURE__ */ new Set([template.style]));
+    Array.from(root.querySelectorAll(".color-selector__swatch[data-color-code][data-model-grade]")).forEach((swatch) => {
+      const grade = String(swatch.getAttribute("data-model-grade") || "").trim().toLowerCase();
+      const color = String(swatch.getAttribute("data-color-code") || "").trim().toLowerCase();
+      if (!grade || !color) return;
+      const styles = Array.from(gradeStyles.get(grade) || []);
+      if (!styles.length) return;
+      styles.forEach((style) => {
+        for (let frame = 1; frame <= template.count; frame += 1) {
+          try {
+            const clone = new URL2(template.href);
+            clone.pathname = `${template.prefix}${grade}/${style}/${color}/${template.count}/${frame}${template.suffix}`;
+            _.addImage(clone.href);
+          } catch {
+          }
+        }
+      });
     });
   };
   document.querySelectorAll("img").forEach((img) => {
@@ -9049,6 +9518,9 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
   });
   document.querySelectorAll('[data-image-count], .threesixty, [class*="threesixty"], [class*="360"]').forEach((root) => {
     collect360FromRoot(root);
+  });
+  document.querySelectorAll('.colorizer, [class*="colorizer"]').forEach((root) => {
+    collectToyotaColorizerSwatchSequences(root);
   });
   Array.from(performance.getEntriesByType("resource") || []).forEach((entry) => {
     expand360Sequence(entry.name, 0).forEach((frameUrl) => _.addImage(frameUrl));
@@ -9328,7 +9800,10 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     return true;
   };
   const iconPool = [...options.extraIcons || [], ...images.filter((item) => classifyAssetIconCandidate(item))];
-  const imagePool = images.filter((item) => !classifyAssetIconCandidate(item));
+  const imagePool = await expandAvailableImageSequences(
+    images.filter((item) => !classifyAssetIconCandidate(item)),
+    targetUrl
+  );
   const uniqueIcons = dedupeImagesByCanonicalKey(
     Array.from(new Set(iconPool.map((item) => item.url))).map((url) => iconPool.find((item) => item.url === url)).filter(Boolean).filter(isUsableExtractedImage)
   );
