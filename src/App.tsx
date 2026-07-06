@@ -1470,7 +1470,7 @@ export default function App() {
                 )}
               >
                 <Download className="h-3.5 w-3.5" />
-                Video Downloader
+                Image/Video Downloader
               </button>
               <button
                 type="button"
@@ -1499,12 +1499,7 @@ export default function App() {
                 )}
               >
                 <FileText className="h-3.5 w-3.5" />
-                {releaseUpdateAvailable ? 'New DMG' : 'Release Notes'}
-                {releaseUpdateAvailable ? (
-                  <span className="absolute -right-1.5 -top-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700 shadow">
-                    New
-                  </span>
-                ) : null}
+                Release Notes
               </button>
             </nav>
           </div>

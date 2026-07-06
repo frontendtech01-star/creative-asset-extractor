@@ -309,6 +309,7 @@ export const buildImageZipItem = (
     cachedPath?: string;
     status?: string;
     id?: string;
+    zipEntryName?: string;
   } = {
     id: id || undefined,
     url,

@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Image as ImageIcon } from 'lucide-react';
 import { apiUrl } from '../lib/api';
-import { getImageAssetKey, resolveImagePreviewUrl, resolveImageThumbUrl } from '../lib/imageAsset';
+import { buildImagePreviewRequest, buildImageThumbRequest, getImageAssetKey } from '../lib/imageAsset';
 
 type ThumbPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
@@ -18,28 +18,42 @@ type LazyCachedImageThumbProps = {
 
 const buildThumbCandidates = (
   img: { url?: string; cachedUrl?: string },
-  sourcePageUrl: string
+  _sourcePageUrl: string
 ) => {
   const candidates: string[] = [];
+  const addCandidate = (url: string) => {
+    const normalized = String(url || '').trim();
+    if (normalized && !candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
   const cached = String(img?.cachedUrl || '').trim();
   const originalUrl = getImageAssetKey(img);
 
   if (cached.startsWith('data:image/')) {
-    candidates.push(cached);
+    addCandidate(cached);
   }
   if (cached.startsWith('/cached-images-original/')) {
-    candidates.push(apiUrl(cached));
+    addCandidate(apiUrl(cached));
   }
   if (originalUrl.startsWith('data:')) {
-    candidates.push(originalUrl);
+    addCandidate(originalUrl);
     return candidates;
   }
-  const thumbUrl = resolveImageThumbUrl(img, sourcePageUrl);
-  if (thumbUrl) candidates.push(thumbUrl);
-  const previewUrl = resolveImagePreviewUrl(img, sourcePageUrl);
-  if (previewUrl) candidates.push(previewUrl);
-  if (originalUrl.startsWith('http') && !candidates.includes(originalUrl)) {
-    candidates.push(originalUrl);
+
+  // Keep the older fast path first: let the browser show the discovered asset
+  // directly. If that fails because the asset host blocks localhost hotlinks,
+  // fall back to the cached/proxied preview with the original page referer.
+  if (originalUrl.startsWith('http')) {
+    const isSequenceOrToyotaAsset =
+      String((img as any)?.source || '').includes('360-sequence') ||
+      /\/jellies\/(?:max|relative)\//i.test(originalUrl);
+    const thumbPreview = buildImageThumbRequest(img, _sourcePageUrl);
+    const fallbackPreview = buildImagePreviewRequest(img, _sourcePageUrl);
+    if (isSequenceOrToyotaAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
+    addCandidate(originalUrl);
+    if (!isSequenceOrToyotaAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
+    if (fallbackPreview) addCandidate(apiUrl(fallbackPreview));
   }
   return candidates.filter(Boolean);
 };
@@ -54,91 +68,88 @@ export default function LazyCachedImageThumb({
   onReady,
   onFailed,
 }: LazyCachedImageThumbProps) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const [visible, setVisible] = useState(false);
   const [phase, setPhase] = useState<ThumbPhase>('idle');
-  const [src, setSrc] = useState('');
   const [candidateIndex, setCandidateIndex] = useState(0);
-  const candidatesRef = useRef<string[]>([]);
   const assetKey = getImageAssetKey(img);
   const cachedPath = String(img?.cachedUrl || '').trim();
+  const reportedReadyRef = useRef(false);
+  const reportedFailedRef = useRef(false);
+  const candidates = useMemo(
+    () => buildThumbCandidates(img, sourcePageUrl),
+    [assetKey, sourcePageUrl, cachedPath]
+  );
+  const src = candidates[candidateIndex] || '';
 
-  useEffect(() => {
-    setVisible(false);
-    setPhase('idle');
-    setSrc('');
-    setCandidateIndex(0);
-    candidatesRef.current = buildThumbCandidates(img, sourcePageUrl);
-
-    const node = rootRef.current;
-    if (!node) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) {
-          setVisible(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: '320px' }
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [assetKey, sourcePageUrl, cachedPath]);
-
-  useEffect(() => {
-    if (!visible) return;
-    const candidates = candidatesRef.current;
-    const nextSrc = candidates[candidateIndex] || '';
-    if (!nextSrc) {
-      setPhase('failed');
+  const advanceCandidateOrFail = () => {
+    if (candidateIndex + 1 < candidates.length) {
+      setCandidateIndex((prev) => prev + 1);
       return;
     }
-    setSrc(nextSrc);
+    setPhase('failed');
+    if (!reportedFailedRef.current) {
+      reportedFailedRef.current = true;
+      onFailed?.();
+    }
+  };
+
+  useEffect(() => {
+    setPhase(src ? 'idle' : 'failed');
+  }, [src]);
+
+  useEffect(() => {
+    if (!src || phase === 'ready' || phase === 'failed') return;
     setPhase('loading');
-  }, [visible, candidateIndex, assetKey, sourcePageUrl, cachedPath]);
+    const timeout = window.setTimeout(() => {
+      advanceCandidateOrFail();
+    }, 4500);
+    return () => window.clearTimeout(timeout);
+  }, [src, phase, candidateIndex, candidates.length]);
+
+  useEffect(() => {
+    reportedReadyRef.current = false;
+    reportedFailedRef.current = false;
+    setCandidateIndex(0);
+    setPhase(candidates.length ? 'idle' : 'failed');
+  }, [candidates]);
 
   const label = fallbackLabel || alt;
 
   return (
-    <div ref={rootRef} className="relative h-full w-full overflow-hidden bg-zinc-100">
+    <div className="relative h-full w-full overflow-hidden bg-zinc-100">
       {src && phase !== 'failed' ? (
         <img
           src={src}
           alt={alt}
-          className={`${className} h-full w-full transition-opacity duration-200 ${
-            phase === 'ready' ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`${className} h-full w-full`}
           decoding="async"
           loading="lazy"
-          referrerPolicy="no-referrer"
           onLoad={(event) => {
             setPhase('ready');
-            onReady?.();
+            if (!reportedReadyRef.current) {
+              reportedReadyRef.current = true;
+              onReady?.();
+            }
             const el = event.currentTarget;
             if (el.naturalWidth > 0 && el.naturalHeight > 0) {
               onDimensions?.(el.naturalWidth, el.naturalHeight);
             }
           }}
           onError={() => {
-            const candidates = candidatesRef.current;
-            if (candidateIndex + 1 < candidates.length) {
-              setCandidateIndex((prev) => prev + 1);
-              return;
-            }
-            setPhase('failed');
-            onFailed?.();
+            advanceCandidateOrFail();
           }}
         />
       ) : null}
-      {phase === 'loading' ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center pointer-events-none">
-          <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
-          <p className="text-[11px] font-medium text-zinc-500">Loading thumbnail...</p>
+      {src && phase !== 'ready' && phase !== 'failed' ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-zinc-50 p-3 text-center">
+          <ImageIcon className="h-7 w-7 animate-pulse text-zinc-300" />
+          <p className="text-xs font-medium leading-snug text-zinc-500">
+            Loading thumbnail…
+          </p>
         </div>
       ) : null}
       {phase === 'failed' ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-zinc-50 p-3 text-center">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-zinc-50 p-3 text-center">
+          <ImageIcon className="h-7 w-7 text-zinc-300" />
           <p className="text-xs font-medium leading-snug text-zinc-600 line-clamp-4" title={label}>
             {label}
           </p>

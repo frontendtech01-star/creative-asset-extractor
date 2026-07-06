@@ -1,0 +1,815 @@
+{
+  "sourceUrl": "https://www.apple.com/",
+  "extractedAt": "2026-06-25T11:14:01.611Z",
+  "counts": {
+    "images": 99,
+    "fonts": 51,
+    "videos": 0,
+    "mzstaticImages": 30
+  },
+  "images": [
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_large.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_large.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_large.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/ipad-air-m4/a/promo_logo_ipad_air__dqdj4ni03quu_large.png",
+      "filename": "promo_logo_ipad_air__dqdj4ni03quu_large.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/ipad-air-m4/a/promo_ipad_air_m4__bgcv7t286k8y_large.jpg",
+      "filename": "promo_ipad_air_m4__bgcv7t286k8y_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/airpods-pro-3/a/promo_airpods_pro_3_wc__dtqp7mcsx0a6_large.jpg",
+      "filename": "promo_airpods_pro_3_wc__dtqp7mcsx0a6_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-pro/a/promo_macbook_pro__c9td9w1mc8ia_large.jpg",
+      "filename": "promo_macbook_pro__c9td9w1mc8ia_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-watch-series-11/a/promo_logo_apple_watch_series_11__5r9c4l119tuy_large.png",
+      "filename": "promo_logo_apple_watch_series_11__5r9c4l119tuy_large.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-watch-series-11/a/promo_apple_watch_series_11__gnlwqxe1jlu2_large.jpg",
+      "filename": "promo_apple_watch_series_11__gnlwqxe1jlu2_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/iphone-tradein/a/promo_logo_iphone_tradein__bb7assu7ubo2_large.png",
+      "filename": "promo_logo_iphone_tradein__bb7assu7ubo2_large.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-card/a/promo_logo_apple_card__28vxrcexz0ia_large.png",
+      "filename": "promo_logo_apple_card__28vxrcexz0ia_large.png",
+      "type": "png"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/1250x668sr.jpg",
+      "filename": "1250x668sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/cj/images/tv-gallery/logo_hero_light__d7t8cya4x26a_small.png",
+      "filename": "logo_hero_light__d7t8cya4x26a_small.png",
+      "type": "png"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/6f/41/7c/6f417c01-dbf7-6cdc-df62-f014aa88a673/e452926f-7b52-4c05-a07f-8e4939b1bf6b.png/220x54.png",
+      "filename": "220x54.png",
+      "type": "png"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/5b/b3/4a/5bb34a60-695c-a96f-75ec-8a957fc2a20b/45899847-e52c-44a1-9ce5-09aedebb7a78.png/470x264.jpg",
+      "filename": "470x264.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/226x226sr.jpg",
+      "filename": "226x226sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/226x226SC.DN01.jpg?l=en-US",
+      "filename": "226x226SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_small.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_small.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_small_2x.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_mediumtall.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_mediumtall.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_mediumtall_2x.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_mediumtall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_medium.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_medium.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_medium_2x.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_largetall.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_largetall.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_largetall_2x.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_largetall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17/a/hero_iphone_17__ekga3xh1n5aq_large_2x.jpg",
+      "filename": "hero_iphone_17__ekga3xh1n5aq_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "data:image/gif;base64,R0lGODlhAQABAHAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==",
+      "type": "gif"
+    },
+    {
+      "url": "https://www.apple.com/ac/structured-data/images/open_graph_logo.png?202604211141",
+      "filename": "open_graph_logo.png",
+      "type": "png"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/13/64/d9/1364d938-97c6-ec90-6ad1-3cb8882d3cb2/64570904-8b59-4032-b998-502902b395af.png/274x496nr.jpg",
+      "filename": "274x496nr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/13/64/d9/1364d938-97c6-ec90-6ad1-3cb8882d3cb2/64570904-8b59-4032-b998-502902b395af.png/548x992nr.jpg",
+      "filename": "548x992nr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/688x368sr.jpg",
+      "filename": "688x368sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/1376x736sr.jpg",
+      "filename": "1376x736sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/980x522sr.jpg",
+      "filename": "980x522sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/1960x1044sr.jpg",
+      "filename": "1960x1044sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/2500x1336sr.jpg",
+      "filename": "2500x1336sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/6f/41/7c/6f417c01-dbf7-6cdc-df62-f014aa88a673/e452926f-7b52-4c05-a07f-8e4939b1bf6b.png/440x108.png",
+      "filename": "440x108.png",
+      "type": "png"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features116/v4/7b/5d/49/7b5d490a-a9b8-15e0-19d0-70e1f2c760d6/d675e2a7-8bb6-40e0-aa60-296128bb9668.png/188x254nr.jpg",
+      "filename": "188x254nr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features116/v4/7b/5d/49/7b5d490a-a9b8-15e0-19d0-70e1f2c760d6/d675e2a7-8bb6-40e0-aa60-296128bb9668.png/376x508nr.jpg",
+      "filename": "376x508nr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/5b/b3/4a/5bb34a60-695c-a96f-75ec-8a957fc2a20b/45899847-e52c-44a1-9ce5-09aedebb7a78.png/417x234.jpg",
+      "filename": "417x234.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/5b/b3/4a/5bb34a60-695c-a96f-75ec-8a957fc2a20b/45899847-e52c-44a1-9ce5-09aedebb7a78.png/834x468.jpg",
+      "filename": "834x468.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/5b/b3/4a/5bb34a60-695c-a96f-75ec-8a957fc2a20b/45899847-e52c-44a1-9ce5-09aedebb7a78.png/940x528.jpg",
+      "filename": "940x528.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/122x122sr.jpg",
+      "filename": "122x122sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/244x244sr.jpg",
+      "filename": "244x244sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/196x196sr.jpg",
+      "filename": "196x196sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/392x392sr.jpg",
+      "filename": "392x392sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/55/2b/5f/552b5f86-46e6-d848-ee06-5395bf09c206/83e0ed3d-c824-4ed9-9572-ae9e784568cb.png/452x452sr.jpg",
+      "filename": "452x452sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/3e/5c/3a/3e5c3a35-7239-4b68-51ec-5ddc3ee30905/695fdbf3-49fc-453c-b221-02507ae47461.png/188x254sr.jpg",
+      "filename": "188x254sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/3e/5c/3a/3e5c3a35-7239-4b68-51ec-5ddc3ee30905/695fdbf3-49fc-453c-b221-02507ae47461.png/376x508sr.jpg",
+      "filename": "376x508sr.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/122x122SC.DN01.jpg?l=en-US,",
+      "filename": "122x122SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/244x244SC.DN01.jpg?l=en-US",
+      "filename": "244x244SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/196x196SC.DN01.jpg?l=en-US,",
+      "filename": "196x196SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/392x392SC.DN01.jpg?l=en-US",
+      "filename": "392x392SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://is1-ssl.mzstatic.com/image/thumb/Features/v4/7b/0f/28/7b0f2824-c00c-7986-8dc5-6e1e1e682e77/f76d06d2-afa9-4dba-bc5d-01d9d7b80ccf.png/452x452SC.DN01.jpg?l=en-US",
+      "filename": "452x452SC.DN01.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/ac/structured-data/images/knowledge_graph_logo.png?202604211141",
+      "filename": "knowledge_graph_logo.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-tradein/a/promo_iphone_tradein__e4hrjxmgmf0i_large.jpg",
+      "filename": "promo_iphone_tradein__e4hrjxmgmf0i_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-card/a/promo_apple_card__d8xz4kd4evwy_large.jpg",
+      "filename": "promo_apple_card__d8xz4kd4evwy_large.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_small_2x.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_mediumtall_2x.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_mediumtall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_medium_2x.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_largetall_2x.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_largetall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-17-pro/a/hero_iphone_17_pro__dbaaq3mt8u2q_large_2x.jpg",
+      "filename": "hero_iphone_17_pro__dbaaq3mt8u2q_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_small_2x.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_mediumtall_2x.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_mediumtall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_medium_2x.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_largetall_2x.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_largetall_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-air-m5/a/hero_macbook_air_m5__eb1idggd120y_large_2x.jpg",
+      "filename": "hero_macbook_air_m5__eb1idggd120y_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/ipad-air-m4/a/promo_logo_ipad_air__dqdj4ni03quu_small_2x.png",
+      "filename": "promo_logo_ipad_air__dqdj4ni03quu_small_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/ipad-air-m4/a/promo_logo_ipad_air__dqdj4ni03quu_medium_2x.png",
+      "filename": "promo_logo_ipad_air__dqdj4ni03quu_medium_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/ipad-air-m4/a/promo_logo_ipad_air__dqdj4ni03quu_large_2x.png",
+      "filename": "promo_logo_ipad_air__dqdj4ni03quu_large_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/ipad-air-m4/a/promo_ipad_air_m4__bgcv7t286k8y_small_2x.jpg",
+      "filename": "promo_ipad_air_m4__bgcv7t286k8y_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/ipad-air-m4/a/promo_ipad_air_m4__bgcv7t286k8y_medium_2x.jpg",
+      "filename": "promo_ipad_air_m4__bgcv7t286k8y_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/ipad-air-m4/a/promo_ipad_air_m4__bgcv7t286k8y_large_2x.jpg",
+      "filename": "promo_ipad_air_m4__bgcv7t286k8y_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/airpods-pro-3/a/promo_airpods_pro_3_wc__dtqp7mcsx0a6_small_2x.jpg",
+      "filename": "promo_airpods_pro_3_wc__dtqp7mcsx0a6_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/airpods-pro-3/a/promo_airpods_pro_3_wc__dtqp7mcsx0a6_medium_2x.jpg",
+      "filename": "promo_airpods_pro_3_wc__dtqp7mcsx0a6_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/airpods-pro-3/a/promo_airpods_pro_3_wc__dtqp7mcsx0a6_large_2x.jpg",
+      "filename": "promo_airpods_pro_3_wc__dtqp7mcsx0a6_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-pro/a/promo_macbook_pro__c9td9w1mc8ia_small_2x.jpg",
+      "filename": "promo_macbook_pro__c9td9w1mc8ia_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-pro/a/promo_macbook_pro__c9td9w1mc8ia_medium_2x.jpg",
+      "filename": "promo_macbook_pro__c9td9w1mc8ia_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/macbook-pro/a/promo_macbook_pro__c9td9w1mc8ia_large_2x.jpg",
+      "filename": "promo_macbook_pro__c9td9w1mc8ia_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-watch-series-11/a/promo_logo_apple_watch_series_11__5r9c4l119tuy_small_2x.png",
+      "filename": "promo_logo_apple_watch_series_11__5r9c4l119tuy_small_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-watch-series-11/a/promo_logo_apple_watch_series_11__5r9c4l119tuy_medium_2x.png",
+      "filename": "promo_logo_apple_watch_series_11__5r9c4l119tuy_medium_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-watch-series-11/a/promo_logo_apple_watch_series_11__5r9c4l119tuy_large_2x.png",
+      "filename": "promo_logo_apple_watch_series_11__5r9c4l119tuy_large_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-watch-series-11/a/promo_apple_watch_series_11__gnlwqxe1jlu2_small_2x.jpg",
+      "filename": "promo_apple_watch_series_11__gnlwqxe1jlu2_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-watch-series-11/a/promo_apple_watch_series_11__gnlwqxe1jlu2_medium_2x.jpg",
+      "filename": "promo_apple_watch_series_11__gnlwqxe1jlu2_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-watch-series-11/a/promo_apple_watch_series_11__gnlwqxe1jlu2_large_2x.jpg",
+      "filename": "promo_apple_watch_series_11__gnlwqxe1jlu2_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/iphone-tradein/a/promo_logo_iphone_tradein__bb7assu7ubo2_small_2x.png",
+      "filename": "promo_logo_iphone_tradein__bb7assu7ubo2_small_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/iphone-tradein/a/promo_logo_iphone_tradein__bb7assu7ubo2_medium_2x.png",
+      "filename": "promo_logo_iphone_tradein__bb7assu7ubo2_medium_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/iphone-tradein/a/promo_logo_iphone_tradein__bb7assu7ubo2_large_2x.png",
+      "filename": "promo_logo_iphone_tradein__bb7assu7ubo2_large_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-tradein/a/promo_iphone_tradein__e4hrjxmgmf0i_small_2x.jpg",
+      "filename": "promo_iphone_tradein__e4hrjxmgmf0i_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-tradein/a/promo_iphone_tradein__e4hrjxmgmf0i_medium_2x.jpg",
+      "filename": "promo_iphone_tradein__e4hrjxmgmf0i_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/iphone-tradein/a/promo_iphone_tradein__e4hrjxmgmf0i_large_2x.jpg",
+      "filename": "promo_iphone_tradein__e4hrjxmgmf0i_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-card/a/promo_logo_apple_card__28vxrcexz0ia_small_2x.png",
+      "filename": "promo_logo_apple_card__28vxrcexz0ia_small_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-card/a/promo_logo_apple_card__28vxrcexz0ia_medium_2x.png",
+      "filename": "promo_logo_apple_card__28vxrcexz0ia_medium_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/logos/apple-card/a/promo_logo_apple_card__28vxrcexz0ia_large_2x.png",
+      "filename": "promo_logo_apple_card__28vxrcexz0ia_large_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-card/a/promo_apple_card__d8xz4kd4evwy_small_2x.jpg",
+      "filename": "promo_apple_card__d8xz4kd4evwy_small_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-card/a/promo_apple_card__d8xz4kd4evwy_medium_2x.jpg",
+      "filename": "promo_apple_card__d8xz4kd4evwy_medium_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/images/apple-card/a/promo_apple_card__d8xz4kd4evwy_large_2x.jpg",
+      "filename": "promo_apple_card__d8xz4kd4evwy_large_2x.jpg",
+      "type": "jpg"
+    },
+    {
+      "url": "https://www.apple.com/v/home/cj/images/tv-gallery/logo_hero_light__d7t8cya4x26a_small_2x.png",
+      "filename": "logo_hero_light__d7t8cya4x26a_small_2x.png",
+      "type": "png"
+    },
+    {
+      "url": "https://www.apple.com/ac/localnav/9/assets/ac-localnav/chevron/chevron-medium.svg",
+      "filename": "chevron-medium.svg",
+      "type": "svg"
+    },
+    {
+      "url": "https://www.apple.com/ac/localnav/9/assets/ac-localnav/chevron/chevron-small.svg",
+      "filename": "chevron-small.svg",
+      "type": "svg"
+    }
+  ],
+  "fonts": [
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_text.woff",
+      "type": "woff",
+      "family": "Apple Legacy Chevron",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_thin.woff",
+      "type": "woff",
+      "family": "Apple Legacy Chevron",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_ultralight.woff",
+      "type": "woff",
+      "family": "Apple Legacy Chevron",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_text.ttf",
+      "type": "ttf",
+      "family": "appleicons text",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_thin.ttf",
+      "type": "ttf",
+      "family": "appleicons thin",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/ac/globalfooter/8/en_US/assets/ac-footer/legacy/appleicons_ultralight.ttf",
+      "type": "ttf",
+      "family": "appleicons ultralight",
+      "sourceUrl": "https://www.apple.com/ac/globalfooter/8/en_US/styles/ac-globalfooter.built.css"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_regular.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_black.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_black-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_bold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_bold-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_heavy.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_heavy-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_thin.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_thin-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_regular-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_light.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_light-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_medium.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_medium-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_semibold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_semibold-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_ultralight.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Display/v3/sf-pro-display_ultralight-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Display",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_regular.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_black.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_bold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_heavy.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_thin.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_light.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_medium.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_semibold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Icons/v3/sf-pro-icons_ultralight.woff2",
+      "type": "woff2",
+      "family": "SF Pro Icons",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_regular.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_black.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_black-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_bold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_bold-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_heavy.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_heavy-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_thin.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_thin-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_regular-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_light.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_light-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_medium.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_medium-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_semibold.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_semibold-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_ultralight.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    },
+    {
+      "url": "https://www.apple.com/wss/fonts/SF-Pro-Text/v3/sf-pro-text_ultralight-italic.woff2",
+      "type": "woff2",
+      "family": "SF Pro Text",
+      "sourceUrl": "https://www.apple.com/wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3"
+    }
+  ],
+  "videos": []
+}

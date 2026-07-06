@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, ExternalLink, FolderOpen, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, ExternalLink, FolderOpen, Link as LinkIcon, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
+import { apiFetch } from '../lib/api';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
   VIDEO_PLATFORMS,
@@ -41,6 +42,49 @@ const isHttpUrl = (value: string) => {
 const parseInputUrls = (value: string) =>
   Array.from(new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)));
 
+const isSupportedBulkImageUrl = (value: string) =>
+  /^https?:\/\/.+\.(?:png|jpe?g|webp|avif|gif|svg)(?:[?#].*)?$/i.test(String(value || '').trim());
+
+const isSupportedBulkFontUrl = (value: string) =>
+  /^https?:\/\/.+\.(?:woff2?|ttf|otf|eot)(?:[?#].*)?$/i.test(String(value || '').trim());
+
+const isSupportedBulkFontCssUrl = (value: string) =>
+  /^https?:\/\/(?:fonts\.googleapis\.com\/css\S*|.+\.css(?:[?#].*)?)/i.test(String(value || '').trim());
+
+const isSupportedBulkAssetUrl = (value: string) =>
+  isSupportedBulkImageUrl(value) || isSupportedBulkFontUrl(value) || isSupportedBulkFontCssUrl(value);
+
+const getBulkAssetKind = (value: string): 'image' | 'font' | 'font-css' => {
+  if (isSupportedBulkFontCssUrl(value)) return 'font-css';
+  if (isSupportedBulkFontUrl(value)) return 'font';
+  return 'image';
+};
+
+const getUrlFilename = (url: string, fallback: string) => {
+  const clean = String(url || '').split(/[?#]/)[0].split('/').filter(Boolean).pop() || fallback;
+  return clean || fallback;
+};
+
+const filenameBaseFromName = (filename: string) =>
+  String(filename || 'asset').replace(/\.[^.]+$/, '') || 'asset';
+
+type BulkResolvedAsset = {
+  url: string;
+  kind: 'image' | 'font';
+  filename?: string;
+  cssSource?: string;
+  family?: string;
+};
+
+const extractBulkAssetLinks = (value: string) =>
+  Array.from(
+    new Set(
+      (String(value || '').match(/https?:\/\/[^\s"'<>()[\]]+/gi) || [])
+        .map((line) => line.trim().replace(/^<|>$/g, '').replace(/^["']|["']$/g, '').replace(/[),.;]+$/g, ''))
+        .filter(isSupportedBulkAssetUrl)
+    )
+  );
+
 const mergeJobs = (current: DownloaderJob[], updates: DownloaderJob[]) => {
   const byId = new Map(current.map((job) => [job.id, job]));
   updates.forEach((job) => byId.set(job.id, job));
@@ -76,6 +120,21 @@ const isYouTubeUrl = (value: string) => {
     return /(?:youtube\.com|youtu\.be)/i.test(value);
   }
 };
+
+const isInstagramUrl = (value: string) => {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'instagram.com' || host.endsWith('.instagram.com');
+  } catch {
+    return /instagram\.com/i.test(value);
+  }
+};
+
+const isInstagramCookieError = (message: string) =>
+  /instagram.*cookies\.txt|cookies\.txt.*instagram|instagram requires cookies/i.test(message);
+
+const needsCookieFileOption = (platform: string | null) =>
+  Boolean(platform && ['instagram', 'facebook', 'x', 'tiktok', 'youtube'].includes(platform));
 
 function YouTubeFallbackLink({ url, compact = false }: { url: string; compact?: boolean }) {
   if (!url || !isYouTubeUrl(url)) return null;
@@ -313,6 +372,10 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
   const [activeQuality, setActiveQuality] = useState<DownloaderQuality | null>(null);
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
+  const [cookiesFilePath, setCookiesFilePath] = useState('');
+  const [bulkImageLinks, setBulkImageLinks] = useState('');
+  const [bulkImageDownloading, setBulkImageDownloading] = useState(false);
+  const [bulkImageResult, setBulkImageResult] = useState<{ ok: boolean; message: string } | null>(null);
   const handledAutoStartIdRef = React.useRef<number | null>(null);
 
   const inputUrls = useMemo(() => parseInputUrls(urlInput), [urlInput]);
@@ -426,6 +489,115 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
     }
   };
 
+  const handleBulkImageLinksDownload = async () => {
+    const links = extractBulkAssetLinks(bulkImageLinks);
+    if (links.length === 0) {
+      setBulkImageResult({
+        ok: false,
+        message: 'Paste one or more image or font links: JPG, PNG, WEBP, AVIF, GIF, SVG, WOFF2, WOFF, TTF, OTF, EOT, or Google Fonts CSS.',
+      });
+      return;
+    }
+    setBulkImageDownloading(true);
+    setBulkImageResult(null);
+    try {
+      const cssLinks = links.filter((url) => getBulkAssetKind(url) === 'font-css');
+      const directAssets: BulkResolvedAsset[] = links
+        .filter((url) => getBulkAssetKind(url) !== 'font-css')
+        .map((url) => ({
+          url,
+          kind: getBulkAssetKind(url) === 'font' ? 'font' : 'image',
+          filename: getUrlFilename(url, getBulkAssetKind(url) === 'font' ? 'font' : 'image'),
+        }));
+
+      let resolvedFontAssets: BulkResolvedAsset[] = [];
+      if (cssLinks.length > 0) {
+        const response = await apiFetch('/api/resolve-font-links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls: cssLinks }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || 'Could not resolve font CSS links.');
+        }
+        resolvedFontAssets = Array.isArray(data.fonts)
+          ? data.fonts
+              .map((font: any) => {
+                const url = String(font?.url || '').trim();
+                if (!url || !isSupportedBulkFontUrl(url)) return null;
+                return {
+                  url,
+                  kind: 'font' as const,
+                  filename: String(font?.originalFilename || '').trim() || getUrlFilename(url, 'font'),
+                  cssSource: String(font?.cssSource || '').trim() || undefined,
+                  family: String(font?.family || '').trim() || undefined,
+                };
+              })
+              .filter(Boolean) as BulkResolvedAsset[]
+          : [];
+      }
+
+      const assets = Array.from(
+        new Map([...directAssets, ...resolvedFontAssets].map((asset) => [asset.url, asset])).values()
+      );
+      if (assets.length === 0) {
+        throw new Error('No downloadable image or font files were found in the pasted links.');
+      }
+
+      const items = assets.map((asset, index) => {
+        const filename = asset.filename || getUrlFilename(asset.url, `${asset.kind}_${String(index + 1).padStart(3, '0')}`);
+        const filenameBase = filenameBaseFromName(filename) || `${asset.kind}_${String(index + 1).padStart(3, '0')}`;
+        const folder = asset.kind === 'font' ? 'Fonts' : 'Images';
+        return {
+          url: asset.url,
+          originalUrl: asset.url,
+          assetType: asset.kind,
+          status: 'path-only',
+          preserveOriginal: true,
+          filenameBase,
+          filename,
+          metadataFilename: filename,
+          zipEntryName: `${folder}/${filename}`,
+          ...(asset.kind === 'font'
+            ? {
+                originalFormat: filename.split('.').pop()?.toLowerCase(),
+                cssSource: asset.cssSource,
+                family: asset.family,
+                familyFolder: 'Bulk_Fonts',
+              }
+            : {}),
+        };
+      });
+      const response = await apiFetch('/api/download-zip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          save: true,
+          filename: 'bulk-asset-links.zip',
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error || 'Bulk asset ZIP failed');
+      const addedCount = Number(result?.addedCount || 0);
+      const failedCount = Number(result?.failedCount || 0);
+      if (addedCount <= 0) throw new Error('Bulk asset ZIP was created without downloadable files.');
+      setBulkImageResult({
+        ok: failedCount === 0,
+        message:
+          failedCount === 0
+            ? `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'bulk-asset-links.zip'}.`
+            : `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved; ${failedCount} failed.`,
+      });
+      setBulkImageLinks('');
+    } catch (error: any) {
+      setBulkImageResult({ ok: false, message: error?.message || 'Failed to download image/font links as ZIP.' });
+    } finally {
+      setBulkImageDownloading(false);
+    }
+  };
+
   const downloadQueue = async (
     quality: DownloaderQuality = 'fhd',
     overrideUrls?: string[],
@@ -434,6 +606,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
     const urls = overrideUrls || inputUrls;
     const requestedStartTime = trimOverride?.startTime ?? startTime;
     const requestedEndTime = trimOverride?.endTime ?? endTime;
+    const requestedCookiesFilePath = cookiesFilePath.trim();
     if (!urls.length) {
       setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
       return;
@@ -466,13 +639,18 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
                   quality,
                   startTime: requestedStartTime,
                   endTime: requestedEndTime,
+                  cookiesFilePath: requestedCookiesFilePath,
                   sourcePageUrl: trimOverride?.sourcePageUrl,
                   saveToWebsiteAssets: trimOverride?.saveToWebsiteAssets,
                 }),
               ],
               errors: [] as Array<{ url: string; error: string }>,
             }
-          : await startBulkDownloaderJobs(urls, quality, { startTime: requestedStartTime, endTime: requestedEndTime });
+          : await startBulkDownloaderJobs(urls, quality, {
+              startTime: requestedStartTime,
+              endTime: requestedEndTime,
+              cookiesFilePath: requestedCookiesFilePath,
+            });
       const createdJobs = started.jobs || [];
       setJobErrors(started.errors || []);
       setJobs(createdJobs);
@@ -542,7 +720,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
 
       <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
         <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
-          <h2 className="text-sm font-semibold text-zinc-900">Single/Bulk Download</h2>
+          <h2 className="text-sm font-semibold text-zinc-900">Download Single/Bulk Video(s)</h2>
         </div>
 
         <div className="p-5 sm:p-6">
@@ -603,6 +781,23 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
                 </p>
               </div>
 
+              {needsCookieFileOption(detectedPlatform) ? (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Cookies.txt file path
+                    <input
+                      value={cookiesFilePath}
+                      onChange={(event) => setCookiesFilePath(event.target.value)}
+                      placeholder="Optional: /Users/name/Downloads/cookies.txt"
+                      className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm normal-case tracking-normal text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </label>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Use only when a platform blocks public extraction. This reads a cookies.txt file and never opens Chrome Keychain.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
@@ -634,6 +829,16 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
                         </div>
                       </div>
                     ) : null}
+                    {isInstagramUrl(item.url) && isInstagramCookieError(item.error) ? (
+                      <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+                        <div className="text-sm text-blue-950">
+                          <p className="font-semibold">Instagram blocked public extraction here.</p>
+                          <p className="mt-1 text-blue-900">
+                            Add a cookies.txt path above and retry. The app will use that file directly and will not open Chrome Keychain.
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -659,6 +864,54 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
             )}
 
             <CompletedDownloadGrid jobs={completedJobs} onClearDownloads={handleClearDownloads} />
+        </div>
+      </section>
+
+      <section className="mt-6 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+        <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900">
+            <LinkIcon className="h-4 w-4 text-blue-600" />
+            Download Single/Bulk Image(s)
+          </h2>
+        </div>
+        <div className="p-5 sm:p-6">
+          <textarea
+            aria-label="Bulk image links"
+            value={bulkImageLinks}
+            onChange={(event) => {
+              setBulkImageLinks(event.target.value);
+              setBulkImageResult(null);
+            }}
+            rows={5}
+            placeholder="Paste image or font links here, one per line: JPG, PNG, WEBP, AVIF, GIF, SVG, WOFF2, WOFF, TTF, OTF, EOT, Google Fonts CSS"
+            className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          />
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-zinc-500">
+              Separate from video downloads. Paste image or font links from any source and save them together in one ZIP.
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleBulkImageLinksDownload()}
+              disabled={bulkImageDownloading}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {bulkImageDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {bulkImageDownloading ? 'Creating Assets ZIP...' : `Download Assets ZIP (${extractBulkAssetLinks(bulkImageLinks).length})`}
+            </button>
+          </div>
+          {bulkImageResult ? (
+            <div
+              role="status"
+              className={`mt-4 rounded-xl border px-4 py-3 text-sm font-medium ${
+                bulkImageResult.ok
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-red-200 bg-red-50 text-red-800'
+              }`}
+            >
+              {bulkImageResult.message}
+            </div>
+          ) : null}
         </div>
       </section>
     </div>

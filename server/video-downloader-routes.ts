@@ -83,6 +83,7 @@ type DownloadJob = {
   saveToWebsiteAssets?: boolean;
   startTime?: string;
   endTime?: string;
+  cookiesFilePath?: string;
   status: JobStatus;
   progress: number;
   downloadedBytes: number;
@@ -319,15 +320,26 @@ const toolPathEnv = (options: VideoDownloaderRouteOptions) => {
   return Array.from(new Set([...dirs, ...commonToolDirs])).join(path.delimiter);
 };
 
-const cookieAttempts = (platform: DownloaderPlatform) => {
-  const attempts: string[][] = [];
-  const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || '').trim();
-  if (cookiesFile && fs.existsSync(cookiesFile)) attempts.push(['--cookies', cookiesFile]);
-  if (platform === 'youtube' || platform === 'instagram' || platform === 'facebook' || platform === 'x' || platform === 'tiktok') {
-    attempts.push(['--cookies-from-browser', 'chrome']);
-    if (process.platform === 'darwin') attempts.push(['--cookies-from-browser', 'safari']);
-    attempts.push(['--cookies-from-browser', 'firefox']);
+const normalizeCookiesFilePath = (value: unknown) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const expanded = raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
+  try {
+    if (!fs.existsSync(expanded)) return '';
+    if (!fs.statSync(expanded).isFile()) return '';
+    return expanded;
+  } catch {
+    return '';
   }
+};
+
+const cookieAttempts = (_platform: DownloaderPlatform, explicitCookiesFilePath = '') => {
+  const attempts: string[][] = [];
+  const explicit = normalizeCookiesFilePath(explicitCookiesFilePath);
+  if (explicit) attempts.push(['--cookies', explicit]);
+  const cookiesFile = String(process.env.VDX_YTDLP_COOKIES_FILE || '').trim();
+  const envCookiesFile = normalizeCookiesFilePath(cookiesFile);
+  if (envCookiesFile && envCookiesFile !== explicit) attempts.push(['--cookies', envCookiesFile]);
   return attempts;
 };
 
@@ -342,6 +354,103 @@ const youtubeClientRetryAttempts = () => [
 
 const errorText = (error: any) =>
   [error?.message, error?.stderr, error?.stdout].filter(Boolean).join('\n').trim();
+
+const decodeBasicHtmlEntities = (value: string) =>
+  String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+
+const decodeInstagramUrlCandidate = (value: string) => {
+  let decoded = decodeBasicHtmlEntities(String(value || '').trim());
+  try {
+    decoded = JSON.parse(`"${decoded.replace(/"/g, '\\"')}"`);
+  } catch {
+    // Best effort: Instagram often escapes slashes and ampersands in page JSON.
+  }
+  return decodeBasicHtmlEntities(decoded)
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u0025/gi, '%')
+    .replace(/\\\//g, '/')
+    .trim();
+};
+
+const looksLikeInstagramMediaUrl = (value: string) => {
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return /\.(?:mp4|m3u8)(?:$|\?)/i.test(parsed.href);
+  } catch {
+    return false;
+  }
+};
+
+const pushInstagramCandidate = (candidates: string[], value: string) => {
+  const decoded = decodeInstagramUrlCandidate(value);
+  if (looksLikeInstagramMediaUrl(decoded) && !candidates.includes(decoded)) candidates.push(decoded);
+};
+
+const extractInstagramPublicMediaUrls = (html: string) => {
+  const candidates: string[] = [];
+  const decodedHtml = decodeBasicHtmlEntities(html);
+  const sources = [html, decodedHtml];
+
+  for (const source of sources) {
+    for (const match of source.matchAll(/<meta\b[^>]*(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["'][^>]*content=["']([^"']+)["'][^>]*>/gi)) {
+      pushInstagramCandidate(candidates, match[1] || '');
+    }
+    for (const match of source.matchAll(/<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:video(?::secure_url|:url)?|twitter:player:stream)["'][^>]*>/gi)) {
+      pushInstagramCandidate(candidates, match[1] || '');
+    }
+    for (const match of source.matchAll(/["'](?:video_url|playback_url|contentUrl|download_url|url)["']\s*:\s*["']([^"']+)["']/gi)) {
+      pushInstagramCandidate(candidates, match[1] || '');
+    }
+    for (const match of source.matchAll(/https?:\\?\/\\?\/[^"'<>\\\s]+(?:\.mp4|\.m3u8)[^"'<>\\\s]*/gi)) {
+      pushInstagramCandidate(candidates, match[0] || '');
+    }
+  }
+
+  return candidates;
+};
+
+const resolveInstagramPublicMediaUrls = async (url: string, jobId?: string) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Referer: 'https://www.instagram.com/',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Dest': 'document',
+      },
+    });
+    const html = await response.text();
+    const urls = response.ok ? extractInstagramPublicMediaUrls(html) : [];
+    void writeLog(jobId, {
+      event: 'instagram_public_resolver',
+      status: response.status,
+      media_url_count: urls.length,
+      final_url: response.url,
+    });
+    return urls;
+  } catch (error) {
+    void writeLog(jobId, { event: 'instagram_public_resolver_error', error: errorText(error) });
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
 const parseYtDlpProgressLine = (line: string) => {
   if (line.startsWith('__VDX_PROGRESS__|')) {
@@ -371,7 +480,7 @@ const isXGuestTokenError = (message: string) =>
   /bad guest token|guest token|twitter.*querying api|x\.com.*extract/i.test(message);
 
 const isAuthLikeError = (message: string) =>
-  /login|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available/i.test(message);
+  /login|logged-?in|cookie|private|sign in|authentication|not available|rate.?limit|guest token|requested content is not available|empty media response|media response is empty|accessible in your browser|use --cookies(?:-from-browser)?|checkpoint|challenge_required/i.test(message);
 
 const isYouTubeUnavailableError = (message: string) =>
   /(?:\[youtube\].*)?(?:this video is not available|video unavailable|private video|members-only|sign in to confirm|not available in your country|copyright|removed by the uploader)/i.test(
@@ -390,7 +499,7 @@ const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) 
     return 'X.com extraction needs updated engine. Updating extractor or trying fallback route...';
   }
   if (platform === 'instagram' && isAuthLikeError(message)) {
-    return 'Instagram could not refresh this public post or reel. The post may require a signed-in browser session.';
+    return 'Instagram requires cookies.txt for this reel. Paste a valid cookies.txt file path above and try again.';
   }
   if (platform === 'facebook' && isAuthLikeError(message)) {
     return 'Facebook could not access this public video. Confirm the video is public, then retry.';
@@ -1045,10 +1154,32 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
     }
   }
 
-  // C. Try with cookies if auth-like error
+  // C. Instagram fallback: copy the public-page resolver pattern used by
+  // downloader sites, but keep it in-app. Some public reels expose a playable
+  // CDN URL in page metadata/embedded JSON even when yt-dlp's extractor is
+  // temporarily blocked. If Instagram serves no public media URL, continue to
+  // the explicit cookies.txt path below.
+  if (job.platform === 'instagram') {
+    updateJob(job, { message: 'Checking Instagram public media...' });
+    const publicMediaUrls = Array.from(
+      new Set((await Promise.all(urls.map((url) => resolveInstagramPublicMediaUrls(url, job.id)))).flat())
+    );
+    for (const mediaUrl of publicMediaUrls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: 'Downloading resolved Instagram media...' });
+        return await runDownloadAttempt(options, job, mediaUrl, ['--no-aria2']);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: 'fallback_instagram_public_media', media_url: mediaUrl, error: errorText(error) });
+      }
+    }
+  }
+
+  // D. Try with cookies if auth-like error
   if (isAuthLikeError(errorText(lastError))) {
-    updateJob(job, { message: 'Trying with browser cookies...' });
-    for (const cookies of cookieAttempts(job.platform)) {
+    updateJob(job, { message: job.cookiesFilePath ? 'Trying with cookies.txt...' : 'Cookies.txt required for this source...' });
+    for (const cookies of cookieAttempts(job.platform, job.cookiesFilePath)) {
       for (const url of urls) {
         throwIfJobCancelled(job);
         try {
@@ -1061,7 +1192,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
     }
   }
 
-  // C2. YouTube sometimes reports a public video as unavailable depending on
+  // E. YouTube sometimes reports a public video as unavailable depending on
   // the packaged yt-dlp build, network, geo, or selected YouTube client. Before
   // showing the external backup option, refresh yt-dlp and retry with alternate
   // YouTube clients that commonly bypass false "not available" responses.
@@ -1086,7 +1217,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
     }
   }
 
-  // D. Lower quality fallback
+  // F. Lower quality fallback
   if (job.quality === '4k' || job.quality === 'fhd') {
     updateJob(job, { message: 'Retrying with best available quality...' });
     for (const url of urls) {
@@ -1483,10 +1614,11 @@ const createJob = (
     quality?: string;
     title?: string;
     sourcePageUrl?: string;
-    saveToWebsiteAssets?: boolean;
-    startTime?: string;
-    endTime?: string;
-  }
+	    saveToWebsiteAssets?: boolean;
+	    startTime?: string;
+	    endTime?: string;
+	    cookiesFilePath?: string;
+	  }
 ) => {
   const validated = validateDownloaderUrl(input.url, options.validateUrl);
   const quality: DownloadQuality = input.quality === 'audio'
@@ -1497,10 +1629,15 @@ const createJob = (
         ? 'fhd'
         : '4k';
   // Dedup: if same platform+url+quality is already running or completed, return existing
-  const sourcePageUrl = String(input.sourcePageUrl || '').trim();
-  const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
-  const { startTime, endTime } = normalizeTrimRange(input.startTime, input.endTime);
-  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : '', startTime, endTime);
+	  const sourcePageUrl = String(input.sourcePageUrl || '').trim();
+	  const saveToWebsiteAssets = input.saveToWebsiteAssets === true && Boolean(sourcePageUrl);
+	  const { startTime, endTime } = normalizeTrimRange(input.startTime, input.endTime);
+	  const rawCookiesFilePath = String(input.cookiesFilePath || '').trim();
+	  const cookiesFilePath = normalizeCookiesFilePath(rawCookiesFilePath);
+	  if (rawCookiesFilePath && !cookiesFilePath) {
+	    throw new Error('Cookies file was not found. Paste a valid cookies.txt file path or leave it blank.');
+	  }
+	  const key = runningJobKey(validated.platform, validated.url, quality, saveToWebsiteAssets ? sourcePageUrl : '', startTime, endTime);
   for (const existing of jobs.values()) {
     if (existing.status === 'queued' || existing.status === 'running') {
       if (runningJobKey(
@@ -1522,10 +1659,11 @@ const createJob = (
     platform: validated.platform,
     quality,
     sourcePageUrl,
-    saveToWebsiteAssets,
-    startTime,
-    endTime,
-    status: 'queued',
+	    saveToWebsiteAssets,
+	    startTime,
+	    endTime,
+	    cookiesFilePath,
+	    status: 'queued',
     progress: 0,
     downloadedBytes: 0,
     message: 'Queued',
@@ -1538,7 +1676,10 @@ const createJob = (
   return job;
 };
 
-const publicJob = (job: DownloadJob) => ({ ...job });
+const publicJob = (job: DownloadJob) => {
+  const { cookiesFilePath: _cookiesFilePath, ...safeJob } = job;
+  return safeJob;
+};
 
 const trimJobs = () => {
   const sorted = Array.from(jobs.values()).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1586,10 +1727,11 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
         quality: String(req.body?.quality || 'fhd').toLowerCase(),
         title: String(req.body?.title || '').trim(),
         sourcePageUrl: String(req.body?.sourcePageUrl || '').trim(),
-        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
-        startTime: String(req.body?.startTime || '').trim(),
-        endTime: String(req.body?.endTime || '').trim(),
-      });
+	        saveToWebsiteAssets: req.body?.saveToWebsiteAssets === true,
+	        startTime: String(req.body?.startTime || '').trim(),
+	        endTime: String(req.body?.endTime || '').trim(),
+	        cookiesFilePath: String(req.body?.cookiesFilePath || '').trim(),
+	      });
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
     } catch (error: any) {
@@ -1602,14 +1744,15 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     const urls: string[] = Array.from(
       new Set<string>(rawUrls.map((value: unknown) => String(value || '').trim()).filter(Boolean))
     ).slice(0, 20);
-    const quality = String(req.body?.quality || 'fhd').toLowerCase();
-    const trimRange = normalizeTrimRange(req.body?.startTime, req.body?.endTime);
+	    const quality = String(req.body?.quality || 'fhd').toLowerCase();
+	    const trimRange = normalizeTrimRange(req.body?.startTime, req.body?.endTime);
+	    const cookiesFilePath = String(req.body?.cookiesFilePath || '').trim();
     if (urls.length === 0) return res.status(400).json({ error: 'Enter at least one video URL.' });
     const created: DownloadJob[] = [];
     const errors: Array<{ url: string; error: string }> = [];
     for (const url of urls) {
       try {
-        created.push(createJob(options, { url, quality, ...trimRange }));
+	        created.push(createJob(options, { url, quality, ...trimRange, cookiesFilePath }));
       } catch (error: any) {
         errors.push({ url, error: error?.message || 'Invalid URL' });
       }

@@ -26,9 +26,13 @@ export type CreativeAssetsPathOptions = {
   sectionMode?: boolean;
 };
 
+export const resolveDownloadsRoot = () =>
+  String(process.env.CAE_DOWNLOADS_DIR || '').trim() ||
+  path.join(os.homedir(), 'Downloads');
+
 export const resolveCreativeAssetsRoot = (sourcePageUrl?: string, options: CreativeAssetsPathOptions = {}) => {
   const folderName = buildCreativeAssetsFolderName(String(sourcePageUrl || '').trim());
-  return path.join(os.homedir(), 'Downloads', folderName);
+  return path.join(resolveDownloadsRoot(), folderName);
 };
 
 export const resolveCreativeAssetsDir = (
@@ -41,7 +45,7 @@ export const resolveCreativeAssetsDir = (
 };
 
 export const resolvePlatformVideoAssetsDir = (platform: string) => {
-  const root = path.join(os.homedir(), 'Downloads', buildPlatformCreativeAssetsFolderName(platform));
+  const root = path.join(resolveDownloadsRoot(), buildPlatformCreativeAssetsFolderName(platform));
   return path.join(root, VIDEO_ASSET_SUBFOLDER);
 };
 

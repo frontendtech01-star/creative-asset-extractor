@@ -109,6 +109,7 @@ export const startDownloaderJob = async (input: {
   saveToWebsiteAssets?: boolean;
   startTime?: string;
   endTime?: string;
+  cookiesFilePath?: string;
 }) => {
   const response = await apiFetch('/api/downloader/download', {
     method: 'POST',
@@ -123,7 +124,7 @@ export const startDownloaderJob = async (input: {
 export const startBulkDownloaderJobs = async (
   urls: string[],
   quality: DownloaderQuality = '4k',
-  options: { startTime?: string; endTime?: string } = {}
+  options: { startTime?: string; endTime?: string; cookiesFilePath?: string } = {}
 ) => {
   const response = await apiFetch('/api/downloader/bulk', {
     method: 'POST',
