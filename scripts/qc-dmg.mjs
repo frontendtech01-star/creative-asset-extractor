@@ -181,11 +181,19 @@ try {
     } catch (e) {
       fail(`runtime API test failed: ${e.message}`);
     } finally {
-      serverHandle?.server?.close?.();
+      if (serverHandle?.server?.close) {
+        await new Promise((resolve) => serverHandle.server.close(resolve));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
     }
   }
 } finally {
-  fs.rmSync(extractDir, { recursive: true, force: true });
+  // Keep the extracted app folder on successful QC runs. Puppeteer/fonteditor can
+  // still have late ESM work pending while Node is exiting; deleting this folder
+  // immediately after a PASS can turn a successful DMG into a false non-zero build.
+  if (issues.length > 0) {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+  }
 }
 
 const dmgCandidates = fs.readdirSync(releaseDir).filter((name) => name.endsWith('-universal.dmg') || name.endsWith('.dmg'));
@@ -202,3 +210,4 @@ if (issues.length) {
   issues.forEach((issue) => console.log(`  - ${issue}`));
   process.exit(1);
 }
+process.exit(0);

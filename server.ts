@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import archiver from 'archiver';
+import extractZip from 'extract-zip';
 import { URL } from 'url';
 import puppeteer from 'puppeteer';
 import youtubedlModule from 'youtube-dl-exec';
@@ -353,7 +354,8 @@ const resolveDownloadSaveDir = (kind: DownloadSaveKind = 'default', sourcePageUr
   if (kind === 'font') return resolveCreativeAssetsDir(pageUrl, 'Fonts', pathOptions);
   if (kind === 'icon') return resolveCreativeAssetsDir(pageUrl, 'Images', pathOptions);
   if (kind === 'color') return resolveCreativeAssetsDir(pageUrl, 'Colors', pathOptions);
-  if (kind === 'image' || kind === 'zip') return resolveCreativeAssetsDir(pageUrl, 'Images', pathOptions);
+  if (kind === 'image') return resolveCreativeAssetsDir(pageUrl, 'Images', pathOptions);
+  if (kind === 'zip') return resolveCreativeAssetsRoot(pageUrl, pathOptions);
   if (kind === 'video' || kind === 'audio') {
     const platform = platformProviderFromUrl(pageUrl) || 'video';
     return resolvePlatformVideoAssetsDir(platform);
@@ -1385,6 +1387,12 @@ const buildChromeTabAssetCaptureScript = () => `
     const activeGrade = String(activeSwatch?.getAttribute?.('data-model-grade') || '').trim().toLowerCase();
     const activeModel = String(activeSwatch?.getAttribute?.('data-model-code') || '').trim().toLowerCase();
     const activeYear = String(activeSwatch?.getAttribute?.('data-model-year') || '').trim();
+    const activeColor = String(activeSwatch?.getAttribute?.('data-color-code') || '').trim().toLowerCase();
+    const activeColorName = String(
+      activeSwatch?.getAttribute?.('data-color-name') ||
+      activeSwatch?.getAttribute?.('aria-label') ||
+      activeColor
+    ).trim();
     const mediaUrls = [];
     root.querySelectorAll?.('.threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]').forEach((node) => {
       ['currentSrc', 'src'].forEach((key) => {
@@ -1418,63 +1426,32 @@ const buildChromeTabAssetCaptureScript = () => `
         }
       })
       .find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
-    if (!template || !activeGrade) return;
-    const gradeStyles = new Map();
-    const rememberGradeStyle = (raw) => {
-      const target = absoluteUrl(raw);
-      if (!target) return;
+    if (!template || !activeGrade || !activeColor) return;
+    for (let frame = 1; frame <= template.count; frame += 1) {
       try {
-        const parsed = new URL(target.replace(/&amp;/g, '&'));
-        const match = parsed.pathname.replace(/\\/{2,}/g, '/').match(/\\/jellies\\/max\\/\\d{4}\\/[^/]+\\/([^/]+)\\/(\\d+)\\/([^/]+)\\/(?:\\d+\\/)?\\d+\\.(?:png|jpe?g|webp|avif)$/i);
-        if (!match) return;
-        const grade = String(match[1] || '').toLowerCase();
-        const style = String(match[2] || '');
-        if (!grade || !style) return;
-        const styles = gradeStyles.get(grade) || new Set();
-        styles.add(style);
-        gradeStyles.set(grade, styles);
-      } catch {
-        // Ignore malformed image URLs.
-      }
-    };
-    document.querySelectorAll('img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
-      ['currentSrc', 'src'].forEach((key) => {
-        if (node[key]) rememberGradeStyle(node[key]);
-      });
-      ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
-        const value = node.getAttribute?.(attr);
-        if (!value) return;
-        String(value).split(',').forEach((part) => rememberGradeStyle(part.trim().split(/\\s+/)[0]));
-      });
-    });
-    Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => rememberGradeStyle(entry.name));
-    if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, new Set([template.style]));
-    const swatches = Array.from(root.querySelectorAll?.('.color-selector__swatch[data-color-code][data-model-grade]') || []);
-    swatches
-      .forEach((swatch) => {
-        const grade = String(swatch.getAttribute('data-model-grade') || '').trim().toLowerCase();
-        const color = String(swatch.getAttribute('data-color-code') || '').trim().toLowerCase();
-        if (!grade || !color) return;
-        const styles = Array.from(gradeStyles.get(grade) || []);
-        if (!styles.length) return;
-        const colorName = String(swatch.getAttribute('data-color-name') || swatch.getAttribute('aria-label') || color).trim();
-        styles.forEach((style) => {
-          for (let frame = 1; frame <= template.count; frame += 1) {
-            try {
-              const clone = new URL(template.href);
-              clone.pathname = template.prefix + grade + '/' + style + '/' + color + '/' + template.count + '/' + frame + template.suffix;
-              addImage(clone.href, {
-                source: '360-sequence',
-                alt: colorName + ' 360 frame ' + frame,
-                sequenceFrame: frame,
-                sequenceCount: template.count,
-              });
-            } catch {
-              // Ignore malformed generated frame URLs.
-            }
-          }
+        const clone = new URL(template.href);
+        clone.pathname =
+          template.prefix +
+          activeGrade +
+          '/' +
+          template.style +
+          '/' +
+          activeColor +
+          '/' +
+          template.count +
+          '/' +
+          frame +
+          template.suffix;
+        addImage(clone.href, {
+          source: '360-sequence',
+          alt: activeColorName + ' 360 frame ' + frame,
+          sequenceFrame: frame,
+          sequenceCount: template.count,
         });
-      });
+      } catch {
+        // Ignore malformed generated frame URLs.
+      }
+    }
   };
 
   Array.from(document.images || []).forEach((img) => {
@@ -1699,7 +1676,6 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
   const images = await Promise.all(
     imageRows
       .filter((image: any) => String(image?.url || '').trim())
-      .filter((image: any) => !hasMalformedImageSequencePath(String(image?.url || '').trim()))
       .map(async (image: any, index: number) => {
       const url = String(image.url || '').trim();
       const type = String(image.type || '').trim() || getAssetTypeFromUrl(url, 'png');
@@ -1728,7 +1704,15 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
       };
       })
   );
-  const expandedImages = await expandAvailableImageSequences(images, pageUrl || sourceUrl);
+  const sequenceReadyImages = shouldSuppressToyotaSequenceAutoExpansion(pageUrl || sourceUrl)
+    ? await repairMalformedToyotaCountedSequences(images, pageUrl || sourceUrl)
+    : images.filter((image: any) => !hasMalformedImageSequencePath(String(image?.url || '').trim()));
+  const skipToyotaSequenceExpansion =
+    shouldSuppressToyotaSequenceAutoExpansion(pageUrl || sourceUrl) &&
+    sequenceReadyImages.some((image: any) => String(image?.source || '').includes('360-sequence') && Number(image?.sequenceCount || 0) >= 8);
+  const expandedImages = skipToyotaSequenceExpansion
+    ? sequenceReadyImages
+    : await expandAvailableImageSequences(sequenceReadyImages, pageUrl || sourceUrl);
   const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
   const fontUsage = rawFonts
     .filter((font: any) => !String(font?.url || '').trim() && String(font?.family || '').trim())
@@ -1986,10 +1970,21 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
     (extracted?.videos?.length || 0);
   const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
   const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
-  const needsImageSequenceBackfill = [
+  const browserImages = [
     ...(Array.isArray(extracted?.images) ? extracted.images : []),
     ...(Array.isArray(extracted?.icons) ? extracted.icons : []),
-  ].some((item: any) => isImageSequenceCandidateUrl(String(item?.url || item?.src || '')));
+  ];
+  const hasImageSequenceCandidate = browserImages.some((item: any) =>
+    isImageSequenceCandidateUrl(String(item?.url || item?.src || ''))
+  );
+  const hasCompleteToyotaSequence =
+    isToyotaVehicleExtractionTarget(fallbackUrl) &&
+    browserImages.filter((item: any) =>
+      String(item?.source || '').includes('360-sequence') &&
+      Number(item?.sequenceFrame || 0) >= 1 &&
+      Number(item?.sequenceFrame || 0) <= 36
+    ).length >= 36;
+  const needsImageSequenceBackfill = hasImageSequenceCandidate && !hasCompleteToyotaSequence;
   if ((hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill) || !fallbackUrl) return extracted;
 
   const staticAssets = await withTimeout(
@@ -3229,6 +3224,7 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
       const fontFamily = normalizeCssFontFamilyName(fontFamilyMatch[1]);
       const fontWeightMatch = block.match(/font-weight\s*:\s*([^;]+)/i);
       const fontStyleMatch = block.match(/font-style\s*:\s*([^;]+)/i);
+      const unicodeRange = block.match(/unicode-range\s*:\s*([^;]+)/i)?.[1]?.trim() || '';
       const candidates: any[] = [];
       for (const srcMatch of srcMatches) {
         const srcPartRegex = /url\(\s*['"]?([^'")]+?)['"]?\s*\)\s*(?:format\(\s*['"]?([^'")]+?)['"]?\s*\))?/gi;
@@ -3247,6 +3243,7 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
             cssSource: baseUrl,
             weight: fontWeightMatch?.[1]?.trim() || undefined,
             style: fontStyleMatch?.[1]?.trim() || undefined,
+            unicodeRange,
             source: '@font-face',
             status: DEFAULT_ASSET_STATUS,
           });
@@ -3919,6 +3916,20 @@ const MAX_IMAGE_SEQUENCE_FRAMES = 120;
 const isLikely360SequenceUrl = (value: string) =>
   /(?:threesixty|360|jellies|vehicle|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ''));
 
+const isToyotaVehicleExtractionTarget = (value: string) => {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    return host.endsWith('toyota.com') && /\/(?:espanol\/)?tacoma\/?$/i.test(path);
+  } catch {
+    return /toyota\.com\/(?:espanol\/)?tacoma\/?$/i.test(String(value || '').trim());
+  }
+};
+
+const shouldSuppressToyotaSequenceAutoExpansion = (targetUrl: string) =>
+  isToyotaVehicleExtractionTarget(targetUrl);
+
 const hasMalformedImageSequencePath = (value: string) => {
   const raw = String(value || '').replace(/&amp;/g, '&').trim();
   if (!raw || !isLikely360SequenceUrl(raw)) return false;
@@ -4300,7 +4311,9 @@ const extractImagesFromDom = ($: any, targetUrl: string, options: { scoped?: boo
     if (style) images.push(...extractImagesFromCss(style, targetUrl));
   });
 
-  if (!options.scoped) images.push(...extractImageSequencesFromText($.html() || '', targetUrl));
+  if (!options.scoped && !shouldSuppressToyotaSequenceAutoExpansion(targetUrl)) {
+    images.push(...extractImageSequencesFromText($.html() || '', targetUrl));
+  }
   if (!options.scoped) extractInlineSvgsFromDom($, images);
   return images;
 };
@@ -4337,7 +4350,9 @@ const extractImagesFromHtmlString = (html: string, targetUrl: string) => {
     addImageCandidate(images, jsonMatch[1], targetUrl);
   }
 
-  images.push(...extractImageSequencesFromText(searchText, targetUrl));
+  if (!shouldSuppressToyotaSequenceAutoExpansion(targetUrl)) {
+    images.push(...extractImageSequencesFromText(searchText, targetUrl));
+  }
   return images;
 };
 
@@ -6489,14 +6504,19 @@ const reconcileZipEntryNameWithBuffer = (zipEntryName: string, buffer: Buffer) =
 
 const uniqueDownloadFilePath = async (
   filename: string,
-  options: { sourcePageUrl?: string; kind?: DownloadSaveKind; subfolder?: string } = {}
+  options: { sourcePageUrl?: string; kind?: DownloadSaveKind; subfolder?: string; rootFolderName?: string } = {}
 ) => {
-  const pageUrl = String(options.sourcePageUrl || lastExtractedSourceUrl || '').trim();
-  const baseTargetDir = resolveDownloadSaveDir(options.kind || 'default', pageUrl);
+  const rootFolderName = sanitizeFilenameBase(String(options.rootFolderName || '').trim());
+  const pageUrl = String(options.sourcePageUrl || (rootFolderName ? '' : lastExtractedSourceUrl) || '').trim();
+  const baseTargetDir = rootFolderName
+    ? path.join(downloadsDir, rootFolderName)
+    : resolveDownloadSaveDir(options.kind || 'default', pageUrl);
   const rawSubfolder = String(options.subfolder || '').trim();
   const safeSubfolder = rawSubfolder ? sanitizeFilenameBase(rawSubfolder) : '';
   const targetDir = safeSubfolder ? path.join(baseTargetDir, safeSubfolder) : baseTargetDir;
-  await removeEmptyCreativeAssetFolders(pageUrl);
+  if (!rootFolderName) {
+    await removeEmptyCreativeAssetFolders(pageUrl);
+  }
   await fsp.mkdir(assertPathInsideDownloads(targetDir), { recursive: true });
   const safeFilename = sanitizeFullFilename(filename);
   const ext = path.extname(safeFilename);
@@ -7132,8 +7152,92 @@ const detectFontFormatFromBuffer = (buffer: Buffer) => {
   if (sig === 'wOF2') return 'woff2';
   if (sig === 'wOFF') return 'woff';
   if (sig === 'OTTO') return 'otf';
-  if (buffer[0] === 0 && buffer[1] === 1 && buffer[2] === 0) return 'ttf';
+  if (buffer[0] === 0 && buffer[1] === 1 && buffer[2] === 0 && buffer[3] === 0) return 'ttf';
   return '';
+};
+
+const normalizeTtfIdentity = (filenameBase: string) => {
+  const clean = String(filenameBase || 'Font')
+    .replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '')
+    .replace(/[_]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim() || 'Font';
+  const variantMatch = clean.match(/^(.*?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black)(?:[- ]?(Italic|Oblique))?$/i);
+  const family = (variantMatch?.[1] || clean).replace(/[- ]+$/g, '').trim() || 'Font';
+  const weight = variantMatch?.[2] || 'Regular';
+  const slant = variantMatch?.[3] || '';
+  const subfamily = [weight, slant].filter(Boolean).join(' ') || 'Regular';
+  const fullName = subfamily === 'Regular' ? family : `${family} ${subfamily}`;
+  const postScriptName = `${family}-${subfamily}`
+    .replace(/[^A-Za-z0-9-]+/g, '')
+    .replace(/-+/g, '-')
+    .slice(0, 63) || 'Font-Regular';
+  return { family, subfamily, fullName, postScriptName };
+};
+
+const repairTtfNameTable = (buffer: Buffer, filenameBase: string) => {
+  if (detectFontFormatFromBuffer(buffer) !== 'ttf') return buffer;
+  const identity = normalizeTtfIdentity(filenameBase);
+  const font = Font.create(buffer, { type: 'ttf', hinting: true, kerning: true });
+  const data = font.get();
+  data.name = {
+    ...(data.name || {}),
+    fontFamily: identity.family,
+    fontSubFamily: identity.subfamily,
+    uniqueSubFamily: `${identity.fullName}; Creative Asset Extractor`,
+    version: data.name?.version || 'Version 1.0',
+    fullName: identity.fullName,
+    postScriptName: identity.postScriptName,
+  };
+  font.set(data);
+  const repaired = fontOutputToBuffer(font.write({ type: 'ttf', hinting: true, kerning: true }));
+  if (detectFontFormatFromBuffer(repaired) !== 'ttf') {
+    throw new Error('TTF name-table repair produced an invalid font file.');
+  }
+  return repaired;
+};
+
+const isInstallableTtfBuffer = (buffer: Buffer) => {
+  if (detectFontFormatFromBuffer(buffer) !== 'ttf') return false;
+  const hasValidSfntStructure = (() => {
+    if (buffer.length < 12) return false;
+    const tableCount = buffer.readUInt16BE(4);
+    if (tableCount < 4 || tableCount > 256 || 12 + tableCount * 16 > buffer.length) return false;
+    const tables = new Set<string>();
+    for (let index = 0; index < tableCount; index += 1) {
+      const entryOffset = 12 + index * 16;
+      const tag = buffer.toString('latin1', entryOffset, entryOffset + 4);
+      const tableOffset = buffer.readUInt32BE(entryOffset + 8);
+      const tableLength = buffer.readUInt32BE(entryOffset + 12);
+      if (!tag.trim() || tableOffset > buffer.length || tableLength > buffer.length - tableOffset) return false;
+      tables.add(tag);
+    }
+    const hasCoreTables = ['cmap', 'head', 'maxp', 'name'].every((tag) => tables.has(tag));
+    const hasGlyphTables = (tables.has('glyf') && tables.has('loca')) || tables.has('CFF ') || tables.has('CFF2');
+    return hasCoreTables && hasGlyphTables;
+  })();
+  if (!hasValidSfntStructure) return false;
+  try {
+    const parsed = opentype.parse(bufferToExactArrayBuffer(buffer) as any) as any;
+    const glyphCount = Number(parsed?.glyphs?.length || parsed?.numGlyphs || 0);
+    const names = parsed?.names || {};
+    const hasReadableName = [
+      names.preferredFamily,
+      names.typographicFamily,
+      names.fontFamily,
+      names.fullName,
+      names.postScriptName,
+    ].some((group) => {
+      if (typeof group === 'string') return Boolean(group.trim());
+      return group && typeof group === 'object' && Object.values(group).some((value) => typeof value === 'string' && value.trim());
+    });
+    // Some licensed web fonts expose valid SFNT tables but keep name records in
+    // encodings that opentype.js cannot decode. The structural checks above are
+    // sufficient for those fonts; retain the parser checks when metadata is readable.
+    return glyphCount > 0 && (hasReadableName || hasValidSfntStructure);
+  } catch {
+    return hasValidSfntStructure;
+  }
 };
 
 const isValidFontBuffer = (buffer: Buffer, expectedFormat: string) => {
@@ -7142,7 +7246,246 @@ const isValidFontBuffer = (buffer: Buffer, expectedFormat: string) => {
   const target = String(expectedFormat || '').toLowerCase();
   if (!detected) return false;
   if (target === 'svg' || target === 'eot') return false;
-  return detected === target;
+  if (detected !== target) return false;
+  if (target === 'ttf') return isInstallableTtfBuffer(buffer);
+  return true;
+};
+
+const TRANSFONTER_ORIGIN = 'https://transfonter.org';
+const TRANSFONTER_MAX_FONT_BYTES = 5_000_000;
+const transfonterTtfCache = new Map<string, Promise<Buffer>>();
+const fontForgeTtfCache = new Map<string, Promise<Buffer>>();
+let transfonterActiveConversions = 0;
+const transfonterWaiters: Array<() => void> = [];
+
+const withTransfonterSlot = async <T>(task: () => Promise<T>) => {
+  if (transfonterActiveConversions >= 3) {
+    await new Promise<void>((resolve) => transfonterWaiters.push(resolve));
+  }
+  transfonterActiveConversions += 1;
+  try {
+    return await task();
+  } finally {
+    transfonterActiveConversions = Math.max(0, transfonterActiveConversions - 1);
+    transfonterWaiters.shift()?.();
+  }
+};
+
+const findFilesByExtension = async (root: string, extension: string): Promise<string[]> => {
+  const found: string[] = [];
+  const entries = await fsp.readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) found.push(...await findFilesByExtension(absolute, extension));
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith(extension)) found.push(absolute);
+  }
+  return found;
+};
+
+const readResponseCookies = (response: Response) => {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = typeof headers.getSetCookie === 'function'
+    ? headers.getSetCookie()
+    : [headers.get('set-cookie') || ''];
+  return values
+    .flatMap((value) => String(value || '').split(/,(?=[^;,]+=)/g))
+    .map((value) => value.split(';')[0]?.trim())
+    .filter(Boolean)
+    .join('; ');
+};
+
+const resolveFontForgePath = () => {
+  const candidates = [
+    String(process.env.FONTFORGE_PATH || '').trim(),
+    '/opt/homebrew/bin/fontforge',
+    '/usr/local/bin/fontforge',
+    '/usr/bin/fontforge',
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+};
+
+const convertFontBufferWithFontForge = async (
+  buffer: Buffer,
+  filenameBase: string,
+  sourceFormat: string,
+) => {
+  const fontForgePath = resolveFontForgePath();
+  if (!fontForgePath) throw new Error('FontForge is not installed.');
+  const cacheKey = crypto.createHash('sha256').update(buffer).digest('hex');
+  const cached = fontForgeTtfCache.get(cacheKey);
+  if (cached) return cached;
+
+  const conversion = (async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'cae-fontforge-'));
+    try {
+      const safeBase = sanitizeFilenameBase(filenameBase || 'font').replace(/\s+/g, '-') || 'font';
+      const sourceExt = ['woff2', 'woff', 'ttf', 'otf'].includes(sourceFormat) ? sourceFormat : 'woff';
+      const inputPath = path.join(tempRoot, `${safeBase}.${sourceExt}`);
+      const outputPath = path.join(tempRoot, `${safeBase}.ttf`);
+      await fsp.writeFile(inputPath, buffer);
+      await execFileAsync(
+        fontForgePath,
+        ['-lang=ff', '-c', 'Open($1); Generate($2)', inputPath, outputPath],
+        { timeout: 45000, maxBuffer: 4 * 1024 * 1024 }
+      );
+      const converted = await fsp.readFile(outputPath);
+      if (!isInstallableTtfBuffer(converted)) {
+        throw new Error('FontForge returned a TTF that failed installability validation.');
+      }
+      return converted;
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  })();
+
+  fontForgeTtfCache.set(cacheKey, conversion);
+  try {
+    return await conversion;
+  } catch (error) {
+    fontForgeTtfCache.delete(cacheKey);
+    throw error;
+  }
+};
+
+const convertFontBufferWithTransfonter = async (
+  buffer: Buffer,
+  filenameBase: string,
+  sourceFormat: string,
+  fixVerticalMetrics = true,
+  targetFormat = 'ttf',
+) => {
+  if (!buffer.length || buffer.length > TRANSFONTER_MAX_FONT_BYTES) {
+    throw new Error('Transfonter accepts font files up to 5 MB.');
+  }
+  const normalizedTarget = normalizeFontFormat(targetFormat);
+  if (!['ttf', 'woff'].includes(normalizedTarget)) {
+    throw new Error('Transfonter conversion is only enabled for TTF and WOFF outputs.');
+  }
+  const cacheKey = `${crypto.createHash('sha256').update(buffer).digest('hex')}:target:${normalizedTarget}:metrics:${fixVerticalMetrics ? 'on' : 'off'}`;
+  const cached = transfonterTtfCache.get(cacheKey);
+  if (cached) return cached;
+
+  const conversion = withTransfonterSlot(async () => {
+    const pageResponse = await fetch(`${TRANSFONTER_ORIGIN}/`, { headers: { 'User-Agent': 'Creative-Asset-Extractor/2.0' } });
+    if (!pageResponse.ok) throw new Error(`Transfonter initialization failed (${pageResponse.status}).`);
+    const sessionCookie = readResponseCookies(pageResponse);
+    const pageHtml = await pageResponse.text();
+    const userId = pageHtml.match(/USER_ID\s*=\s*['"]([^'"]+)['"]/)?.[1] || '';
+    if (!userId) throw new Error('Transfonter session could not be initialized.');
+
+    const sessionHeaders = {
+      'User-Agent': 'Creative-Asset-Extractor/2.0',
+      'Referer': `${TRANSFONTER_ORIGIN}/`,
+      'Origin': TRANSFONTER_ORIGIN,
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    };
+
+    const safeBase = sanitizeFilenameBase(filenameBase || 'font').replace(/\s+/g, '-') || 'font';
+    const sourceExt = ['woff2', 'woff', 'ttf', 'otf'].includes(sourceFormat) ? sourceFormat : 'woff2';
+    const upload = new FormData();
+    upload.set('user_id', userId);
+    const uploadBytes = new Uint8Array(buffer.length);
+    uploadBytes.set(buffer);
+    upload.set('files[]', new Blob([uploadBytes]), `${safeBase}.${sourceExt}`);
+    const uploadResponse = await fetch(`${TRANSFONTER_ORIGIN}/fonts/upload`, {
+      method: 'POST',
+      headers: sessionHeaders,
+      body: upload,
+    });
+    const uploadPayload: any = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok || !Array.isArray(uploadPayload?.files) || uploadPayload.files.length === 0) {
+      throw new Error(uploadPayload?.error || `Transfonter upload failed (${uploadResponse.status}).`);
+    }
+
+    const settings = new URLSearchParams();
+    settings.set('user_id', userId);
+    settings.set('family', '1');
+    if (fixVerticalMetrics) settings.set('fixVerticalMetrics', '1');
+    settings.append('formats[]', normalizedTarget);
+    settings.set('hinting', '');
+    settings.set('language', '');
+    settings.set('fontDisplay', 'swap');
+    const processResponse = await fetch(`${TRANSFONTER_ORIGIN}/fonts/process`, {
+      method: 'POST',
+      headers: {
+        ...sessionHeaders,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      },
+      body: settings,
+    });
+    const processPayload: any = await processResponse.json().catch(() => ({}));
+    if (!processResponse.ok || processPayload?.error || processPayload?.status === 'error') {
+      throw new Error(processPayload?.error || processPayload?.message || `Transfonter conversion request failed (${processResponse.status}).`);
+    }
+
+    let resultUrl = '';
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const statusResponse = await fetch(`${TRANSFONTER_ORIGIN}/fonts/status?user_id=${encodeURIComponent(userId)}`, {
+        headers: sessionHeaders,
+      });
+      const status: any = await statusResponse.json().catch(() => ({}));
+      if (status?.status === 'success' && status?.result) {
+        resultUrl = new URL(String(status.result), TRANSFONTER_ORIGIN).href;
+        break;
+      }
+      if (status?.status === 'error' || status?.error) {
+        throw new Error(status?.error || 'Transfonter conversion failed.');
+      }
+    }
+    if (!resultUrl) throw new Error('Transfonter conversion timed out.');
+
+    const archiveResponse = await fetch(resultUrl, { headers: sessionHeaders });
+    if (!archiveResponse.ok) throw new Error(`Transfonter result download failed (${archiveResponse.status}).`);
+    const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'cae-transfonter-'));
+    try {
+      const zipPath = path.join(tempRoot, 'result.zip');
+      const outputDir = path.join(tempRoot, 'output');
+      await fsp.mkdir(outputDir, { recursive: true });
+      await fsp.writeFile(zipPath, archiveBuffer);
+      await extractZip(zipPath, { dir: outputDir });
+      const convertedFiles = await findFilesByExtension(outputDir, `.${normalizedTarget}`);
+      if (convertedFiles.length === 0) throw new Error(`Transfonter result did not contain a ${normalizedTarget.toUpperCase()} file.`);
+      // Preserve the file produced by Transfonter. Re-serializing TTF with a JS
+      // font editor can corrupt Macintosh name records and makes Font Book
+      // report "No Installable Fonts Selected".
+      const converted = await fsp.readFile(convertedFiles[0]);
+      if (normalizedTarget === 'ttf' && !isInstallableTtfBuffer(converted)) {
+        throw new Error('Transfonter returned a TTF that failed installability validation.');
+      }
+      if (normalizedTarget === 'woff' && !isValidFontBuffer(converted, 'woff')) {
+        throw new Error('Transfonter returned a WOFF that failed validation.');
+      }
+      return converted;
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  transfonterTtfCache.set(cacheKey, conversion);
+  try {
+    return await conversion;
+  } catch (error) {
+    transfonterTtfCache.delete(cacheKey);
+    throw error;
+  }
+};
+
+const convertFontBufferToInstallableTtf = async (
+  buffer: Buffer,
+  filenameBase: string,
+  sourceFormat: string,
+  fixVerticalMetrics = true,
+) => {
+  try {
+    // Use the same conversion service requested by the user for client,
+    // Google and Typekit fonts. Its output carries complete Mac/Windows name
+    // records; local FontForge remains an offline fallback only.
+    return await convertFontBufferWithTransfonter(buffer, filenameBase, sourceFormat, fixVerticalMetrics);
+  } catch {
+    return convertFontBufferWithFontForge(buffer, filenameBase, sourceFormat);
+  }
 };
 
 const getInnerFontBuffer = async (buffer: Buffer, readFormat: string) => {
@@ -7391,6 +7734,9 @@ const convertFontBuffer = async (
 
   const convertInline = async () => {
     const { buffer: innerBuffer, format: innerFormat } = await getInnerFontBuffer(buffer, readFormat);
+    if (toFormat === 'ttf' && innerFormat === 'otf') {
+      throw new Error('CFF/OpenType outlines cannot be safely converted to an installable macOS TTF.');
+    }
     return writeFontBuffer(innerBuffer, innerFormat, toFormat);
   };
 
@@ -7422,6 +7768,7 @@ type ConvertFontExtras = {
   prefetched?: { buffer: Buffer; contentType: string; contentDisposition?: string };
   preferInlineConversion?: boolean;
   timeoutMs?: number;
+  fixVerticalMetrics?: boolean;
 };
 
 const GOOGLE_INSTALLABLE_FONT_CACHE = new Map<string, any | null>();
@@ -7461,10 +7808,11 @@ const resolveGoogleInstallableFontSource = async (extras: ConvertFontExtras = {}
       const family = normalizeFontFamilyCompare(block.match(/font-family\s*:\s*['"]?([^'";]+)['"]?/i)?.[1] || '');
       const weight = String(block.match(/font-weight\s*:\s*([^;]+)/i)?.[1] || '400').trim();
       const style = String(block.match(/font-style\s*:\s*([^;]+)/i)?.[1] || 'normal').trim().toLowerCase();
+      const unicodeRange = String(block.match(/unicode-range\s*:\s*([^;]+)/i)?.[1] || '').trim();
       const src = block.match(/url\(\s*['"]?([^'")]+?\.(?:ttf|woff2?|otf)(?:[?#][^'")]+)?)['"]?\s*\)/i)?.[1] || '';
       const format = getFontFormatFromUrlOrType(src, block);
       if (!src || !/^https?:\/\//i.test(src)) continue;
-      directFonts.push({ family, weight, style, url: src, format, cssSource });
+      directFonts.push({ family, weight, style, unicodeRange, url: src, format, cssSource });
     }
     const scored = directFonts
       .filter((font) => {
@@ -7543,7 +7891,12 @@ const getCachedConvertedFont = async (
     normalizeAssetRequestUrl(String(extras.originalUrl || '').trim()) ||
     normalizeAssetRequestUrl(url) ||
     url;
-  const cachePath = path.join(cachedFontDir, `${assetCacheKey(cacheSourceUrl, normalizedTarget)}.${normalizedTarget}`);
+  // Version the TTF cache whenever conversion/installability handling changes,
+  // so previously broken generated files are never served again.
+  const cacheIdentity = normalizedTarget === 'ttf'
+    ? `${cacheSourceUrl}#installable-ttf-v5-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
+    : cacheSourceUrl;
+  const cachePath = path.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
     contentDisposition: extras.contentDisposition,
@@ -7633,9 +7986,27 @@ const getCachedConvertedFont = async (
   }
 
   let outputBuffer = fetched.buffer;
+  let conversionProvider = 'local';
   const detected = detectFontFormatFromBuffer(fetched.buffer);
   let fromFormat = detected || normalizeFontFormat(originalFormat || getFontFormatFromUrlOrType(url, fetched.contentType), fetched.contentType);
-  try {
+  if (normalizedTarget === 'ttf' && fromFormat !== 'ttf' && !cacheOnly) {
+    outputBuffer = await convertFontBufferToInstallableTtf(
+      fetched.buffer,
+      preferredBase || extras.fontFamily || 'font',
+      fromFormat,
+      extras.fixVerticalMetrics !== false,
+    );
+    conversionProvider = 'transfonter';
+  } else if (normalizedTarget === 'woff' && fromFormat !== 'woff' && !cacheOnly) {
+    outputBuffer = await convertFontBufferWithTransfonter(
+      fetched.buffer,
+      preferredBase || extras.fontFamily || 'font',
+      fromFormat,
+      extras.fixVerticalMetrics !== false,
+      'woff',
+    );
+    conversionProvider = 'transfonter';
+  } else try {
     outputBuffer = await convertFontBuffer(
       url,
       fetched.buffer,
@@ -7645,6 +8016,24 @@ const getCachedConvertedFont = async (
       Boolean(extras.preferInlineConversion)
     );
   } catch (convertError: any) {
+    if (normalizedTarget === 'ttf' && !cacheOnly) {
+      outputBuffer = await convertFontBufferToInstallableTtf(
+        fetched.buffer,
+        preferredBase || extras.fontFamily || 'font',
+        fromFormat,
+        extras.fixVerticalMetrics !== false,
+      );
+      conversionProvider = 'transfonter';
+    } else if (normalizedTarget === 'woff' && !cacheOnly) {
+      outputBuffer = await convertFontBufferWithTransfonter(
+        fetched.buffer,
+        preferredBase || extras.fontFamily || 'font',
+        fromFormat,
+        extras.fixVerticalMetrics !== false,
+        'woff',
+      );
+      conversionProvider = 'transfonter';
+    } else {
     if (cacheOnly) throw convertError;
     const siblingUrl = url.replace(/\.(ttf|woff2?|eot|otf|svg)(\?|$)/i, `.${normalizedTarget}$2`);
     if (siblingUrl !== url) {
@@ -7664,6 +8053,22 @@ const getCachedConvertedFont = async (
     } else {
       throw convertError;
     }
+    }
+  }
+
+  if (
+    normalizedTarget === 'ttf' &&
+    !isInstallableTtfBuffer(outputBuffer) &&
+    !cacheOnly &&
+    fromFormat !== 'ttf'
+  ) {
+    outputBuffer = await convertFontBufferToInstallableTtf(
+      fetched.buffer,
+      preferredBase || extras.fontFamily || 'font',
+      fromFormat,
+      extras.fixVerticalMetrics !== false,
+    );
+    conversionProvider = 'transfonter';
   }
 
   if (!isValidFontBuffer(outputBuffer, normalizedTarget)) {
@@ -7676,6 +8081,7 @@ const getCachedConvertedFont = async (
   return {
     buffer: outputBuffer,
     format: normalizedTarget,
+    conversionProvider,
     filename: buildDownloadFilename(filenameSourceUrl, normalizedTarget, preferredBase, {
       ...filenameExtras,
       contentDisposition: fetched.contentDisposition || filenameExtras.contentDisposition,
@@ -8203,6 +8609,72 @@ const isRemoteImageUrlAvailable = async (url: string, refererPageUrl = '') => {
   }
 };
 
+const repairMalformedToyotaCountedSequences = async (items: any[], targetUrl: string) => {
+  if (!isToyotaVehicleExtractionTarget(targetUrl)) return items;
+
+  const ordinarySeeds = items
+    .map((item) => ({ item, parsed: String(item?.url || '').match(/\/jellies\/(?:max|relative)\/(\d{4})\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/1\.(png|jpe?g|webp|avif)(?:[?#]|$)/i) }))
+    .filter((entry) => entry.parsed);
+  if (ordinarySeeds.length === 0) return items;
+
+  let repairedGroup: { seed: any; urls: Array<{ frame: number; url: string }> } | null = null;
+  for (const item of items) {
+    const raw = String(item?.url || '').replace(/&amp;/g, '&').trim();
+    if (!raw || !hasMalformedImageSequencePath(raw)) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      continue;
+    }
+    const malformed = parsed.pathname.match(/^(.*\/jellies\/(?:max|relative)\/(\d{4})\/([^/]+))\/{2,}([^/]+)\/([^/]+)\/(\d{1,3})\/(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
+    if (!malformed) continue;
+    const [, prefix, year, model, modelCode, colorCode, countRaw, , extension] = malformed;
+    const count = Number(countRaw);
+    if (count < 8 || count > MAX_IMAGE_SEQUENCE_FRAMES) continue;
+    const matchingSeed = ordinarySeeds.find(({ parsed: seedMatch }) =>
+      seedMatch?.[1] === year &&
+      seedMatch?.[2]?.toLowerCase() === model.toLowerCase() &&
+      seedMatch?.[4]?.toLowerCase() === modelCode.toLowerCase() &&
+      seedMatch?.[5]?.toLowerCase() === colorCode.toLowerCase()
+    );
+    const trim = matchingSeed?.parsed?.[3];
+    if (!trim) continue;
+
+    const urls = Array.from({ length: count }, (_unused, index) => {
+      const clone = new URL(parsed.href);
+      clone.pathname = `${prefix}/${trim}/${modelCode}/${colorCode}/${count}/${index + 1}${extension}`;
+      return { frame: index + 1, url: clone.href };
+    });
+    // The page's first malformed counted URL belongs to the color currently
+    // loaded in the viewer. Keep only that color and do not probe every trim.
+    repairedGroup = { seed: item, urls };
+    break;
+  }
+  if (!repairedGroup) return items;
+
+  const existingUrls = new Set(items.map((item) => String(item?.url || '').trim()).filter(Boolean));
+  const discovered: any[] = [];
+  const sequenceCount = repairedGroup.urls.length;
+  for (const candidate of repairedGroup.urls) {
+      if (existingUrls.has(candidate.url)) continue;
+      existingUrls.add(candidate.url);
+      discovered.push({
+        ...repairedGroup.seed,
+        url: candidate.url,
+        type: inferImageTypeFromUrl(candidate.url) || getAssetTypeFromUrl(candidate.url, 'png'),
+        filename: filenameFromUrlPath(candidate.url),
+        source: '360-sequence-probed',
+        alt: `360 frame ${candidate.frame}`,
+        sequenceFrame: candidate.frame,
+        sequenceCount,
+        status: DEFAULT_ASSET_STATUS,
+      });
+  }
+
+  return discovered.length ? [...items.filter((item) => !hasMalformedImageSequencePath(String(item?.url || ''))), ...discovered] : items;
+};
+
 const expandAvailableImageSequences = async (items: any[], targetUrl: string) => {
   const byGroup = new Map<string, { seed: any; parsed: NonNullable<ReturnType<typeof parseExpandableImageSequence>>; observedFrames: Set<number> }>();
   for (const item of items) {
@@ -8301,6 +8773,124 @@ const expandAvailableImageSequences = async (items: any[], targetUrl: string) =>
       })
     : items;
   return discovered.length ? [...keptItems, ...discovered] : keptItems;
+};
+
+const filterUnavailableGeneratedImageSequences = async (items: any[], targetUrl: string) => {
+  if (shouldSuppressToyotaSequenceAutoExpansion(targetUrl)) {
+    return items;
+  }
+  const groups = new Map<
+    string,
+    {
+      seed: any;
+      parsed: NonNullable<ReturnType<typeof parseExpandableImageSequence>>;
+      items: any[];
+      sequenceCount: number;
+    }
+  >();
+
+  for (const item of items) {
+    const url = String(item?.url || '').trim();
+    const parsed = parseExpandableImageSequence(url);
+    if (!parsed || parsed.explicitCount < 8 || !/^https?:\/\//i.test(url)) continue;
+    const source = String(item?.source || '');
+    const isGeneratedSequence =
+      source.includes('360-sequence') ||
+      Number(item?.sequenceCount || 0) >= 8 ||
+      /\/jellies\/(?:max|relative)\//i.test(url);
+    if (!isGeneratedSequence) continue;
+    const group = groups.get(parsed.key) || {
+      seed: item,
+      parsed,
+      items: [],
+      sequenceCount: Number(item?.sequenceCount || parsed.explicitCount || 0),
+    };
+    group.items.push(item);
+    group.sequenceCount = Math.max(group.sequenceCount, Number(item?.sequenceCount || parsed.explicitCount || 0));
+    groups.set(parsed.key, group);
+  }
+
+  if (groups.size === 0) return items;
+
+  const invalidKeys = new Set<string>();
+  await mapWithConcurrency([...groups.values()], 4, async (group) => {
+    const count = Math.min(MAX_IMAGE_SEQUENCE_FRAMES, Math.max(8, group.sequenceCount || group.parsed.explicitCount));
+    const sampleFrames = Array.from(new Set([1, Math.max(1, Math.ceil(count / 2)), count]));
+    const checks = await mapWithConcurrency(sampleFrames, 3, async (frame) => {
+      const sampleUrl = imageSequenceFrameUrl(String(group.seed?.url || ''), frame);
+      if (!sampleUrl) return false;
+      return isRemoteImageUrlAvailable(sampleUrl, targetUrl);
+    });
+    const validSamples = checks.filter(Boolean).length;
+    if (validSamples < Math.min(2, sampleFrames.length)) {
+      invalidKeys.add(group.parsed.key);
+    }
+  });
+
+  if (invalidKeys.size === 0) return items;
+  return items.filter((item) => {
+    const parsed = parseExpandableImageSequence(String(item?.url || ''));
+    return !parsed || !invalidKeys.has(parsed.key);
+  });
+};
+
+const keepBestToyotaSequenceGroup = (items: any[], targetUrl: string) => {
+  if (!shouldSuppressToyotaSequenceAutoExpansion(targetUrl)) return items;
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      items: any[];
+      count: number;
+      trusted: boolean;
+      explicitCount: number;
+    }
+  >();
+
+  for (const item of items) {
+    const url = String(item?.url || '').trim();
+    const parsed = parseExpandableImageSequence(url);
+    const source = String(item?.source || '').trim();
+    const count = Number(item?.sequenceCount || parsed?.explicitCount || 0);
+    const trusted = source.includes('360-sequence') || source.includes('360-sequence-probed');
+    if ((!parsed && !trusted) || count < 8) continue;
+    const key = parsed?.key || `${source}:${url}`;
+    const group = groups.get(key) || {
+      key,
+      items: [],
+      count: 0,
+      trusted: false,
+      explicitCount: parsed?.explicitCount || 0,
+    };
+    group.items.push(item);
+    group.count = Math.max(group.count, count, group.items.length);
+    group.trusted = group.trusted || trusted;
+    group.explicitCount = Math.max(group.explicitCount, parsed?.explicitCount || 0);
+    groups.set(key, group);
+  }
+
+  if (groups.size === 0) return items;
+
+  const preferredGroup = [...groups.values()].sort((a, b) => {
+    if (Number(b.trusted) !== Number(a.trusted)) return Number(b.trusted) - Number(a.trusted);
+    if (b.count !== a.count) return b.count - a.count;
+    if (b.items.length !== a.items.length) return b.items.length - a.items.length;
+    return b.explicitCount - a.explicitCount;
+  })[0];
+
+  if (!preferredGroup || preferredGroup.count < 8) return items;
+
+  const allowedKeys = new Set([preferredGroup.key]);
+  return items.filter((item) => {
+    const url = String(item?.url || '').trim();
+    const parsed = parseExpandableImageSequence(url);
+    const source = String(item?.source || '').trim();
+    const count = Number(item?.sequenceCount || parsed?.explicitCount || 0);
+    const isSequenceCandidate = Boolean(parsed || source.includes('360-sequence') || source.includes('360-sequence-probed'));
+    if (!isSequenceCandidate || count < 8) return true;
+    const key = parsed?.key || `${source}:${url}`;
+    return allowedKeys.has(key);
+  });
 };
 
 const probeSvgDimensions = (buffer: Buffer) => {
@@ -8712,7 +9302,13 @@ const extractRenderedDomAssetsFromPage = async (
       const activeGrade = String(activeSwatch?.getAttribute('data-model-grade') || '').trim().toLowerCase();
       const activeModel = String(activeSwatch?.getAttribute('data-model-code') || '').trim().toLowerCase();
       const activeYear = String(activeSwatch?.getAttribute('data-model-year') || '').trim();
-      if (!activeGrade) return;
+      const activeColor = String(activeSwatch?.getAttribute('data-color-code') || '').trim().toLowerCase();
+      const activeColorName = String(
+        activeSwatch?.getAttribute('data-color-name') ||
+        activeSwatch?.getAttribute('aria-label') ||
+        activeColor
+      ).trim();
+      if (!activeGrade || !activeColor) return;
       const mediaUrls: string[] = [];
       root.querySelectorAll('.threesixty-media img, .threesixty-media source, .threesixty-media [src], .threesixty-media [srcset]').forEach((node) => {
         const anyNode = node as any;
@@ -8748,56 +9344,15 @@ const extractRenderedDomAssetsFromPage = async (
         })
         .find((item) => item && item.count >= 2 && item.count <= 120 && (!activeYear || item.year === activeYear) && (!activeModel || item.model.toLowerCase() === activeModel));
       if (!template) return;
-      const gradeStyles = new Map<string, Set<string>>();
-      const rememberGradeStyle = (raw: string | null | undefined) => {
-        const target = _.toAbsolute(String(raw || '').replace(/&amp;/g, '&'));
-        if (!target) return;
+      for (let frame = 1; frame <= template.count; frame += 1) {
         try {
-          const parsed = new URL(target);
-          const match = parsed.pathname.replace(/\/{2,}/g, '/').match(/\/jellies\/max\/\d{4}\/[^/]+\/([^/]+)\/(\d+)\/([^/]+)\/(?:\d+\/)?\d+\.(?:png|jpe?g|webp|avif)$/i);
-          if (!match) return;
-          const grade = String(match[1] || '').toLowerCase();
-          const style = String(match[2] || '');
-          if (!grade || !style) return;
-          const styles = gradeStyles.get(grade) || new Set<string>();
-          styles.add(style);
-          gradeStyles.set(grade, styles);
+          const clone = new URL(template.href);
+          clone.pathname = `${template.prefix}${activeGrade}/${template.style}/${activeColor}/${template.count}/${frame}${template.suffix}`;
+          _.addImage(clone.href);
         } catch {
-          // Ignore malformed image URLs.
+          // Ignore malformed generated frame URLs.
         }
-      };
-      document.querySelectorAll('img, source, [src], [srcset], [data-src], [data-srcset], [data-image], [data-lazy-src]').forEach((node) => {
-        const anyNode = node as any;
-        ['currentSrc', 'src'].forEach((key) => {
-          if (anyNode[key]) rememberGradeStyle(anyNode[key]);
-        });
-        ['src', 'srcset', 'data-src', 'data-srcset', 'data-lazy-src', 'data-image', 'data-url'].forEach((attr) => {
-          const value = node.getAttribute(attr);
-          if (!value) return;
-          String(value).split(',').forEach((part) => rememberGradeStyle(part.trim().split(/\s+/)[0]));
-        });
-      });
-      Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => rememberGradeStyle((entry as PerformanceResourceTiming).name));
-      if (!gradeStyles.has(activeGrade)) gradeStyles.set(activeGrade, new Set<string>([template.style]));
-      Array.from(root.querySelectorAll('.color-selector__swatch[data-color-code][data-model-grade]'))
-        .forEach((swatch) => {
-          const grade = String(swatch.getAttribute('data-model-grade') || '').trim().toLowerCase();
-          const color = String(swatch.getAttribute('data-color-code') || '').trim().toLowerCase();
-          if (!grade || !color) return;
-          const styles = Array.from(gradeStyles.get(grade) || []);
-          if (!styles.length) return;
-          styles.forEach((style) => {
-            for (let frame = 1; frame <= template.count; frame += 1) {
-              try {
-                const clone = new URL(template.href);
-                clone.pathname = `${template.prefix}${grade}/${style}/${color}/${template.count}/${frame}${template.suffix}`;
-                _.addImage(clone.href);
-              } catch {
-                // Ignore malformed generated frame URLs.
-              }
-            }
-          });
-        });
+      }
     };
 
     document.querySelectorAll('img').forEach((img) => {
@@ -9270,10 +9825,22 @@ const dedupeExtractedAssets = async (
     return true;
   };
   const iconPool = [...(options.extraIcons || []), ...images.filter((item) => classifyAssetIconCandidate(item))];
-  const imagePool = await expandAvailableImageSequences(
+  const baseImages = await repairMalformedToyotaCountedSequences(
     images.filter((item) => !classifyAssetIconCandidate(item)),
-    targetUrl
+    targetUrl,
   );
+  const hasTrustedToyotaSequence =
+    shouldSuppressToyotaSequenceAutoExpansion(targetUrl) &&
+    baseImages.some((item) => {
+      const source = String(item?.source || '').trim();
+      const count = Number(item?.sequenceCount || 0);
+      return source.includes('360-sequence') && count >= 8;
+    });
+  let imagePool = hasTrustedToyotaSequence
+    ? baseImages
+    : await expandAvailableImageSequences(baseImages, targetUrl);
+  imagePool = await filterUnavailableGeneratedImageSequences(imagePool, targetUrl);
+  imagePool = keepBestToyotaSequenceGroup(imagePool, targetUrl);
   const uniqueIcons = dedupeImagesByCanonicalKey(
     Array.from(new Set(iconPool.map((item) => item.url)))
       .map((url) => iconPool.find((item) => item.url === url))
@@ -15612,7 +16179,9 @@ app.post('/api/extract', async (req, res) => {
     if (prefetchedSiteHtml && !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
       try {
         const hasVimeoHints = /vimeo\.com|data-vimeo-id/i.test(prefetchedSiteHtml);
-        const staticQuickTimeoutMs = hasVimeoHints
+        const staticQuickTimeoutMs = isToyotaVehicleExtractionTarget(targetUrl)
+          ? 6000
+          : hasVimeoHints
           ? 75000
           : shouldTryStaticBeforeBrowser(prefetchedSiteHtml)
             ? 45000
@@ -15873,7 +16442,15 @@ app.post('/api/extract', async (req, res) => {
       }
     }
 
-    const browserBudgetMs = isFastCrawl ? 30000 : 120000;
+    // Toyota's vehicle page often spends most of the generic 30s budget in
+    // consent/app hydration before its image viewer requests appear. Give this
+    // known extraction target enough time to expose the real blue 360 seed;
+    // other fast crawls keep the existing budget.
+    const browserBudgetMs = isToyotaVehicleExtractionTarget(targetUrl)
+      ? 45000
+      : isFastCrawl
+        ? 30000
+        : 120000;
     activeExtractProgress?.setPhase('loading');
     // Launch parallel quick static extraction in a worker thread
     quickExtractPromise = extractionProxyUrl ? Promise.resolve(null) : quickExtractInWorker(targetUrl).catch(() => null);
@@ -16058,8 +16635,11 @@ app.post('/api/extract', async (req, res) => {
       console.warn('Page JS error during extraction:', pageErr?.message || pageErr || 'unknown');
     });
 
-    const pageLoadTimeout = isFastCrawl ? 12000 : 60000;
-    const pageWaitUntil = isFastCrawl ? 'domcontentloaded' : 'networkidle2';
+    // Long-lived analytics, ad and streaming requests make networkidle2 a poor
+    // readiness signal for modern sites. DOM readiness plus the bounded asset
+    // settle/scroll passes below is both faster and more reliable.
+    const pageLoadTimeout = isFastCrawl ? 12000 : 25000;
+    const pageWaitUntil = 'domcontentloaded';
     const navigated = await page
       .goto(targetUrl, { waitUntil: pageWaitUntil as 'domcontentloaded' | 'networkidle2', timeout: pageLoadTimeout })
       .catch((e) => {
@@ -16067,7 +16647,13 @@ app.post('/api/extract', async (req, res) => {
         return null;
       });
     if (!navigated) {
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: pageLoadTimeout }).catch(() => undefined);
+      // A timeout often means the document loaded but a subresource never
+      // completed. Do not pay for a second full navigation when usable DOM is
+      // already present.
+      const currentPageUrl = String(page.url?.() || '');
+      if (!currentPageUrl || currentPageUrl === 'about:blank') {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(pageLoadTimeout, 12000) }).catch(() => undefined);
+      }
       await waitForPageContentSettle(page, {
         minWaitMs: isFastCrawl ? 1400 : 3200,
         readinessTimeoutMs: isFastCrawl ? 1200 : 3000,
@@ -16661,13 +17247,10 @@ app.post('/api/extract', async (req, res) => {
         extractWistiaIdsFromText(embeddedHtml, embeddedUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
       } catch (error: any) {
         console.warn(`Embedded page could not be crawled: ${embeddedUrl}`, error.message || error);
-  } finally {
-    await closePuppeteerBrowser(browser);
-    activeExtractProgress = null;
-    setGlobalProgressManager(null);
-    if (extractKey) ExtractionProgressManager.remove(extractKey);
-  }
-});
+      } finally {
+        await embeddedPage?.close().catch(() => undefined);
+      }
+    });
 
     if (!videosOnly) {
     // Extract Fonts from inline styles
@@ -16928,12 +17511,21 @@ app.post('/api/extract', async (req, res) => {
       const quickExtracted = await quickExtractPromise.catch(() => null);
       if (images.length || videos.length || fonts.length || colors.length) {
         try {
-          const partialAssets = await dedupeExtractedAssets(images, videos, fonts, colors, targetUrl, '', {
+          const mergeToyotaQuickAssets = isToyotaVehicleExtractionTarget(targetUrl);
+          const partialAssets = await dedupeExtractedAssets(
+            mergeToyotaQuickAssets ? [...images, ...(quickExtracted?.images || [])] : images,
+            mergeToyotaQuickAssets ? [...videos, ...(quickExtracted?.videos || [])] : videos,
+            mergeToyotaQuickAssets ? [...fonts, ...(quickExtracted?.fonts || [])] : fonts,
+            mergeToyotaQuickAssets ? [...colors, ...(quickExtracted?.colors || [])] : colors,
+            targetUrl,
+            '',
+            {
             fast: true,
             videosOnly,
-          });
+            },
+          );
           const seenUrls = new Set((partialAssets.images || []).map((item: any) => item.url).filter(Boolean));
-          for (const image of quickExtracted?.images || []) {
+          for (const image of mergeToyotaQuickAssets ? [] : (quickExtracted?.images || [])) {
             if (image?.url && !seenUrls.has(image.url)) {
               partialAssets.images.push(image);
               seenUrls.add(image.url);
@@ -16952,6 +17544,15 @@ app.post('/api/extract', async (req, res) => {
       progressMgr?.fail(error?.message || 'Browser extraction failed');
     }).finally(async () => {
       await closePuppeteerBrowser(browser).catch(() => undefined);
+      if (activeExtractProgress === progressMgr) {
+        activeExtractProgress = null;
+        setGlobalProgressManager(null);
+      }
+      // Keep the completed manager briefly so a client that receives the async
+      // extract id just after completion can still replay the terminal result.
+      if (extractKey) {
+        setTimeout(() => ExtractionProgressManager.remove(extractKey), 60_000).unref?.();
+      }
     });
 
     // Return immediately with async marker — browser extraction continues in background.
@@ -17875,7 +18476,7 @@ app.post('/api/save-asset-buffer', async (req, res) => {
 
 // API Endpoint to convert font formats
 app.get('/api/convert-font', async (req, res) => {
-  const { url, toFormat, originalFormat, filenameBase, familyFolder, originalUrl, metadataFilename, save, cssSource, fontFamily, fontWeight, fontStyle } = req.query;
+  const { url, toFormat, originalFormat, filenameBase, familyFolder, originalUrl, metadataFilename, save, cssSource, fontFamily, fontWeight, fontStyle, fixVerticalMetrics } = req.query;
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL is required' });
   }
@@ -17896,6 +18497,7 @@ app.get('/api/convert-font', async (req, res) => {
     fontStyle: typeof fontStyle === 'string' ? fontStyle : undefined,
     preferInlineConversion: true,
     timeoutMs: 65000,
+    fixVerticalMetrics: !['0', 'false', 'off'].includes(String(fixVerticalMetrics || '').toLowerCase()),
   };
   const wantsSave = String(save || '').toLowerCase() === '1' || String(save || '').toLowerCase() === 'true';
 
@@ -17912,7 +18514,7 @@ app.get('/api/convert-font', async (req, res) => {
         'font',
         fontFamilyFolder
       );
-      return res.json({ ...saved, format: converted.format });
+      return res.json({ ...saved, format: converted.format, conversionProvider: converted.conversionProvider || 'local' });
     }
 
     let contentType = 'application/octet-stream';
@@ -17925,6 +18527,7 @@ app.get('/api/convert-font', async (req, res) => {
 
     res.setHeader('Content-Disposition', `attachment; filename="${converted.filename}"`);
     res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Font-Conversion-Provider', converted.conversionProvider || 'local');
     return res.send(converted.buffer);
   } catch (error: any) {
     console.error('Font conversion error:', error.message || error);
@@ -17993,7 +18596,7 @@ app.get('/api/convert-font', async (req, res) => {
 
 // API Endpoint to convert font formats from provided bytes (browser-fetched fallback).
 app.post('/api/convert-font-buffer', async (req, res) => {
-  const { base64, toFormat, originalFormat, filenameBase, familyFolder, save, sourcePageUrl: bodySourcePageUrl } = req.body || {};
+  const { base64, toFormat, originalFormat, filenameBase, familyFolder, save, sourcePageUrl: bodySourcePageUrl, fixVerticalMetrics } = req.body || {};
   if (!base64 || typeof base64 !== 'string') {
     return res.status(400).json({ error: 'base64 is required' });
   }
@@ -18012,13 +18615,71 @@ app.post('/api/convert-font-buffer', async (req, res) => {
     }
 
     const normalizedTarget = ['ttf', 'woff', 'woff2', 'eot', 'otf', 'svg'].includes(targetFormat) ? targetFormat : 'ttf';
-    const output = await convertFontBuffer(
-      typeof filenameBase === 'string' ? filenameBase : 'font',
-      buffer,
-      typeof originalFormat === 'string' ? originalFormat : 'unknown',
-      normalizedTarget,
-      ''
-    );
+    let output: Buffer;
+    let conversionProvider = 'local';
+    try {
+      const normalizedOriginal = normalizeFontFormat(typeof originalFormat === 'string' ? originalFormat : 'unknown');
+      if (normalizedTarget === 'ttf' && normalizedOriginal !== 'ttf') {
+        output = await convertFontBufferToInstallableTtf(
+          buffer,
+          typeof filenameBase === 'string' ? filenameBase : 'font',
+          normalizedOriginal,
+          fixVerticalMetrics !== false,
+        );
+        conversionProvider = 'transfonter';
+      } else if (normalizedTarget === 'woff' && normalizedOriginal !== 'woff') {
+        output = await convertFontBufferWithTransfonter(
+          buffer,
+          typeof filenameBase === 'string' ? filenameBase : 'font',
+          normalizedOriginal,
+          fixVerticalMetrics !== false,
+          'woff',
+        );
+        conversionProvider = 'transfonter';
+      } else {
+      output = await convertFontBuffer(
+        typeof filenameBase === 'string' ? filenameBase : 'font',
+        buffer,
+        typeof originalFormat === 'string' ? originalFormat : 'unknown',
+        normalizedTarget,
+        ''
+      );
+      }
+      if (
+        normalizedTarget === 'ttf' &&
+        !isInstallableTtfBuffer(output) &&
+        normalizeFontFormat(typeof originalFormat === 'string' ? originalFormat : 'unknown') !== 'ttf'
+      ) {
+        output = await convertFontBufferToInstallableTtf(
+          buffer,
+          typeof filenameBase === 'string' ? filenameBase : 'font',
+          normalizeFontFormat(typeof originalFormat === 'string' ? originalFormat : 'unknown'),
+          fixVerticalMetrics !== false,
+        );
+        conversionProvider = 'transfonter';
+      }
+    } catch (localError) {
+      if (!['ttf', 'woff'].includes(normalizedTarget)) throw localError;
+      const normalizedOriginal = normalizeFontFormat(typeof originalFormat === 'string' ? originalFormat : 'unknown');
+      output = normalizedTarget === 'ttf'
+        ? await convertFontBufferToInstallableTtf(
+            buffer,
+            typeof filenameBase === 'string' ? filenameBase : 'font',
+            normalizedOriginal,
+            fixVerticalMetrics !== false,
+          )
+        : await convertFontBufferWithTransfonter(
+            buffer,
+            typeof filenameBase === 'string' ? filenameBase : 'font',
+            normalizedOriginal,
+            fixVerticalMetrics !== false,
+            'woff',
+          );
+      conversionProvider = 'transfonter';
+    }
+    if (!isValidFontBuffer(output, normalizedTarget)) {
+      throw new Error(`Converted font is not a valid installable ${normalizedTarget.toUpperCase()} file`);
+    }
 
     const preferredBase = typeof filenameBase === 'string' ? filenameBase : undefined;
     const filename = deriveAssetFilename({
@@ -18045,11 +18706,12 @@ app.post('/api/convert-font-buffer', async (req, res) => {
         'font',
         typeof familyFolder === 'string' ? familyFolder : ''
       );
-      return res.json({ ...saved, format: normalizedTarget });
+      return res.json({ ...saved, format: normalizedTarget, conversionProvider });
     }
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Font-Conversion-Provider', conversionProvider);
     return res.send(output);
   } catch (error: any) {
     console.error('Font buffer conversion error:', error.message || error);
@@ -18604,7 +19266,11 @@ app.get('/api/convert-audio', async (req, res) => {
 app.post('/api/open-folder', async (req, res) => {
   const target = String(req.body?.target || 'downloads');
   const sourcePageUrl = readSourcePageUrl(req, String(req.body?.sourcePageUrl || ''));
-  const folderPath =
+  const requestedFolderPath = String(req.body?.folderPath || '').trim();
+  const exactFolderPath = requestedFolderPath
+    ? assertPathInsideDownloads(requestedFolderPath)
+    : '';
+  const folderPath = exactFolderPath || (
     target === 'converted-audio'
       ? convertedAudioDir
       : target === 'converted-video'
@@ -18619,10 +19285,12 @@ app.post('/api/open-folder', async (req, res) => {
               ? resolveCreativeAssetsDir(sourcePageUrl, 'Images', { sectionMode: lastExtractionSectionMode })
               : target === 'images'
                 ? resolveCreativeAssetsDir(sourcePageUrl, 'Images', { sectionMode: lastExtractionSectionMode })
-                : resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode });
+                : resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode })
+  );
 
   try {
-    await fsp.access(folderPath);
+    const stat = await fsp.stat(folderPath);
+    if (!stat.isDirectory()) throw new Error('Requested Downloads path is not a folder.');
     await openLocalFolder(folderPath);
     return res.json({ ok: true, path: folderPath });
   } catch (error: any) {
@@ -20047,6 +20715,7 @@ app.post('/api/download-zip', async (req, res) => {
             fontStyle: typeof item.fontStyle === 'string' ? item.fontStyle : undefined,
             preferInlineConversion: true,
             timeoutMs: 65000,
+            fixVerticalMetrics: item.fixVerticalMetrics !== false,
           };
           const toFormat = normalizeFontFormat(String(item.toFormat || 'ttf'));
           const originalFormat = normalizeFontFormat(String(item.originalFormat || 'unknown'));
@@ -20083,6 +20752,7 @@ app.post('/api/download-zip', async (req, res) => {
               try {
                 converted = await runFontZipConvert(false);
               } catch (retryError: any) {
+                if (toFormat === 'ttf') throw retryError;
                 const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url);
                 if (!fallbackFormat || fallbackFormat === toFormat) throw retryError;
                 converted = await convertFontAsset(
@@ -20097,6 +20767,7 @@ app.post('/api/download-zip', async (req, res) => {
                 );
               }
             } else {
+              if (toFormat === 'ttf') throw cacheError;
               const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url);
               if (!fallbackFormat || fallbackFormat === toFormat) throw cacheError;
               converted = await convertFontAsset(
@@ -20113,6 +20784,9 @@ app.post('/api/download-zip', async (req, res) => {
           }
           if (!converted.buffer?.length) {
             throw new Error(`Font file is empty (${converted?.format || toFormat})`);
+          }
+          if (toFormat === 'ttf' && detectFontFormatFromBuffer(converted.buffer) !== 'ttf') {
+            throw new Error('TTF conversion produced a non-TTF font file.');
           }
           const entryName =
             converted.format && converted.format !== toFormat
@@ -20501,17 +21175,16 @@ app.post('/api/download-zip', async (req, res) => {
       const requestedFilename = typeof req.body?.filename === 'string' && req.body.filename.trim()
         ? req.body.filename.trim()
         : 'assets.zip';
-      const zipSaveKind: DownloadSaveKind =
-        /font/i.test(requestedFilename) ||
-        list.some((item: any) => typeof item === 'object' && item?.assetType === 'font')
-          ? 'font'
-          : 'image';
+      const rootFolderName = typeof req.body?.rootFolderName === 'string'
+        ? req.body.rootFolderName.trim()
+        : '';
       archive.on('error', (err: Error) => {
         console.error('ZIP stream error:', err.message || err);
       });
       const target = await uniqueDownloadFilePath(requestedFilename, {
-        sourcePageUrl: readSourcePageUrl(req),
-        kind: zipSaveKind,
+        sourcePageUrl: rootFolderName ? '' : readSourcePageUrl(req),
+        kind: 'zip',
+        rootFolderName,
       });
       const writeStream = fs.createWriteStream(target.filePath);
       const streamDone = new Promise<void>((resolve, reject) => {

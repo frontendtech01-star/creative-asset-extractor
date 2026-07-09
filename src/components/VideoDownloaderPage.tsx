@@ -28,6 +28,7 @@ import {
 import { formatBytes } from '../lib/download';
 import { logActivity, reportOperationFailure } from '../lib/activityLog';
 import { requestOpenFeedback } from '../lib/feedbackContext';
+import { buildFontDisplayName, getFontFamilyFolderName } from '../lib/fontAsset';
 import { FriendlyError } from './ProgressExperience';
 import ValidatedVideoThumb from './ValidatedVideoThumb';
 
@@ -74,6 +75,31 @@ type BulkResolvedAsset = {
   filename?: string;
   cssSource?: string;
   family?: string;
+  weight?: string;
+  style?: string;
+};
+
+const normalizeBulkFontFamily = (value: string) =>
+  String(value || '')
+    .replace(/\+/g, ' ')
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const sanitizeBulkPathPart = (value: string, fallback: string) =>
+  String(value || fallback)
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || fallback;
+
+const buildBulkFontFilenameBase = (asset: BulkResolvedAsset, fallbackBase: string) => {
+  const display = buildFontDisplayName({
+    family: normalizeBulkFontFamily(asset.family || ''),
+    weight: asset.weight,
+    style: asset.style,
+    filename: fallbackBase,
+  });
+  return display || fallbackBase;
 };
 
 const extractBulkAssetLinks = (value: string) =>
@@ -362,9 +388,10 @@ type AutoStartRequest = {
 
 type VideoDownloaderPageProps = {
   autoStartRequest?: AutoStartRequest | null;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
 };
 
-export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDownloaderPageProps) {
+export default function VideoDownloaderPage({ autoStartRequest = null, onDownloadReady }: VideoDownloaderPageProps) {
   const [urlInput, setUrlInput] = useState('');
   const [jobs, setJobs] = useState<DownloaderJob[]>([]);
   const [jobErrors, setJobErrors] = useState<Array<{ url: string; error: string }>>([]);
@@ -532,6 +559,8 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
                   filename: String(font?.originalFilename || '').trim() || getUrlFilename(url, 'font'),
                   cssSource: String(font?.cssSource || '').trim() || undefined,
                   family: String(font?.family || '').trim() || undefined,
+                  weight: String(font?.weight || '').trim() || undefined,
+                  style: String(font?.style || '').trim() || undefined,
                 };
               })
               .filter(Boolean) as BulkResolvedAsset[]
@@ -545,29 +574,53 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
         throw new Error('No downloadable image or font files were found in the pasted links.');
       }
 
-      const items = assets.map((asset, index) => {
+      const items = assets.flatMap((asset, index) => {
         const filename = asset.filename || getUrlFilename(asset.url, `${asset.kind}_${String(index + 1).padStart(3, '0')}`);
-        const filenameBase = filenameBaseFromName(filename) || `${asset.kind}_${String(index + 1).padStart(3, '0')}`;
+        const fallbackBase = filenameBaseFromName(filename) || `${asset.kind}_${String(index + 1).padStart(3, '0')}`;
+        const filenameBase = asset.kind === 'font'
+          ? buildBulkFontFilenameBase(asset, fallbackBase)
+          : fallbackBase;
         const folder = asset.kind === 'font' ? 'Fonts' : 'Images';
-        return {
+        const familyFolder = asset.kind === 'font'
+          ? sanitizeBulkPathPart(normalizeBulkFontFamily(asset.family || ''), 'Bulk Fonts')
+          : '';
+        const ext = filename.includes('.') ? filename.split('.').pop() || '' : '';
+        const normalizedExt = String(ext || '').toLowerCase();
+        const preferredFilename = asset.kind === 'font'
+          ? `${sanitizeBulkPathPart(filenameBase, 'font')}${normalizedExt ? `.${normalizedExt}` : ''}`
+          : filename;
+        const originalItem = {
           url: asset.url,
           originalUrl: asset.url,
           assetType: asset.kind,
           status: 'path-only',
           preserveOriginal: true,
           filenameBase,
-          filename,
-          metadataFilename: filename,
-          zipEntryName: `${folder}/${filename}`,
+          filename: preferredFilename,
+          metadataFilename: preferredFilename,
+          zipEntryName: asset.kind === 'font'
+            ? `${folder}/${familyFolder}/${preferredFilename}`
+            : `${folder}/${filename}`,
           ...(asset.kind === 'font'
             ? {
                 originalFormat: filename.split('.').pop()?.toLowerCase(),
                 cssSource: asset.cssSource,
-                family: asset.family,
-                familyFolder: 'Bulk_Fonts',
+                family: normalizeBulkFontFamily(asset.family || ''),
+                familyFolder,
+                fontWeight: asset.weight,
+                fontStyle: asset.style,
               }
             : {}),
         };
+        if (asset.kind !== 'font') return [originalItem];
+        return (['woff', 'ttf'] as const).map((format) => ({
+          ...originalItem,
+          preserveOriginal: normalizedExt === format,
+          toFormat: format,
+          filename: `${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
+          metadataFilename: `${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
+          zipEntryName: `${folder}/${familyFolder}/${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
+        }));
       });
       const response = await apiFetch('/api/download-zip', {
         method: 'POST',
@@ -576,6 +629,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
           items,
           save: true,
           filename: 'bulk-asset-links.zip',
+          rootFolderName: 'CreativeAssets',
         }),
       });
       const result = await response.json().catch(() => ({}));
@@ -589,6 +643,15 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
           failedCount === 0
             ? `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'bulk-asset-links.zip'}.`
             : `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved; ${failedCount} failed.`,
+      });
+      onDownloadReady?.({
+        title: 'Bulk assets saved',
+        detail:
+          failedCount === 0
+            ? `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'bulk-asset-links.zip'}.`
+            : `${addedCount} asset link${addedCount === 1 ? '' : 's'} saved; ${failedCount} failed.`,
+        target: 'downloads',
+        folderPath: result?.folderPath,
       });
       setBulkImageLinks('');
     } catch (error: any) {
@@ -888,7 +951,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null }: VideoDo
           />
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs text-zinc-500">
-              Separate from video downloads. Paste image or font links from any source and save them together in one ZIP.
+              Separate from video downloads. Font links keep their original files and add validated TTF conversions using Transfonter only when local conversion fails.
             </p>
             <button
               type="button"

@@ -18,6 +18,7 @@ export const extractSiteKeyFromUrl = (pageUrl: string) => {
 
 export const buildCreativeAssetsFolderName = (pageUrl: string) => {
   const site = extractSiteKeyFromUrl(pageUrl);
+  if (site === 'CreativeAssets') return 'CreativeAssets';
   return `${site}_CreativeAssets`;
 };
 
