@@ -1234,6 +1234,7 @@ const buildChromeTabAssetCaptureScript = () => `
   const isLikelyImageCandidate = (value) => {
     const raw = String(value || '').replace(/&amp;/g, '&').trim();
     if (!raw || /%7b|%7d|[{}]/i.test(raw)) return false;
+    if (/^data:image\/svg\+xml/i.test(raw)) return true;
     if (/\\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(raw)) return false;
     try {
       const parsed = new URL(raw);
@@ -1289,13 +1290,15 @@ const buildChromeTabAssetCaptureScript = () => `
     if (existing && imageVariantScore(existing.url) >= imageVariantScore(target)) return;
     imageMap.set(key, {
       url: target,
-      filename: filenameFromUrl(target, 'preview-image.png'),
+      filename: String(meta.filename || '').trim() || filenameFromUrl(target, 'preview-image.png'),
       width: Number(meta.width || 0) || undefined,
       height: Number(meta.height || 0) || undefined,
       alt: String(meta.alt || '').trim(),
       type: typeFromUrl(target),
       source: String(meta.source || '').trim() || undefined,
       dataUrl: String(meta.dataUrl || '').trim() || undefined,
+      isInlineSvg: Boolean(meta.isInlineSvg),
+      assetCategory: meta.assetCategory,
     });
   };
   const addSrcset = (value) => {
@@ -1471,6 +1474,31 @@ const buildChromeTabAssetCaptureScript = () => `
   });
   Array.from(document.querySelectorAll('svg image')).forEach((el) => {
     addImage(el.getAttribute('href') || el.getAttribute('xlink:href'));
+  });
+  Array.from(document.querySelectorAll('svg')).forEach((svg, index) => {
+    try {
+      const clone = svg.cloneNode(true);
+      if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      const svgText = new XMLSerializer().serializeToString(clone);
+      const bytes = new TextEncoder().encode(svgText);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.slice(offset, offset + chunkSize)));
+      }
+      const title = String(svg.querySelector('title')?.textContent || svg.getAttribute('aria-label') || svg.getAttribute('id') || '').trim();
+      const safeName = (title || 'inline-svg-' + (index + 1)).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('inline-svg-' + (index + 1));
+      addImage('data:image/svg+xml;base64,' + btoa(binary), {
+        filename: safeName + '.svg',
+        alt: title,
+        type: 'svg',
+        source: 'inline-svg',
+        isInlineSvg: true,
+        assetCategory: /logo|brand/i.test(title + ' ' + safeName) ? 'icon' : undefined,
+      });
+    } catch {
+      // Ignore SVG serialization failures.
+    }
   });
   Array.from(document.querySelectorAll('link[rel="preload"][as="image"], meta[property="og:image"], meta[name="twitter:image"]')).forEach((el) => {
     addImage(el.getAttribute('href') || el.getAttribute('content'));
@@ -4066,15 +4094,28 @@ const LAZY_IMAGE_ATTRS = [
 const SRCSET_ATTRS = ['srcset', 'data-srcset', 'data-lazy-srcset'];
 
 const extractInlineSvgsFromDom = ($: any, images: any[], options: { asIcons?: boolean } = {}) => {
-  $('svg').each((_: any, el: any) => {
+  $('svg').each((index: number, el: any) => {
     if (!$(el).attr('xmlns')) {
       $(el).attr('xmlns', 'http://www.w3.org/2000/svg');
     }
+    const rawName = String(
+      $(el).attr('id') ||
+        $(el).attr('aria-label') ||
+        $(el).find('title').first().text() ||
+        `inline-svg-${index + 1}`
+    ).trim();
+    const safeName =
+      sanitizeFilenameBase(rawName)
+        .replace(/\.[^.]+$/i, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '') || `inline-svg-${index + 1}`;
     const svgString = $.html(el);
     const svgBuffer = Buffer.from(svgString, 'utf8');
     const dims = probeRasterDimensions(svgBuffer);
     images.push({
       url: `data:image/svg+xml;base64,${svgBuffer.toString('base64')}`,
+      filename: `${safeName}.svg`,
       type: 'svg',
       isInlineSvg: true,
       assetCategory: options.asIcons ? 'icon' : undefined,
@@ -8370,8 +8411,7 @@ const deriveIndicationFromIsi = (isiText: string) => {
 };
 
 const isBotWallImageUrl = (url: string) =>
-  /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || '')) ||
-  /^data:image\/svg\+xml/i.test(String(url || ''));
+  /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || ''));
 
 const isJpeg2000ImageVariantUrl = (url: string) => {
   const lowered = String(url || '').toLowerCase();
@@ -9199,6 +9239,7 @@ const extractRenderedDomAssetsFromPage = async (
       isLikelyImageCandidate(raw: string) {
         const value = String(raw || '').replace(/&amp;/g, '&').trim();
         if (!value || /%7b|%7d|[{}]/i.test(value)) return false;
+        if (/^data:image\/svg\+xml/i.test(value)) return true;
         if (/\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(value)) return false;
         try {
           const parsed = new URL(value);
@@ -9216,6 +9257,22 @@ const extractRenderedDomAssetsFromPage = async (
       addImage(raw: string | null | undefined) {
         const abs = _.toAbsolute(String(raw || ''));
         if (abs && _.isLikelyImageCandidate(abs)) imageUrls.add(abs);
+      },
+      addInlineSvg(svg: SVGElement, index: number) {
+        try {
+          const clone = svg.cloneNode(true) as SVGElement;
+          if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+          const svgText = new XMLSerializer().serializeToString(clone);
+          const bytes = new TextEncoder().encode(svgText);
+          let binary = '';
+          const chunkSize = 8192;
+          for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode(...Array.from(bytes.slice(offset, offset + chunkSize)));
+          }
+          imageUrls.add(`data:image/svg+xml;base64,${btoa(binary)}`);
+        } catch {
+          // Ignore inline SVG serialization failures.
+        }
       },
       addSrcsetCandidates(raw: string | null | undefined) {
         if (!raw) return;
@@ -9380,6 +9437,10 @@ const extractRenderedDomAssetsFromPage = async (
     document.querySelectorAll('svg use').forEach((el) => {
       const href = el.getAttribute('href') || el.getAttribute('xlink:href');
       if (href && !href.startsWith('#')) _.addImage(href);
+    });
+
+    document.querySelectorAll('svg').forEach((svg, index) => {
+      _.addInlineSvg(svg as SVGElement, index);
     });
 
     document.querySelectorAll('link[rel="preload"][as="image"]').forEach((el) => {

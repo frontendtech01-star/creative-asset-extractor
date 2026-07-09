@@ -688,7 +688,11 @@ export default function App() {
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || 'Unable to fetch assets from the open Chrome tab.');
       }
-      const sourceUrl = String(data.pageUrl || data.url || target).trim() || target;
+      // Keep the user-entered website URL as the project source. Some browser
+      // extraction payloads can report the currently inspected asset URL; using
+      // that here makes downloads land in folders such as `assets_CreativeAssets`
+      // instead of `WebsiteName_CreativeAssets`.
+      const sourceUrl = target;
       applyExtractResult(data, sourceUrl, {
         detail: `${mergeImageAssets(data.images, data.icons).length + (data.fonts?.length || 0) + (data.videos?.length || 0) + (data.colors?.length || 0)} assets captured from ${data.source === 'open-chrome-tab' ? 'the open Chrome tab' : 'a controlled browser session'}.`,
       });
