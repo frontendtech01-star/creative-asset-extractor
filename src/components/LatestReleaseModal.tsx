@@ -84,7 +84,9 @@ export function LatestReleaseModal({
                   <p className="font-medium text-zinc-900">Beta Release</p>
                   <ul className="list-disc space-y-1 pl-5 text-zinc-700">
                     <li>Extract images, fonts, colors and videos from websites.</li>
-                    <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com and iSpot.tv.</li>
+                    <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.</li>
+                    <li>Image/Video Downloader supports separate video downloads and bulk image/font asset ZIP downloads.</li>
+                    <li>Bulk downloader supports image links, font links, and Google/Typekit/Client Fonts CSS links.</li>
                     <li>Save fast, Mac-compatible 1080p H.264 video files.</li>
                     <li>Filters blank or encoded website player cards such as Apple placeholder players.</li>
                     <li>Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.</li>

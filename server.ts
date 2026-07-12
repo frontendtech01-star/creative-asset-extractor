@@ -33,6 +33,7 @@ import {
   convertRasterImageBuffer,
   detectRasterFormatFromBuffer,
   isValidRasterOutputBuffer,
+  loadSharp,
   supportedRasterConversionTargets,
   type RasterOutputFormat,
 } from './src/lib/convertRasterImage';
@@ -335,13 +336,42 @@ const downloadsDir =
 let lastExtractedSourceUrl = '';
 let activeExtractProgress: ExtractionProgressManager | null = null;
 
+const looksLikeStandaloneAssetSourceUrl = (value: string) => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    const pathAndSearch = `${parsed.pathname}${parsed.search}`.toLowerCase();
+    if (/\.(?:svg|png|jpe?g|webp|gif|avif|mp4|webm|mov|m3u8|mpd|woff2?|ttf|otf|eot)(?:$|[?#])/i.test(pathAndSearch)) {
+      return true;
+    }
+    if (/\/(?:assets?|static|images?|img|media|content\/dam|is\/image|_next\/image|cdn-cgi\/image)\//i.test(pathAndSearch)) {
+      return true;
+    }
+    if (/[?&](?:url|src|image|asset|assetid|fmt|format|fm|wid|width|hei|height|qlt|quality)=/i.test(pathAndSearch)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+};
+
+const normalizeProjectSourcePageUrl = (candidate: string, fallback = lastExtractedSourceUrl) => {
+  const raw = String(candidate || '').trim();
+  const fallbackUrl = String(fallback || '').trim();
+  if (raw && !looksLikeStandaloneAssetSourceUrl(raw)) return raw;
+  if (fallbackUrl && fallbackUrl !== raw && !looksLikeStandaloneAssetSourceUrl(fallbackUrl)) return fallbackUrl;
+  return raw || fallbackUrl;
+};
+
 const readSourcePageUrl = (req?: express.Request, explicit?: string) => {
   const direct = String(explicit || '').trim();
-  if (direct) return direct;
-  if (!req) return lastExtractedSourceUrl;
+  if (direct) return normalizeProjectSourcePageUrl(direct);
+  if (!req) return normalizeProjectSourcePageUrl(lastExtractedSourceUrl);
   const fromQuery = typeof req.query?.sourcePageUrl === 'string' ? req.query.sourcePageUrl.trim() : '';
   const fromBody = typeof req.body?.sourcePageUrl === 'string' ? req.body.sourcePageUrl.trim() : '';
-  return fromQuery || fromBody || lastExtractedSourceUrl;
+  return normalizeProjectSourcePageUrl(fromQuery || fromBody || lastExtractedSourceUrl);
 };
 
 type DownloadSaveKind = 'font' | 'image' | 'icon' | 'color' | 'video' | 'audio' | 'brief' | 'isi' | 'zip' | 'default';
@@ -1216,6 +1246,8 @@ const buildChromeTabAssetCaptureScript = () => `
     if (contentType.includes('webp')) return 'webp';
     if (contentType.includes('gif')) return 'gif';
     if (contentType.includes('svg')) return 'svg';
+    const dataMatch = String(value || '').match(/^data:image\\/([a-z0-9.+-]+)/i);
+    if (dataMatch?.[1]) return dataMatch[1].toLowerCase().replace('svg+xml', 'svg').replace('jpeg', 'jpg');
     const match = String(value || '').match(/\\.([a-z0-9]{2,5})(?:[?#]|$)/i);
     return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
   };
@@ -1234,7 +1266,7 @@ const buildChromeTabAssetCaptureScript = () => `
   const isLikelyImageCandidate = (value) => {
     const raw = String(value || '').replace(/&amp;/g, '&').trim();
     if (!raw || /%7b|%7d|[{}]/i.test(raw)) return false;
-    if (/^data:image\/svg\+xml/i.test(raw)) return true;
+    if (/^data:image\\//i.test(raw)) return true;
     if (/\\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(raw)) return false;
     try {
       const parsed = new URL(raw);
@@ -1317,6 +1349,156 @@ const buildChromeTabAssetCaptureScript = () => `
     } catch {
       return '';
     }
+  };
+  const decodeCssContent = (value) => {
+    let text = String(value || '').trim();
+    if (!text || text === 'none' || text === 'normal') return '';
+    if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+      text = text.slice(1, -1);
+    }
+    text = text.replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_match, hex) => {
+      try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return ''; }
+    });
+    text = text.replace(/\\\\(["'\\\\])/g, '$1');
+    return text;
+  };
+  const fontAwesomeNameFromElement = (el, index) => {
+    const classText = String(el.getAttribute('class') || '');
+    const namedClass = (classText.match(/\\bfa-[a-z0-9-]+\\b/gi) || [])
+      .map((name) => name.replace(/^fa-/i, ''))
+      .find((name) => !/^(?:solid|regular|brands|light|duotone|thin|sharp|classic|fw|lg|xs|sm|[1-9]x|10x|spin|pulse|border|pull-left|pull-right|inverse|rotate-90|rotate-180|rotate-270|flip-horizontal|flip-vertical|stack|stack-1x|stack-2x)$/.test(name));
+    const label = String(el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
+    const raw = namedClass || label || el.id || ('font-awesome-icon-' + (index + 1));
+    return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('font-awesome-icon-' + (index + 1));
+  };
+  const resolveFontAwesomeGlyph = (el, style, baseStyle, initialGlyph) => {
+    const candidates = [
+      initialGlyph,
+      style.getPropertyValue('--fa'),
+      baseStyle.getPropertyValue('--fa'),
+      style.getPropertyValue('--fa-primary'),
+      baseStyle.getPropertyValue('--fa-primary'),
+      style.content,
+    ];
+    for (const candidate of candidates) {
+      const glyph = decodeCssContent(candidate);
+      if (glyph && !/^var\\(/i.test(glyph) && glyph !== 'none' && glyph !== 'normal') return glyph;
+    }
+    return '';
+  };
+  const fontIconSvgDataUrl = (glyph, family, fontPx, color, size) => {
+    try {
+      const escapeXml = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+      const svgText =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+        '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" ' +
+        'font-family="' + escapeXml(family || 'Font Awesome 6 Free, Font Awesome 5 Free, sans-serif') + '" ' +
+        'font-size="' + Math.round(fontPx) + '" fill="' + escapeXml(color || '#000') + '">' +
+        escapeXml(glyph) +
+        '</text></svg>';
+      const bytes = new TextEncoder().encode(svgText);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.slice(offset, offset + chunkSize)));
+      }
+      return 'data:image/svg+xml;base64,' + btoa(binary);
+    } catch {
+      return '';
+    }
+  };
+  const renderFontIconToPng = (el, pseudo, glyph, index) => {
+    try {
+      const style = getComputedStyle(el, pseudo || null);
+      const baseStyle = getComputedStyle(el);
+      const parentStyle = el.parentElement ? getComputedStyle(el.parentElement) : baseStyle;
+      const family = String(style.fontFamily || baseStyle.fontFamily || parentStyle.fontFamily || '');
+      const classText = String(el.getAttribute('class') || '');
+      const looksLikeFontAwesome =
+        /font awesome|fontawesome/i.test(family) ||
+        /(?:^|\\s)(?:fa|fas|far|fab|fal|fad|fa-[a-z0-9-]+)/i.test(classText);
+      const resolvedGlyph = resolveFontAwesomeGlyph(el, style, baseStyle, glyph);
+      if (!looksLikeFontAwesome || !resolvedGlyph || resolvedGlyph.length > 4) return;
+      const rect = el.getBoundingClientRect();
+      const fontPx = Math.max(14, Number.parseFloat(style.fontSize || baseStyle.fontSize || parentStyle.fontSize || '') || rect.height || 24);
+      const cssSize = Math.min(256, Math.max(64, Math.ceil(Math.max(rect.width || 0, rect.height || 0, fontPx) + 24)));
+      const safeName = fontAwesomeNameFromElement(el, index);
+      const scale = 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = cssSize * scale;
+      canvas.height = cssSize * scale;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.scale(scale, scale);
+      ctx.clearRect(0, 0, cssSize, cssSize);
+      ctx.fillStyle = style.color || baseStyle.color || '#000';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = [
+        style.fontStyle || baseStyle.fontStyle || 'normal',
+        style.fontWeight || baseStyle.fontWeight || '400',
+        fontPx + 'px',
+        family || 'Font Awesome 6 Free, Font Awesome 5 Free, sans-serif',
+      ].join(' ');
+      ctx.fillText(resolvedGlyph, cssSize / 2, cssSize / 2);
+      const pngDataUrl = canvas.toDataURL('image/png');
+      addImage(pngDataUrl, {
+        filename: safeName + '.png',
+        width: cssSize,
+        height: cssSize,
+        alt: safeName.replace(/-/g, ' '),
+        source: 'font-awesome-icon',
+        dataUrl: pngDataUrl,
+        assetCategory: 'icon',
+        fontGlyph: resolvedGlyph,
+        fontFamily: family,
+        fontSize: fontPx,
+        fill: style.color || baseStyle.color || '#000',
+      });
+      const svgDataUrl = fontIconSvgDataUrl(resolvedGlyph, family, fontPx, style.color || baseStyle.color || '#000', cssSize);
+      if (svgDataUrl) {
+        addImage(svgDataUrl, {
+          filename: safeName + '.svg',
+          width: cssSize,
+          height: cssSize,
+          alt: safeName.replace(/-/g, ' '),
+          source: 'font-awesome-icon-svg',
+          dataUrl: svgDataUrl,
+          isInlineSvg: true,
+          assetCategory: 'icon',
+          fontGlyph: resolvedGlyph,
+          fontFamily: family,
+          fontSize: fontPx,
+          fill: style.color || baseStyle.color || '#000',
+        });
+      }
+    } catch {
+      // Ignore icons that cannot be rendered to canvas.
+    }
+  };
+  const collectFontAwesomeIcons = () => {
+    const selector = [
+      '[class~="fa"]',
+      '[class~="fas"]',
+      '[class~="far"]',
+      '[class~="fab"]',
+      '[class~="fal"]',
+      '[class~="fad"]',
+      '[class*=" fa-"]',
+      '[class^="fa-"]',
+    ].join(',');
+    Array.from(document.querySelectorAll(selector)).slice(0, 500).forEach((el, index) => {
+      const before = decodeCssContent(getComputedStyle(el, '::before').content);
+      const after = decodeCssContent(getComputedStyle(el, '::after').content);
+      const own = decodeCssContent(el.textContent);
+      renderFontIconToPng(el, '::before', before, index);
+      renderFontIconToPng(el, '::after', after, index);
+      renderFontIconToPng(el, null, own, index);
+    });
   };
   const readCssUrls = (value) => {
     const urls = [];
@@ -1500,6 +1682,7 @@ const buildChromeTabAssetCaptureScript = () => `
       // Ignore SVG serialization failures.
     }
   });
+  collectFontAwesomeIcons();
   Array.from(document.querySelectorAll('link[rel="preload"][as="image"], meta[property="og:image"], meta[name="twitter:image"]')).forEach((el) => {
     addImage(el.getAttribute('href') || el.getAttribute('content'));
   });
@@ -1700,31 +1883,58 @@ const fetchBrowserSessionFontFaces = async (rawFonts: any[], targetUrl: string) 
 
 const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, source: string) => {
   const pageUrl = String(raw?.url || sourceUrl || '').trim();
+  const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
+  const cssFonts = await fetchBrowserSessionFontFaces(rawFonts, pageUrl || sourceUrl);
+  const fontCandidates = rawFonts
+    .filter((font: any) => font?.url && isSupportedFontAsset(font))
+    .map((font: any) => ({
+      ...font,
+      source: font?.source || 'Network',
+      originalFilename: filenameFromUrlPath(String(font?.url || '')),
+    }))
+    .concat(cssFonts);
   const imageRows = Array.isArray(raw?.images) ? raw.images : [];
   const images = await Promise.all(
     imageRows
       .filter((image: any) => String(image?.url || '').trim())
       .map(async (image: any, index: number) => {
       const url = String(image.url || '').trim();
-      const type = String(image.type || '').trim() || getAssetTypeFromUrl(url, 'png');
+      let type = String(image.type || '').trim() || getAssetTypeFromUrl(url, 'png');
       const filename = String(image.filename || '').trim() || `browser-image-${index + 1}.${type}`;
       const dataUrl = String(image.dataUrl || '').startsWith('data:image/') ? String(image.dataUrl) : '';
-      let cachedUrl = dataUrl || undefined;
-      if (dataUrl) {
-        const buffer = decodeDataImageBuffer(dataUrl);
-        const contentType = dataUrl.match(/^data:([^;,]+)/i)?.[1] || 'image/png';
+      const sourceKind = String(image.source || '');
+      const pathSvgDataUrl =
+        dataUrl && sourceKind === 'font-awesome-icon-svg'
+          ? await convertFontIconTextSvgToPathSvg(dataUrl, image, fontCandidates, pageUrl || sourceUrl).catch(() => '')
+          : '';
+      const fontAwesomePngDataUrl =
+        sourceKind === 'font-awesome-icon'
+          ? await (async () => {
+            const textSvgDataUrl = buildFontIconTextSvgDataUrlFromMeta(image);
+            if (!textSvgDataUrl) return '';
+            const pathSvg = await convertFontIconTextSvgToPathSvg(textSvgDataUrl, image, fontCandidates, pageUrl || sourceUrl).catch(() => '');
+            return pathSvg ? await rasterizeSvgDataUrlToPngDataUrl(pathSvg) : '';
+          })()
+          : '';
+      const finalDataUrl = fontAwesomePngDataUrl || pathSvgDataUrl || dataUrl;
+      if (pathSvgDataUrl) type = 'svg';
+      if (fontAwesomePngDataUrl) type = 'png';
+      let cachedUrl = finalDataUrl || undefined;
+      if (finalDataUrl) {
+        const buffer = decodeDataImageBuffer(finalDataUrl);
+        const contentType = finalDataUrl.match(/^data:([^;,]+)/i)?.[1] || 'image/png';
         if (buffer?.length) {
           cachedUrl = await writeCachedOriginalImageFromBuffer(url, buffer, contentType, type, filename).catch(() => '') || cachedUrl;
         }
       }
       return {
-        url,
+        url: pathSvgDataUrl || url,
         cachedUrl,
         filename,
         name: filename,
         alt: String(image.alt || filename).trim(),
         type,
-        mimeType: String(image.mimeType || '').trim() || undefined,
+        mimeType: fontAwesomePngDataUrl ? 'image/png' : (String(image.mimeType || '').trim() || undefined),
         width: Number(image.width || 0) || undefined,
         height: Number(image.height || 0) || undefined,
         source: String(image.source || '').trim() || source,
@@ -1741,7 +1951,6 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
   const expandedImages = skipToyotaSequenceExpansion
     ? sequenceReadyImages
     : await expandAvailableImageSequences(sequenceReadyImages, pageUrl || sourceUrl);
-  const rawFonts = Array.isArray(raw?.fonts) ? raw.fonts : [];
   const fontUsage = rawFonts
     .filter((font: any) => !String(font?.url || '').trim() && String(font?.family || '').trim())
     .map((font: any) => ({
@@ -1756,15 +1965,6 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
     const key = `${font.family}|${font.weight || ''}|${font.style || ''}|${font.status || ''}`;
     if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
   });
-  const cssFonts = await fetchBrowserSessionFontFaces(rawFonts, pageUrl || sourceUrl);
-  const fontCandidates = rawFonts
-    .filter((font: any) => font?.url && isSupportedFontAsset(font))
-    .map((font: any) => ({
-      ...font,
-      source: font?.source || 'Network',
-      originalFilename: filenameFromUrlPath(String(font?.url || '')),
-    }))
-    .concat(cssFonts);
   const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
   const fonts = dedupeFontsByLogicalKey(
     Array.from(new Set(metadataFonts.map((font) => String(font?.url || ''))))
@@ -1789,7 +1989,8 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
   };
 };
 
-const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
+const extractAssetsFromControlledBrowserSession = async (targetUrl: string, userExploreWaitMs = 18000) => {
+  const initialWaitMs = Math.min(180000, Math.max(8000, Number(userExploreWaitMs || 18000)));
   const executablePath = resolvePuppeteerExecutablePath();
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-asset-extractor-browser-profile-'));
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
@@ -1811,9 +2012,19 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string) => {
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
-    await waitForPageContentSettle(page, { minWaitMs: 1800, readinessTimeoutMs: 1200 });
-    await performLazyLoadScroll(page, { stepDelayMs: 450, maxStableRounds: 2, maxDurationMs: 12000 }).catch(() => undefined);
-    await waitForPageContentSettle(page, { minWaitMs: 700, readinessTimeoutMs: 900 });
+    await waitForPageContentSettle(page, {
+      minWaitMs: initialWaitMs,
+      readinessTimeoutMs: Math.min(12000, Math.max(4000, Math.round(initialWaitMs * 0.35))),
+    });
+    const firstHtml = await page.content().catch(() => '');
+    if (pageHtmlLooksBlocked(firstHtml)) {
+      const solved = await waitForManualCaptchaResolution(page, { timeoutMs: 180000 });
+      if (!solved) {
+        throw new Error('Captcha was not cleared in time. Complete the captcha in the opened browser window, then click Extract From Open Website again.');
+      }
+    }
+    await performLazyLoadScroll(page, { stepDelayMs: 600, maxStableRounds: 3, maxDurationMs: 22000 }).catch(() => undefined);
+    await waitForPageContentSettle(page, { minWaitMs: 8000, readinessTimeoutMs: 4000 });
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript() as any);
     const raw = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
     const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : [])
@@ -2131,7 +2342,12 @@ app.post('/api/resolve-font-links', async (req, res) => {
     urls
       .map((url: any) => String(url || '').trim())
       .filter((url: string) => /^https?:\/\//i.test(url))
-      .filter((url: string) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com\/css/i.test(url))
+      .filter((url: string) =>
+        /\.css(?:[?#]|$)/i.test(url) ||
+        /fonts\.googleapis\.com\/css/i.test(url) ||
+        /use\.typekit\.net\/[^/?#]+\.css(?:[?#]|$)/i.test(url) ||
+        /p\.typekit\.net\/p\.css/i.test(url)
+      )
   )).slice(0, 20);
 
   if (cssUrls.length === 0) {
@@ -2813,6 +3029,51 @@ const waitForRenderedSiteHtml = async (page: Awaited<ReturnType<Awaited<ReturnTy
   return page.content();
 };
 
+const waitForChallengeOrLoaderSettle = async (
+  page: Awaited<ReturnType<Awaited<ReturnType<typeof launchPuppeteerBrowser>>['newPage']>>,
+  options: { timeoutMs?: number; minAssetWaitMs?: number } = {}
+) => {
+  const timeoutMs = Math.max(2500, Number(options.timeoutMs || 10000));
+  const minAssetWaitMs = Math.max(1200, Number(options.minAssetWaitMs || 3200));
+  const started = Date.now();
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  while (Date.now() - started < timeoutMs) {
+    const state = await page
+      .evaluate(() => {
+        const bodyText = String(document.body?.innerText || '').slice(0, 6000);
+        const html = String(document.documentElement?.innerHTML || '').slice(0, 160000);
+        const hasAssets =
+          document.querySelectorAll('img, picture source, video, source, svg, link[rel="stylesheet"], style').length > 0 ||
+          /\.(?:png|jpe?g|webp|gif|avif|svg|woff2?|ttf|otf|eot|mp4|m3u8)(?:[?#"')\s]|$)/i.test(html);
+        const hasChallengeText =
+          /captcha|verify you are human|checking (?:your browser|the site connection)|just a moment|cloudflare|turnstile|datadome|akamai|challenge|enable javascript/i.test(
+            bodyText + '\n' + html.slice(0, 12000)
+          );
+        const hasChallengeFrame = Boolean(
+          document.querySelector(
+            'iframe[src*="captcha" i], iframe[src*="turnstile" i], iframe[src*="cloudflare" i], iframe[src*="challenge" i], [class*="captcha" i], [id*="captcha" i], [class*="loader" i], [id*="loader" i]'
+          )
+        );
+        const readyState = document.readyState;
+        return {
+          hasAssets,
+          hasChallenge: hasChallengeText || hasChallengeFrame,
+          readyState,
+        };
+      })
+      .catch(() => ({ hasAssets: false, hasChallenge: false, readyState: 'unknown' }));
+
+    const elapsed = Date.now() - started;
+    if (state.hasAssets && !state.hasChallenge && elapsed > minAssetWaitMs) return true;
+    if (state.hasAssets && elapsed > Math.min(Math.max(6500, minAssetWaitMs), timeoutMs)) return true;
+    if (!state.hasChallenge && state.readyState === 'complete' && elapsed > Math.max(2600, minAssetWaitMs - 400)) return true;
+    await delay(750);
+  }
+
+  return false;
+};
+
 const waitForPageContentSettle = async (
   page: Awaited<ReturnType<Awaited<ReturnType<typeof launchPuppeteerBrowser>>['newPage']>>,
   options: { minWaitMs?: number; readinessTimeoutMs?: number } = {}
@@ -2854,6 +3115,27 @@ const waitForPageContentSettle = async (
       await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     }, readinessTimeoutMs)
     .catch(() => undefined);
+};
+
+const waitForManualCaptchaResolution = async (
+  page: Awaited<ReturnType<Awaited<ReturnType<typeof launchPuppeteerBrowser>>['newPage']>>,
+  options: { timeoutMs?: number } = {}
+) => {
+  const timeoutMs = Math.max(15000, Number(options.timeoutMs || 120000));
+  const started = Date.now();
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  await page.bringToFront?.().catch(() => undefined);
+
+  while (Date.now() - started < timeoutMs) {
+    const html = await page.content().catch(() => '');
+    if (html && !pageHtmlLooksBlocked(html)) {
+      await waitForPageContentSettle(page, { minWaitMs: 2200, readinessTimeoutMs: 2200 });
+      return true;
+    }
+    await delay(2000);
+  }
+
+  return false;
 };
 
 const PUPPETEER_BROWSER_ARGS = [
@@ -3816,6 +4098,15 @@ const normalizeSvgBufferForIllustrator = (buffer: Buffer) => {
     if (!/^<\?xml\b|^<!--/i.test(prefix)) svg = svg.slice(svgStart).trim();
   }
   svg = svg.replace(/<script\b[\s\S]*?<\/script>/gi, '');
+  // Some sites export Illustrator/Serif metadata such as `serif:id` without
+  // declaring the `xmlns:serif` namespace. Browsers then reject the SVG as
+  // invalid XML. The metadata is not required for rendering, so remove it.
+  svg = svg.replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, '');
+  // CSS variables are also fragile in Illustrator and standalone SVG viewers.
+  // Keep the fallback color from `var(--token,#hex)` so the artwork remains
+  // self-contained after download.
+  svg = svg.replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || '#000000').trim());
+  svg = svg.replace(/var\(\s*--[^)]+\)/gi, '#000000');
   const tagMatch = svg.match(/<svg\b[^>]*>/i);
   if (!tagMatch) return buffer;
   let tag = tagMatch[0];
@@ -6547,8 +6838,13 @@ const uniqueDownloadFilePath = async (
   filename: string,
   options: { sourcePageUrl?: string; kind?: DownloadSaveKind; subfolder?: string; rootFolderName?: string } = {}
 ) => {
-  const rootFolderName = sanitizeFilenameBase(String(options.rootFolderName || '').trim());
-  const pageUrl = String(options.sourcePageUrl || (rootFolderName ? '' : lastExtractedSourceUrl) || '').trim();
+  const requestedRootFolderName = sanitizeFilenameBase(String(options.rootFolderName || '').trim());
+  const rootFolderName = /^(?:asset|assets|image|images|font|fonts|video|videos)$/i.test(requestedRootFolderName)
+    ? ''
+    : requestedRootFolderName;
+  const pageUrl = normalizeProjectSourcePageUrl(
+    String(options.sourcePageUrl || (rootFolderName ? '' : lastExtractedSourceUrl) || '').trim()
+  );
   const baseTargetDir = rootFolderName
     ? path.join(downloadsDir, rootFolderName)
     : resolveDownloadSaveDir(options.kind || 'default', pageUrl);
@@ -7402,7 +7698,13 @@ const convertFontBufferWithTransfonter = async (
   if (!['ttf', 'woff'].includes(normalizedTarget)) {
     throw new Error('Transfonter conversion is only enabled for TTF and WOFF outputs.');
   }
-  const cacheKey = `${crypto.createHash('sha256').update(buffer).digest('hex')}:target:${normalizedTarget}:metrics:${fixVerticalMetrics ? 'on' : 'off'}`;
+  const safeBase = sanitizeFilenameBase(filenameBase || 'font').replace(/\s+/g, ' ').trim() || 'font';
+  const cacheKey = [
+    crypto.createHash('sha256').update(buffer).digest('hex'),
+    `target:${normalizedTarget}`,
+    `metrics:${fixVerticalMetrics ? 'on' : 'off'}`,
+    `name:${safeBase.toLowerCase()}`,
+  ].join(':');
   const cached = transfonterTtfCache.get(cacheKey);
   if (cached) return cached;
 
@@ -7421,7 +7723,6 @@ const convertFontBufferWithTransfonter = async (
       ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     };
 
-    const safeBase = sanitizeFilenameBase(filenameBase || 'font').replace(/\s+/g, '-') || 'font';
     const sourceExt = ['woff2', 'woff', 'ttf', 'otf'].includes(sourceFormat) ? sourceFormat : 'woff2';
     const upload = new FormData();
     upload.set('user_id', userId);
@@ -8413,6 +8714,16 @@ const deriveIndicationFromIsi = (isiText: string) => {
 const isBotWallImageUrl = (url: string) =>
   /robot-suspicion|loader\.svg|captcha|cf-chl|challenge-platform|akamai.*\.svg|datadome|waf/i.test(String(url || ''));
 
+const isTrackingPixelImageUrl = (url: string) => {
+  const lowered = String(url || '').toLowerCase();
+  if (!lowered) return false;
+  return (
+    /(?:^|[./-])(?:pixel|beacon|tracker|tracking|analytics|collect|rum-collector|clarity)(?:[./?_-]|$)/i.test(lowered) ||
+    /\/(?:1p|px|pixel|beacon)\.(?:gif|png|jpe?g|webp)(?:$|[?#])/i.test(lowered) ||
+    /(?:pingdom\.net|clarity\.ms|doubleclick\.net|googletagmanager\.com|google-analytics\.com|facebook\.com\/tr|unbxdapi\.com\/v2\/1p\.jpg)/i.test(lowered)
+  );
+};
+
 const isJpeg2000ImageVariantUrl = (url: string) => {
   const lowered = String(url || '').toLowerCase();
   if (!lowered) return false;
@@ -8435,6 +8746,7 @@ const isJunkImageUrl = (url: string) => {
   // Broken AEM srcset fragments like https://site.com/jcr:content.png (no dam/.imaging path).
   if (/^https?:\/\/[^/]+\/jcr:content\.(?:png|jpe?g|webp|gif|svg|avif)(?:$|[?#])/i.test(lowered)) return true;
   if (/^https?:\/\/[^/]+\/jcr:content(?:$|[?#])/i.test(lowered)) return true;
+  if (isTrackingPixelImageUrl(url)) return true;
   return false;
 };
 
@@ -9017,6 +9329,135 @@ const decodeDataImageBuffer = (dataUrl: string) => {
   }
 };
 
+const fontIconPathFontCache = new Map<string, Promise<any | null>>();
+
+const escapeSvgXml = (value: unknown) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const decodeFontIconSvgTextMeta = (dataUrl: string, fallback: Record<string, any> = {}) => {
+  const buffer = decodeDataImageBuffer(dataUrl);
+  if (!buffer?.length) return null;
+  const svgText = buffer.toString('utf8');
+  if (!/<text\b/i.test(svgText)) return null;
+  const textMatch = svgText.match(/<text\b([^>]*)>([\s\S]*?)<\/text>/i);
+  if (!textMatch) return null;
+  const attrs = textMatch[1] || '';
+  const readAttr = (name: string) =>
+    attrs.match(new RegExp(`${name}=["']([^"']*)["']`, 'i'))?.[1]?.trim() || '';
+  const glyph = String(fallback.fontGlyph || textMatch[2] || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+  const fontFamily = String(fallback.fontFamily || readAttr('font-family') || '').replace(/&quot;/g, '"').replace(/^["']|["']$/g, '');
+  const fontSize = Number(fallback.fontSize || readAttr('font-size') || 0) || 48;
+  const fill = String(fallback.fill || readAttr('fill') || '#000').replace(/&quot;/g, '"');
+  const width = Number(fallback.width || svgText.match(/<svg\b[^>]*\bwidth=["']?(\d+)/i)?.[1] || 0) || 64;
+  const height = Number(fallback.height || svgText.match(/<svg\b[^>]*\bheight=["']?(\d+)/i)?.[1] || 0) || width;
+  if (!glyph || !/font awesome|fontawesome/i.test(fontFamily)) return null;
+  return { glyph, fontFamily, fontSize, fill, width, height };
+};
+
+const buildFontIconTextSvgDataUrlFromMeta = (imageMeta: Record<string, any> = {}) => {
+  const glyph = String(imageMeta.fontGlyph || '').trim();
+  if (!glyph) return '';
+  const width = Math.max(32, Number(imageMeta.width || 0) || 64);
+  const height = Math.max(32, Number(imageMeta.height || 0) || width);
+  const fontSize = Math.max(12, Number(imageMeta.fontSize || 0) || Math.round(Math.min(width, height) * 0.72));
+  const fontFamily = String(imageMeta.fontFamily || 'Font Awesome 6 Free, Font Awesome 5 Free, Font Awesome 6 Brands, Font Awesome 5 Brands, sans-serif');
+  const fill = String(imageMeta.fill || '#000');
+  const svgText =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="0 0 ${Math.round(width)} ${Math.round(height)}">` +
+    `<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" font-family="${escapeSvgXml(fontFamily)}" font-size="${Math.round(fontSize)}" fill="${escapeSvgXml(fill)}">${escapeSvgXml(glyph)}</text>` +
+    '</svg>';
+  return `data:image/svg+xml;base64,${Buffer.from(svgText, 'utf8').toString('base64')}`;
+};
+
+const rasterizeSvgDataUrlToPngDataUrl = async (svgDataUrl: string) => {
+  const buffer = decodeDataImageBuffer(svgDataUrl);
+  if (!buffer?.length) return '';
+  try {
+    const sharp = await loadSharp();
+    const png = await sharp(buffer, { density: 192, failOn: 'none' }).png().toBuffer();
+    return png?.length ? `data:image/png;base64,${png.toString('base64')}` : '';
+  } catch {
+    return '';
+  }
+};
+
+const loadOpenTypeFontForIcon = async (fontUrl: string, refererPage = '') => {
+  const key = `${fontUrl}::${refererPage}`;
+  if (!fontIconPathFontCache.has(key)) {
+    fontIconPathFontCache.set(key, (async () => {
+      try {
+        const fetched = await fetchRemoteFontBuffer(fontUrl, refererPage);
+        const detected = detectFontFormatFromBuffer(fetched.buffer) || normalizeFontFormat(getAssetTypeFromUrl(fetched.sourceUrl || fontUrl, 'font'));
+        const inner = await getInnerFontBuffer(fetched.buffer, detected);
+        return opentype.parse(bufferToExactArrayBuffer(inner.buffer) as any);
+      } catch {
+        return null;
+      }
+    })());
+  }
+  return fontIconPathFontCache.get(key)!;
+};
+
+const fontMatchesIconFamily = (font: any, family: string) => {
+  const haystack = [
+    font?.family,
+    font?.name,
+    font?.title,
+    font?.source,
+    font?.url,
+    font?.originalFilename,
+  ].map((item) => String(item || '').toLowerCase()).join(' ');
+  const normalizedFamily = String(family || '').toLowerCase().replace(/["']/g, '');
+  if (/font awesome|fontawesome/.test(normalizedFamily)) return /font[-\s]?awesome|\/fa-|fa-(?:solid|regular|brands)|fontawesome/i.test(haystack);
+  return haystack.includes(normalizedFamily);
+};
+
+const convertFontIconTextSvgToPathSvg = async (
+  dataUrl: string,
+  imageMeta: Record<string, any>,
+  fonts: any[],
+  refererPage = ''
+) => {
+  const meta = decodeFontIconSvgTextMeta(dataUrl, imageMeta);
+  if (!meta) return '';
+  const candidateFonts = fonts
+    .filter((font) => String(font?.url || '').trim())
+    .filter((font) => fontMatchesIconFamily(font, meta.fontFamily));
+  for (const font of candidateFonts) {
+    const parsedFont = await loadOpenTypeFontForIcon(String(font.url), refererPage);
+    if (!parsedFont) continue;
+    try {
+      const glyph = parsedFont.charToGlyph(meta.glyph);
+      if (!glyph || !Number.isFinite(Number(glyph.index)) || Number(glyph.index) === 0) continue;
+      const size = Math.max(meta.width, meta.height, 64);
+      const fontSize = Math.max(16, Math.min(size * 0.82, Number(meta.fontSize || size * 0.72)));
+      const probePath = glyph.getPath(0, 0, fontSize);
+      const box = probePath.getBoundingBox();
+      const glyphWidth = Math.max(1, box.x2 - box.x1);
+      const glyphHeight = Math.max(1, box.y2 - box.y1);
+      const x = (size - glyphWidth) / 2 - box.x1;
+      const y = (size - glyphHeight) / 2 - box.y1;
+      const pathData = glyph.getPath(x, y, fontSize).toPathData(3);
+      if (!pathData || pathData.length < 8) continue;
+      const svgText =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+        `<path fill="${escapeSvgXml(meta.fill)}" d="${escapeSvgXml(pathData)}"/></svg>`;
+      return `data:image/svg+xml;base64,${Buffer.from(svgText, 'utf8').toString('base64')}`;
+    } catch {
+      // Try next font candidate.
+    }
+  }
+  return '';
+};
+
 const enrichImageAssetMeta = (img: any, buffer?: Buffer | null, contentType = '') => {
   const next = { ...img };
   const resolvedBuffer =
@@ -9232,14 +9673,16 @@ const extractRenderedDomAssetsFromPage = async (
     var _ = {
       toAbsolute(raw: string) {
         const value = String(raw || '').trim();
-        if (!value || value.startsWith('data:') || value === 'about:blank' || value.startsWith('blob:')) return '';
+        if (!value || value === 'about:blank' || value.startsWith('blob:')) return '';
+        if (value.startsWith('data:image/')) return value;
+        if (value.startsWith('data:')) return '';
         try { return new URL(value, window.location.href).href; }
         catch { return value.startsWith('http') ? value : ''; }
       },
       isLikelyImageCandidate(raw: string) {
         const value = String(raw || '').replace(/&amp;/g, '&').trim();
         if (!value || /%7b|%7d|[{}]/i.test(value)) return false;
-        if (/^data:image\/svg\+xml/i.test(value)) return true;
+        if (/^data:image\//i.test(value)) return true;
         if (/\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(value)) return false;
         try {
           const parsed = new URL(value);
@@ -9277,6 +9720,106 @@ const extractRenderedDomAssetsFromPage = async (
       addSrcsetCandidates(raw: string | null | undefined) {
         if (!raw) return;
         raw.split(',').forEach((part) => _.addImage(part.trim().split(/\s+/)[0]));
+      },
+    };
+    var fontAwesomeHelpers = {
+      decodeCssContent(raw: string | null | undefined) {
+        let text = String(raw || '').trim();
+        if (!text || text === 'none' || text === 'normal') return '';
+        if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+          text = text.slice(1, -1);
+        }
+        text = text.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_match, hex) => {
+          try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return ''; }
+        });
+        return text.replace(/\\(["'\\])/g, '$1');
+      },
+      resolveGlyph(style: CSSStyleDeclaration, baseStyle: CSSStyleDeclaration, initialGlyph: string) {
+        const candidates = [
+          initialGlyph,
+          style.getPropertyValue('--fa'),
+          baseStyle.getPropertyValue('--fa'),
+          style.getPropertyValue('--fa-primary'),
+          baseStyle.getPropertyValue('--fa-primary'),
+          style.content,
+        ];
+        for (const candidate of candidates) {
+          const glyph = fontAwesomeHelpers.decodeCssContent(candidate);
+          if (glyph && !/^var\(/i.test(glyph) && glyph !== 'none' && glyph !== 'normal') return glyph;
+        }
+        return '';
+      },
+      svgDataUrl(glyph: string, family: string, fontPx: number, color: string, size: number) {
+        try {
+          const escapeXml = (value: string) => String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+          const svgText =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+            '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" ' +
+            'font-family="' + escapeXml(family || 'Font Awesome 6 Free, Font Awesome 5 Free, sans-serif') + '" ' +
+            'font-size="' + Math.round(fontPx) + '" fill="' + escapeXml(color || '#000') + '">' +
+            escapeXml(glyph) +
+            '</text></svg>';
+          const bytes = new TextEncoder().encode(svgText);
+          let binary = '';
+          const chunkSize = 8192;
+          for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode(...Array.from(bytes.slice(offset, offset + chunkSize)));
+          }
+          return `data:image/svg+xml;base64,${btoa(binary)}`;
+        } catch {
+          return '';
+        }
+      },
+      addFontAwesomePngs() {
+        const selector = [
+          '[class~="fa"]',
+          '[class~="fas"]',
+          '[class~="far"]',
+          '[class~="fab"]',
+          '[class~="fal"]',
+          '[class~="fad"]',
+          '[class*=" fa-"]',
+          '[class^="fa-"]',
+        ].join(',');
+        document.querySelectorAll(selector).forEach((el, index) => {
+          const htmlEl = el as HTMLElement;
+          const classText = String(htmlEl.getAttribute('class') || '');
+          const baseStyle = window.getComputedStyle(htmlEl);
+          ['::before', '::after'].forEach((pseudo) => {
+            try {
+              const style = window.getComputedStyle(htmlEl, pseudo);
+              const parentStyle = htmlEl.parentElement ? window.getComputedStyle(htmlEl.parentElement) : baseStyle;
+              const family = String(style.fontFamily || baseStyle.fontFamily || parentStyle.fontFamily || '');
+              if (!/font awesome|fontawesome/i.test(family) && !/(?:^|\s)(?:fa|fas|far|fab|fal|fad|fa-[a-z0-9-]+)/i.test(classText)) return;
+              const glyph = fontAwesomeHelpers.resolveGlyph(style, baseStyle, fontAwesomeHelpers.decodeCssContent(style.content));
+              const rect = htmlEl.getBoundingClientRect();
+              const fontPx = Math.max(14, Number.parseFloat(style.fontSize || baseStyle.fontSize || parentStyle.fontSize || '') || rect.height || 24);
+              const cssSize = Math.min(256, Math.max(64, Math.ceil(Math.max(rect.width || 0, rect.height || 0, fontPx) + 24)));
+              if (!glyph || glyph.length > 4) return;
+              const canvas = document.createElement('canvas');
+              canvas.width = cssSize * 2;
+              canvas.height = cssSize * 2;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return;
+              ctx.scale(2, 2);
+              ctx.clearRect(0, 0, cssSize, cssSize);
+              ctx.fillStyle = style.color || baseStyle.color || '#000';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.font = `${style.fontStyle || baseStyle.fontStyle || 'normal'} ${style.fontWeight || baseStyle.fontWeight || '400'} ${fontPx}px ${family || 'Font Awesome 6 Free, Font Awesome 5 Free, sans-serif'}`;
+              ctx.fillText(glyph, cssSize / 2, cssSize / 2);
+              imageUrls.add(canvas.toDataURL('image/png'));
+              const svgDataUrl = fontAwesomeHelpers.svgDataUrl(glyph, family, fontPx, style.color || baseStyle.color || '#000', cssSize);
+              if (svgDataUrl) imageUrls.add(svgDataUrl);
+            } catch {
+              // Ignore individual icon render failures.
+            }
+          });
+        });
       },
     };
 
@@ -9442,6 +9985,7 @@ const extractRenderedDomAssetsFromPage = async (
     document.querySelectorAll('svg').forEach((svg, index) => {
       _.addInlineSvg(svg as SVGElement, index);
     });
+    fontAwesomeHelpers.addFontAwesomePngs();
 
     document.querySelectorAll('link[rel="preload"][as="image"]').forEach((el) => {
       _.addImage(el.getAttribute('href'));
@@ -16145,7 +16689,7 @@ app.post('/api/extract', async (req, res) => {
     activeExtractionProxyUrl = extractionProxyUrl;
     lastExtractedSourceUrl = targetUrl;
 
-    extractKey = crypto.createHash('sha256').update(targetUrl).digest('hex').slice(0, 16);
+    extractKey = `${crypto.createHash('sha256').update(targetUrl).digest('hex').slice(0, 12)}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
     progressMgr = ExtractionProgressManager.create(extractKey);
     activeExtractProgress = progressMgr;
     setGlobalProgressManager(progressMgr);
@@ -16507,8 +17051,11 @@ app.post('/api/extract', async (req, res) => {
     // consent/app hydration before its image viewer requests appear. Give this
     // known extraction target enough time to expose the real blue 360 seed;
     // other fast crawls keep the existing budget.
+    const needsLoaderGateBudget = /(?:^|\.)joannamendoza\.com$/i.test(new URL(targetUrl).hostname);
     const browserBudgetMs = isToyotaVehicleExtractionTarget(targetUrl)
       ? 45000
+      : needsLoaderGateBudget
+        ? 65000
       : isFastCrawl
         ? 30000
         : 120000;
@@ -16716,16 +17263,34 @@ app.post('/api/extract', async (req, res) => {
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(pageLoadTimeout, 12000) }).catch(() => undefined);
       }
       await waitForPageContentSettle(page, {
-        minWaitMs: isFastCrawl ? 1400 : 3200,
-        readinessTimeoutMs: isFastCrawl ? 1200 : 3000,
+        minWaitMs: isFastCrawl ? 6000 : 9000,
+        readinessTimeoutMs: isFastCrawl ? 3500 : 6000,
       });
     } else if (isFastCrawl) {
-      await waitForPageContentSettle(page, { minWaitMs: 1400, readinessTimeoutMs: 1200 });
+      await waitForPageContentSettle(page, { minWaitMs: 6000, readinessTimeoutMs: 3500 });
     } else {
-      await waitForPageContentSettle(page, { minWaitMs: 3000, readinessTimeoutMs: 3000 });
+      await waitForPageContentSettle(page, { minWaitMs: 9000, readinessTimeoutMs: 6000 });
     }
 
-    const initialHtml = await page.content().catch(() => '');
+    let initialHtml = await page.content().catch(() => '');
+    const shouldWaitForChallengeOrLoader =
+      pageHtmlLooksBlocked(initialHtml) ||
+      /captcha|verify you are human|checking (?:your browser|the site connection)|just a moment|loading|loader|challenge/i.test(
+        initialHtml.slice(0, 160000)
+      );
+    if (shouldWaitForChallengeOrLoader) {
+      activeExtractProgress?.setTask('Waiting for website loader or captcha gate');
+      await waitForChallengeOrLoaderSettle(page, {
+        timeoutMs: isFastCrawl ? 30000 : 60000,
+        minAssetWaitMs: isFastCrawl ? 9000 : 14000,
+      });
+      await waitForPageContentSettle(page, {
+        minWaitMs: isFastCrawl ? 6000 : 9000,
+        readinessTimeoutMs: isFastCrawl ? 3500 : 6000,
+      });
+      initialHtml = await page.content().catch(() => initialHtml);
+    }
+
     if (pageHtmlLooksBlocked(initialHtml)) {
       await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 2500 : 4500));
       await page
@@ -16735,9 +17300,16 @@ app.post('/api/extract', async (req, res) => {
         })
         .catch(() => undefined);
       await waitForPageContentSettle(page, {
-        minWaitMs: isFastCrawl ? 1500 : 3200,
-        readinessTimeoutMs: isFastCrawl ? 1200 : 2600,
+        minWaitMs: isFastCrawl ? 6000 : 9000,
+        readinessTimeoutMs: isFastCrawl ? 3500 : 6000,
       });
+      initialHtml = await page.content().catch(() => initialHtml);
+    }
+
+    if (pageHtmlLooksBlocked(initialHtml)) {
+      throw new Error(
+        'This website is protected by a captcha or browser verification gate. Please open the page in Chrome, complete the captcha, then run extraction again.'
+      );
     }
 
     activeExtractProgress?.setPhase('dom');
@@ -18175,7 +18747,7 @@ app.get('/api/image-preview', async (req, res) => {
       ensured.cached ||
       (await withTimeout(
         fetchAssetBuffer(ensured.requestUrl || normalized, origin || normalized, { refererPageUrl: sourcePageUrl }),
-        45000,
+        12000,
         `Preview fetch for ${normalized}`
       ));
     if (!isValidImageBuffer(fetched.buffer, fetched.contentType)) {
@@ -18194,12 +18766,15 @@ app.get('/api/image-preview', async (req, res) => {
               : format === 'avif' ? 'image/avif'
                 : format === 'gif' ? 'image/gif'
                   : fetched.contentType || 'application/octet-stream';
+    const previewBuffer = format === 'svg'
+      ? normalizeSvgBufferForIllustrator(fetched.buffer)
+      : fetched.buffer;
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     if (ensured.requestUrl?.startsWith('/cached-')) {
       res.setHeader('X-Cached-Image-Path', ensured.requestUrl);
     }
-    return res.send(fetched.buffer);
+    return res.send(previewBuffer);
   } catch (error: any) {
     console.error('Image preview error:', error?.message || error);
     return res.status(500).json({ error: 'Failed to load image preview' });
@@ -21236,9 +21811,14 @@ app.post('/api/download-zip', async (req, res) => {
       const requestedFilename = typeof req.body?.filename === 'string' && req.body.filename.trim()
         ? req.body.filename.trim()
         : 'assets.zip';
-      const rootFolderName = typeof req.body?.rootFolderName === 'string'
+      const requestedRootFolderName = typeof req.body?.rootFolderName === 'string'
         ? req.body.rootFolderName.trim()
         : '';
+      const rootFolderName = /^(?:asset|assets|image|images|font|fonts|video|videos)$/i.test(
+        sanitizeFilenameBase(requestedRootFolderName)
+      )
+        ? ''
+        : requestedRootFolderName;
       archive.on('error', (err: Error) => {
         console.error('ZIP stream error:', err.message || err);
       });

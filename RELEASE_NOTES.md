@@ -8,6 +8,7 @@
 
 - Extract images, fonts, colors and videos from websites.
 - Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.
+- Supports Google/Typekit/Client Fonts CSS font downloads in the bulk download section.
 - Save fast, Mac-compatible 1080p H.264 videos.
 - Filters blank, tracker, segment and encoded website player cards.
 - Preserves SVG downloads as Illustrator-friendly editable SVG files.

@@ -1,17 +1,15 @@
 import React from 'react';
-import { ExternalLink, Loader2, Trash2 } from 'lucide-react';
+import { ExternalLink, Loader2 } from 'lucide-react';
 
 export function WebsiteExtracterToolbar({
   url,
   onUrlChange,
-  onClearDownloads,
   onExtractFromOpenWebsite,
   loading,
   extractFromOpenWebsiteLoading = false,
 }: {
   url: string;
   onUrlChange: (value: string) => void;
-  onClearDownloads?: () => void;
   onExtractFromOpenWebsite?: () => void;
   loading: boolean;
   extractFromOpenWebsiteLoading?: boolean;
@@ -43,16 +41,6 @@ export function WebsiteExtracterToolbar({
             >
               {extractFromOpenWebsiteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
               {extractFromOpenWebsiteLoading || loading ? 'Extracting…' : 'Extract From Open Website'}
-            </button>
-          ) : null}
-          {onClearDownloads ? (
-            <button
-              type="button"
-              onClick={onClearDownloads}
-              className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-            >
-              <Trash2 className="h-4 w-4" />
-              Clear Downloads
             </button>
           ) : null}
         </div>

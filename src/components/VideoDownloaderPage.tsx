@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, ExternalLink, FolderOpen, Link as LinkIcon, Loader2, Pause, Play, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, ExternalLink, FolderOpen, Link as LinkIcon, Loader2, Pause, Play, XCircle } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
@@ -15,7 +15,6 @@ import {
   openDownloaderFile,
   readDownloaderJob,
   revealDownloaderFile,
-  clearDownloaderFiles,
   cancelDownloaderJob,
   pauseDownloaderJob,
   resumeDownloaderJob,
@@ -28,7 +27,7 @@ import {
 import { formatBytes } from '../lib/download';
 import { logActivity, reportOperationFailure } from '../lib/activityLog';
 import { requestOpenFeedback } from '../lib/feedbackContext';
-import { buildFontDisplayName, getFontFamilyFolderName } from '../lib/fontAsset';
+import { buildFontDisplayName, getFontFamilyFolderName, prettifyFontFamilyLabel } from '../lib/fontAsset';
 import { FriendlyError } from './ProgressExperience';
 import ValidatedVideoThumb from './ValidatedVideoThumb';
 
@@ -47,7 +46,8 @@ const isSupportedBulkImageUrl = (value: string) =>
   /^https?:\/\/.+\.(?:png|jpe?g|webp|avif|gif|svg)(?:[?#].*)?$/i.test(String(value || '').trim());
 
 const isSupportedBulkFontUrl = (value: string) =>
-  /^https?:\/\/.+\.(?:woff2?|ttf|otf|eot)(?:[?#].*)?$/i.test(String(value || '').trim());
+  /^https?:\/\/.+\.(?:woff2?|ttf|otf|eot)(?:[?#].*)?$/i.test(String(value || '').trim()) ||
+  /^https?:\/\/use\.typekit\.net\/af\/.+\/(?:\d+\/)?[lda](?:[?#].*)?$/i.test(String(value || '').trim());
 
 const isSupportedBulkFontCssUrl = (value: string) =>
   /^https?:\/\/(?:fonts\.googleapis\.com\/css\S*|.+\.css(?:[?#].*)?)/i.test(String(value || '').trim());
@@ -300,7 +300,7 @@ function DownloadJobCard({
   );
 }
 
-function CompletedDownloadGrid({ jobs, onClearDownloads }: { jobs: DownloaderJob[]; onClearDownloads: () => void }) {
+function CompletedDownloadGrid({ jobs }: { jobs: DownloaderJob[] }) {
   if (jobs.length === 0) return null;
   return (
     <div className="mt-5">
@@ -308,14 +308,6 @@ function CompletedDownloadGrid({ jobs, onClearDownloads }: { jobs: DownloaderJob
         <h3 className="text-sm font-semibold text-zinc-900">Completed Video{jobs.length === 1 ? '' : 's'}</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-zinc-500">{jobs.length} ready</span>
-          <button
-            type="button"
-            onClick={onClearDownloads}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            Clear Downloads
-          </button>
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -478,17 +470,6 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
     return errors;
   };
 
-  const handleClearDownloads = async () => {
-    const confirmed = window.confirm('Delete all downloaded videos and extracted platform folders?');
-    if (!confirmed) return;
-    try {
-      await clearDownloaderFiles(true);
-      setJobs((current) => current.filter((job) => job.status !== 'completed' && job.status !== 'error' && job.status !== 'cancelled'));
-    } catch (error: any) {
-      alert(error?.message || 'Could not clear video downloads.');
-    }
-  };
-
   const handleCancelJob = async (job: DownloaderJob) => {
     try {
       const cancelled = await cancelDownloaderJob(job.id);
@@ -582,7 +563,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
           : fallbackBase;
         const folder = asset.kind === 'font' ? 'Fonts' : 'Images';
         const familyFolder = asset.kind === 'font'
-          ? sanitizeBulkPathPart(normalizeBulkFontFamily(asset.family || ''), 'Bulk Fonts')
+          ? sanitizeBulkPathPart(prettifyFontFamilyLabel(normalizeBulkFontFamily(asset.family || '')), 'Bulk Fonts')
           : '';
         const ext = filename.includes('.') ? filename.split('.').pop() || '' : '';
         const normalizedExt = String(ext || '').toLowerCase();
@@ -926,7 +907,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
               </div>
             )}
 
-            <CompletedDownloadGrid jobs={completedJobs} onClearDownloads={handleClearDownloads} />
+            <CompletedDownloadGrid jobs={completedJobs} />
         </div>
       </section>
 
@@ -946,13 +927,10 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
               setBulkImageResult(null);
             }}
             rows={5}
-            placeholder="Paste image or font links here, one per line: JPG, PNG, WEBP, AVIF, GIF, SVG, WOFF2, WOFF, TTF, OTF, EOT, Google Fonts CSS"
+            placeholder="Paste image or font links here, JPG, PNG, WEBP, AVIF, GIF, SVG, WOFF2, WOFF, TTF, OTF, EOT, Google/Typekit/Client Fonts CSS"
             className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-zinc-500">
-              Separate from video downloads. Font links keep their original files and add validated TTF conversions using Transfonter only when local conversion fails.
-            </p>
+          <div className="mt-4 flex justify-end">
             <button
               type="button"
               onClick={() => void handleBulkImageLinksDownload()}

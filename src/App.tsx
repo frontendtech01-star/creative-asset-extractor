@@ -89,6 +89,7 @@ type DownloadReadyNotice = {
   detail?: string;
   target: string;
   sourcePageUrl?: string;
+  folderPath?: string;
 };
 
 const readExtractSession = (): ExtractSession | null => {
@@ -307,6 +308,8 @@ const buildPreviewCaptureScript = () => `
     if (contentType.includes('webp')) return 'webp';
     if (contentType.includes('gif')) return 'gif';
     if (contentType.includes('svg')) return 'svg';
+    const dataMatch = String(value || '').match(/^data:image\/([a-z0-9.+-]+)/i);
+    if (dataMatch?.[1]) return dataMatch[1].toLowerCase().replace('svg+xml', 'svg').replace('jpeg', 'jpg');
     const match = String(value || '').match(/\\.([a-z0-9]{2,5})(?:[?#]|$)/i);
     return (match?.[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
   };
@@ -508,10 +511,11 @@ export default function App() {
   const [extractPartial, setExtractPartial] = useState(false);
   const [extractPhase, setExtractPhase] = useState<WebsiteExtractPhase>('loading');
   const [crawlMode, setCrawlMode] = useState<WebsiteCrawlMode>('fast');
+  const [activeExtractId, setActiveExtractId] = useState('');
   const finishNowRef = React.useRef(false);
   const partialExtractRef = React.useRef<any>(null);
   const extractPhaseTimerRef = React.useRef<number | null>(null);
-  const wsProgress = useExtractionProgress(loading);
+  const wsProgress = useExtractionProgress(loading, activeExtractId);
   const wsProgressRef = React.useRef(wsProgress);
   wsProgressRef.current = wsProgress;
   const [completion, setCompletion] = useState<{ title: string; detail?: string; size?: number; folderTarget?: string } | null>(null);
@@ -678,12 +682,17 @@ export default function App() {
     setCompletion(null);
     setExtractPartial(false);
     setExtractPhase('finalizing');
+    extractAbortRef.current?.abort();
+    const controller = new AbortController();
+    extractAbortRef.current = controller;
     try {
       const response = await apiFetch('/api/browser-tabs/chrome/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: target, proxyUrl: proxyUrl || undefined }),
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       const data = await parseApiBody(response);
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || 'Unable to fetch assets from the open Chrome tab.');
@@ -697,9 +706,13 @@ export default function App() {
         detail: `${mergeImageAssets(data.images, data.icons).length + (data.fonts?.length || 0) + (data.videos?.length || 0) + (data.colors?.length || 0)} assets captured from ${data.source === 'open-chrome-tab' ? 'the open Chrome tab' : 'a controlled browser session'}.`,
       });
     } catch (chromeError: any) {
+      if (controller.signal.aborted || chromeError?.name === 'AbortError') return;
       console.warn('Open Chrome tab extraction failed:', chromeError?.message || chromeError);
       setError(chromeError?.message || 'Open Chrome tab extraction failed. Try Extract as a fallback.');
     } finally {
+      if (extractAbortRef.current === controller) {
+        extractAbortRef.current = null;
+      }
       setLoading(false);
       setPreviewCapturing(false);
     }
@@ -728,27 +741,20 @@ export default function App() {
     } catch {
       setResponsibleUseOpen(true);
     }
-    clearExtractSession();
+    const savedExtraction = readExtractSession();
+    if (savedExtraction?.assets && savedExtraction.extractedUrl) {
+      setUrl(savedExtraction.url || savedExtraction.extractedUrl);
+      setExtractedUrl(savedExtraction.extractedUrl);
+      setAssets(savedExtraction.assets as any);
+      setActiveTab(normalizeExtracterTab(savedExtraction.activeTab));
+      setCompletion(savedExtraction.completion || null);
+    }
     void refreshClipboardUrl();
     void fetchAppMeta().then((meta) => {
       setAppVersion(meta.version);
       setProductName(meta.productName);
     });
   }, [refreshClipboardUrl]);
-
-  React.useEffect(() => {
-    const resetOnClose = () => {
-      clearAppSessionState();
-      clearExtractSession();
-      clearPersistedClipboardUrl();
-    };
-    window.addEventListener('pagehide', resetOnClose);
-    window.addEventListener('beforeunload', resetOnClose);
-    return () => {
-      window.removeEventListener('pagehide', resetOnClose);
-      window.removeEventListener('beforeunload', resetOnClose);
-    };
-  }, []);
 
   React.useEffect(() => {
     if (releaseCheckedRef.current) return;
@@ -874,7 +880,7 @@ export default function App() {
     return { error: text || 'Unexpected server response.' };
   };
 
-  const openFolder = async (target = 'downloads', sourcePageUrl?: string) => {
+  const openFolder = async (target = 'downloads', sourcePageUrl?: string, folderPath?: string) => {
     try {
       await apiFetch('/api/open-folder', {
         method: 'POST',
@@ -882,6 +888,7 @@ export default function App() {
         body: JSON.stringify({
           target,
           sourcePageUrl: sourcePageUrl || extractedUrl || undefined,
+          folderPath: folderPath || undefined,
         }),
       });
     } catch {
@@ -891,7 +898,7 @@ export default function App() {
 
   const openDownloadsFromNotice = async (notice: DownloadReadyNotice) => {
     setDownloadReadyNotice(null);
-    await openFolder(notice.target, notice.sourcePageUrl || extractedUrl || url);
+    await openFolder(notice.target, notice.sourcePageUrl || extractedUrl || url, notice.folderPath);
   };
 
   const showDownloadReadyNotice = (notice: DownloadReadyNotice) => {
@@ -910,6 +917,7 @@ export default function App() {
     setCompletion(null);
     setError(null);
     setLoading(false);
+    setPreviewCapturing(false);
     setRetryingExtract(false);
     setExtractPartial(false);
     setExtractPhase('loading');
@@ -947,31 +955,6 @@ export default function App() {
     window.setTimeout(() => window.location.reload(), 50);
   };
 
-  const handleClearWebsiteDownloads = async () => {
-    const confirmed = window.confirm('Delete downloaded files and the extracted website folder?');
-    if (!confirmed) return;
-    const sourcePageUrl = extractedUrl || url;
-    try {
-      if (sourcePageUrl.trim()) {
-        const response = await apiFetch('/api/website-downloads', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sourcePageUrl,
-            deleteFiles: true,
-          }),
-        });
-        const data = await parseApiBody(response);
-        if (!response.ok) throw new Error(data?.error || 'Could not clear downloaded files.');
-      }
-    } catch (error: any) {
-      alert(error?.message || 'Could not clear downloaded files.');
-    } finally {
-      handleNewExtraction();
-      window.setTimeout(() => window.location.reload(), 50);
-    }
-  };
-
   const friendlyExtractionError = (message: string, isYouTube = false) => {
     const text = String(message || '').trim();
     if (/failed to fetch|network error|connection refused|could not connect|ERR_CONNECTION|load failed/i.test(text)) {
@@ -1002,17 +985,24 @@ export default function App() {
     }
   };
 
-  const waitForWsComplete = React.useCallback(async (): Promise<any> => {
-    if (wsProgressRef.current.complete) {
+  const waitForWsComplete = React.useCallback(async (extractId: string): Promise<any> => {
+    if (wsProgressRef.current.extractId === extractId && wsProgressRef.current.complete) {
       return wsProgressRef.current.result || null;
     }
     return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        clearInterval(poll);
+        resolve(null);
+      }, 130000);
       const poll = setInterval(() => {
+        if (wsProgressRef.current.extractId !== extractId) return;
         if (wsProgressRef.current.complete) {
+          window.clearTimeout(timeout);
           clearInterval(poll);
           resolve(wsProgressRef.current.result || null);
         }
         if (wsProgressRef.current.error) {
+          window.clearTimeout(timeout);
           clearInterval(poll);
           resolve(null);
         }
@@ -1144,6 +1134,7 @@ export default function App() {
     setExtractPartial(false);
     setExtractPhase('loading');
     partialExtractRef.current = null;
+    setActiveExtractId('');
     setAssets(null);
     setExtractedUrl('');
     setCompletion(null);
@@ -1194,6 +1185,7 @@ export default function App() {
     setRetryingExtract(false);
     setExtractPartial(false);
     setExtractPhase('loading');
+    setActiveExtractId('');
     finishNowRef.current = false;
     clearExtractPhaseTimer();
     extractAbortRef.current?.abort();
@@ -1287,7 +1279,9 @@ export default function App() {
             if (browserData?.async) {
               // Server returned immediately — browser extraction runs in background.
               // Wait for WebSocket 'complete' event which carries the full results.
-              const wsResult = await waitForWsComplete();
+              const pendingExtractId = String(browserData.extractId || '');
+              setActiveExtractId(pendingExtractId);
+              const wsResult = await waitForWsComplete(pendingExtractId);
               if (wsResult) {
                 data = baseData ? mergeExtractPayload(baseData, wsResult) : wsResult;
               } else {
@@ -1359,6 +1353,7 @@ export default function App() {
       if (fallbackTimer) window.clearTimeout(fallbackTimer);
       clearExtractPhaseTimer();
       if (isCurrentJob()) {
+        setActiveExtractId('');
         finishNowRef.current = false;
         setLoading(false);
         setRetryingExtract(false);
@@ -1419,6 +1414,7 @@ export default function App() {
         detail: nextCompletion.detail,
         target: nextCompletion.folderTarget,
         sourcePageUrl: extractedUrl || url,
+        folderPath: saved.folderPath,
       });
     } catch (error: any) {
       console.error('Download all error:', error);
@@ -1511,7 +1507,12 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {mainSection === 'video-downloader' ? <VideoDownloaderPage autoStartRequest={videoDownloaderAutoStart} /> : null}
+        {mainSection === 'video-downloader' ? (
+          <VideoDownloaderPage
+            autoStartRequest={videoDownloaderAutoStart}
+            onDownloadReady={showDownloadReadyNotice}
+          />
+        ) : null}
 
         {mainSection === 'website-extraction' ? (
         <>
@@ -1519,7 +1520,6 @@ export default function App() {
 	          <WebsiteExtracterToolbar
 	            url={url}
 	            onUrlChange={handleUrlChange}
-            onClearDownloads={handleClearWebsiteDownloads}
             onExtractFromOpenWebsite={handleExtractFromOpenWebsite}
             loading={loading}
             extractFromOpenWebsiteLoading={previewCapturing}
@@ -1671,13 +1671,18 @@ export default function App() {
                     hideManualSearch
                     onDownloadReady={showDownloadReadyNotice}
                     onOpenInDownloader={(request) => {
+                      // Commit the section change first. Starting a downloader
+                      // job in the same render batch made the active header tab
+                      // visibly bounce while the downloader mounted.
                       setMainNav('video-downloader');
-                      videoDownloaderAutoStartSeq.current += 1;
-                      setVideoDownloaderAutoStart({
-                        id: videoDownloaderAutoStartSeq.current,
-                        url: request.url,
-                        sourcePageUrl: request.sourcePageUrl,
-                        saveToWebsiteAssets: request.saveToWebsiteAssets,
+                      window.requestAnimationFrame(() => {
+                        videoDownloaderAutoStartSeq.current += 1;
+                        setVideoDownloaderAutoStart({
+                          id: videoDownloaderAutoStartSeq.current,
+                          url: request.url,
+                          sourcePageUrl: request.sourcePageUrl,
+                          saveToWebsiteAssets: request.saveToWebsiteAssets,
+                        });
                       });
                     }}
                   />
