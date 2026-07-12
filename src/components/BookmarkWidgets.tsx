@@ -300,17 +300,17 @@ export function PinnedBookmarks({
     .sort((a, b) => a.sortIndex - b.sortIndex);
   if (!pins.length) return null;
   return (
-    <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-2">
+    <div className="flex max-h-28 w-full max-w-full flex-wrap gap-2 overflow-y-auto overscroll-y-contain pr-1">
       {pins.map((bookmark) => (
         <button
           key={bookmark.id}
           type="button"
           onClick={() => onOpen(bookmark)}
-          className="inline-flex shrink-0 items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm transition hover:bg-amber-100"
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 shadow-sm transition hover:bg-amber-100"
           title={bookmark.url}
         >
           <Star className="h-3.5 w-3.5 fill-current" />
-          {bookmark.title || titleFromUrl(bookmark.url)}
+          <span className="truncate">{bookmark.title || titleFromUrl(bookmark.url)}</span>
         </button>
       ))}
     </div>
