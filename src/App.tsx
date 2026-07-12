@@ -72,8 +72,6 @@ import {
 } from './lib/bookmarkStore';
 import {
   clearAppSessionState,
-  readMainSection,
-  writeMainSection,
   type MainSection,
 } from './lib/appSessions';
 
@@ -521,7 +519,7 @@ const htmlNeedsRenderedRetry = (rawUrl: string, data: any, imageCount: number) =
 };
 
 export default function App() {
-  const [mainSection, setMainSection] = useState<MainSection>(readMainSection());
+  const [mainSection, setMainSection] = useState<MainSection>('website-extraction');
   const [url, setUrl] = useState(initialUrl);
   const [extractedUrl, setExtractedUrl] = useState('');
   const [activeTab, setActiveTab] = useState<'fonts' | 'images' | 'videos' | 'colors' | 'insights'>('images');
@@ -1506,7 +1504,6 @@ export default function App() {
 
   const setMainNav = (section: MainSection) => {
     setMainSection(section);
-    writeMainSection(section);
   };
 
   const extractWebsiteBookmarkFromChrome = React.useCallback((nextUrl: string) => {
