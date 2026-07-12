@@ -2713,6 +2713,9 @@ var feedbackConfigPath = path3.join(appDataDir, "feedback-config.json");
 var activityLogPath = path3.join(appDataDir, "logs", "activity.jsonl");
 var feedbackScreenshotDir = path3.join(appDataDir, "feedback", "screenshots");
 var MAX_ACTIVITY_LOG_ENTRIES = 100;
+var bookmarksDir = path3.join(appDataDir, "bookmarks");
+var bookmarksPath = path3.join(bookmarksDir, "bookmarks.json");
+var bookmarkBackupsDir = path3.join(bookmarksDir, "backups");
 var relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 var activeExtractionProxyUrl = "";
 var normalizeExtractionProxyUrl = (rawProxyUrl) => {
@@ -3212,6 +3215,314 @@ var limiter = rateLimit({
   }
 });
 app.use("/api/", limiter);
+var nowIso = () => (/* @__PURE__ */ new Date()).toISOString();
+var bookmarkId = () => typeof crypto2.randomUUID === "function" ? crypto2.randomUUID() : crypto2.randomBytes(16).toString("hex");
+var normalizeBookmarkUrlServer = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL2(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    parsed.hash = "";
+    if (parsed.protocol === "https:" && parsed.port === "443" || parsed.protocol === "http:" && parsed.port === "80") parsed.port = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+$/g, "") || "/";
+    if (parsed.pathname === "/") parsed.pathname = "";
+    return parsed.toString().replace(/\/$/g, "");
+  } catch {
+    return raw.replace(/\/+$/g, "");
+  }
+};
+var titleFromBookmarkUrl = (value) => {
+  try {
+    const parsed = new URL2(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return parsed.hostname.replace(/^www\./i, "");
+  } catch {
+    return String(value || "").trim() || "Untitled";
+  }
+};
+var faviconForUrl = (value) => {
+  try {
+    const parsed = new URL2(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(parsed.origin)}&sz=64`;
+  } catch {
+    return "";
+  }
+};
+var emptyBookmarkStore = () => ({
+  version: 1,
+  bookmarks: [],
+  folders: [],
+  history: [],
+  updatedAt: nowIso()
+});
+var readBookmarkStore = async () => {
+  try {
+    const raw = await fsp3.readFile(bookmarksPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      ...emptyBookmarkStore(),
+      ...parsed,
+      bookmarks: Array.isArray(parsed?.bookmarks) ? parsed.bookmarks : [],
+      folders: Array.isArray(parsed?.folders) ? parsed.folders : [],
+      history: Array.isArray(parsed?.history) ? parsed.history : []
+    };
+  } catch {
+    return emptyBookmarkStore();
+  }
+};
+var rotateBookmarkBackups = async () => {
+  await fsp3.mkdir(bookmarkBackupsDir, { recursive: true });
+  const backups = (await fsp3.readdir(bookmarkBackupsDir).catch(() => [])).filter((name) => /^bookmarks-\d{4}-\d{2}-\d{2}\.json$/i.test(name)).sort().reverse();
+  await Promise.all(backups.slice(10).map((name) => fsp3.rm(path3.join(bookmarkBackupsDir, name), { force: true }).catch(() => void 0)));
+};
+var writeBookmarkStore = async (store) => {
+  await fsp3.mkdir(bookmarksDir, { recursive: true });
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const previous = await readBookmarkStore();
+  if (previous.bookmarks.length || previous.history.length || previous.folders.length) {
+    const backupPath = path3.join(bookmarkBackupsDir, `bookmarks-${today}.json`);
+    if (previous.lastBackupDate !== today && !fs2.existsSync(backupPath)) {
+      await fsp3.mkdir(bookmarkBackupsDir, { recursive: true });
+      await fsp3.writeFile(backupPath, JSON.stringify(previous, null, 2));
+      await rotateBookmarkBackups();
+    }
+  }
+  const normalized = {
+    ...emptyBookmarkStore(),
+    ...store,
+    lastBackupDate: today,
+    updatedAt: nowIso()
+  };
+  await fsp3.writeFile(bookmarksPath, JSON.stringify(normalized, null, 2));
+  return normalized;
+};
+var normalizeBookmarkRecord = (payload, existing) => {
+  const url = String(payload?.url ?? existing?.url ?? "").trim();
+  const normalizedUrl = normalizeBookmarkUrlServer(url);
+  if (!normalizedUrl) throw new Error("Bookmark URL is required.");
+  const category = String(payload?.category ?? existing?.category ?? "website") === "video" ? "video" : "website";
+  const title = String(payload?.title ?? existing?.title ?? titleFromBookmarkUrl(url)).trim() || titleFromBookmarkUrl(url);
+  const tags = Array.isArray(payload?.tags) ? payload.tags.map((tag) => String(tag).trim()).filter(Boolean) : Array.isArray(existing?.tags) ? existing.tags : [];
+  return {
+    id: existing?.id || bookmarkId(),
+    title,
+    url,
+    normalizedUrl,
+    category,
+    folderId: payload?.folderId ?? existing?.folderId ?? null,
+    createdAt: existing?.createdAt || nowIso(),
+    lastUsed: payload?.lastUsed ?? existing?.lastUsed ?? null,
+    notes: String(payload?.notes ?? existing?.notes ?? ""),
+    tags,
+    favorite: Boolean(payload?.favorite ?? existing?.favorite ?? false),
+    faviconUrl: String(payload?.faviconUrl ?? existing?.faviconUrl ?? faviconForUrl(url)),
+    extraction: payload?.extraction ?? existing?.extraction,
+    sortIndex: Number.isFinite(Number(payload?.sortIndex ?? existing?.sortIndex)) ? Number(payload?.sortIndex ?? existing?.sortIndex) : Date.now()
+  };
+};
+var buildChromeBookmarksHtml = (store) => {
+  const esc = (value) => String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const rows = store.bookmarks.sort((a, b) => a.sortIndex - b.sortIndex).map((bookmark) => {
+    const addDate = Math.floor(Date.parse(bookmark.createdAt || nowIso()) / 1e3);
+    const lastVisit = bookmark.lastUsed ? Math.floor(Date.parse(bookmark.lastUsed) / 1e3) : addDate;
+    return `        <DT><A HREF="${esc(bookmark.url)}" ADD_DATE="${addDate}" LAST_VISIT="${lastVisit}" TAGS="${esc((bookmark.tags || []).join(","))}">${esc(bookmark.title)}</A>`;
+  }).join("\n");
+  return `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+    <DT><H3 ADD_DATE="${Math.floor(Date.now() / 1e3)}">Creative Asset Extractor</H3>
+    <DL><p>
+${rows}
+    </DL><p>
+</DL><p>
+`;
+};
+var parseChromeBookmarksHtml = (content) => {
+  const html = String(content || "");
+  const results = [];
+  const linkRegex = /<A\b([^>]*)>([\s\S]*?)<\/A>/gi;
+  let match;
+  while (match = linkRegex.exec(html)) {
+    const attrs = match[1] || "";
+    const href = attrs.match(/\bHREF=["']([^"']+)["']/i)?.[1] || "";
+    if (!href) continue;
+    const title = (match[2] || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').trim();
+    const tagsRaw = attrs.match(/\bTAGS=["']([^"']*)["']/i)?.[1] || "";
+    results.push({
+      url: href,
+      title: title || titleFromBookmarkUrl(href),
+      category: /(?:youtu\.be|youtube|vimeo|instagram|facebook|x\.com|tiktok|ispot|brightcove)/i.test(href) ? "video" : "website",
+      tags: tagsRaw.split(",").map((tag) => tag.trim()).filter(Boolean)
+    });
+  }
+  return results;
+};
+app.get("/api/bookmarks", async (_req, res) => {
+  try {
+    return res.json({ ok: true, store: await readBookmarkStore() });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || "Failed to read bookmarks." });
+  }
+});
+app.post("/api/bookmarks", async (req, res) => {
+  try {
+    const store = await readBookmarkStore();
+    const next = normalizeBookmarkRecord(req.body);
+    const existingIndex = store.bookmarks.findIndex((bookmark2) => bookmark2.normalizedUrl === next.normalizedUrl && bookmark2.category === next.category);
+    if (existingIndex >= 0) {
+      store.bookmarks[existingIndex] = normalizeBookmarkRecord({ ...store.bookmarks[existingIndex], ...req.body }, store.bookmarks[existingIndex]);
+    } else {
+      store.bookmarks.push(next);
+    }
+    const saved = await writeBookmarkStore(store);
+    const bookmark = saved.bookmarks.find((item) => item.normalizedUrl === next.normalizedUrl && item.category === next.category) || next;
+    return res.json({ ok: true, bookmark, store: saved });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to save bookmark." });
+  }
+});
+app.put("/api/bookmarks/:id", async (req, res) => {
+  try {
+    const store = await readBookmarkStore();
+    const index = store.bookmarks.findIndex((bookmark) => bookmark.id === req.params.id);
+    if (index < 0) return res.status(404).json({ error: "Bookmark not found." });
+    store.bookmarks[index] = normalizeBookmarkRecord({ ...store.bookmarks[index], ...req.body }, store.bookmarks[index]);
+    const saved = await writeBookmarkStore(store);
+    return res.json({ ok: true, bookmark: saved.bookmarks[index], store: saved });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to update bookmark." });
+  }
+});
+app.delete("/api/bookmarks/:id", async (req, res, next) => {
+  if (req.params.id === "history") return next();
+  const store = await readBookmarkStore();
+  store.bookmarks = store.bookmarks.filter((bookmark) => bookmark.id !== req.params.id);
+  return res.json({ ok: true, store: await writeBookmarkStore(store) });
+});
+app.post("/api/bookmarks/:id/duplicate", async (req, res) => {
+  const store = await readBookmarkStore();
+  const source = store.bookmarks.find((bookmark) => bookmark.id === req.params.id);
+  if (!source) return res.status(404).json({ error: "Bookmark not found." });
+  const copy = { ...source, id: bookmarkId(), title: `${source.title} copy`, createdAt: nowIso(), normalizedUrl: `${source.normalizedUrl}#copy-${Date.now()}`, sortIndex: Date.now() };
+  store.bookmarks.push(copy);
+  const saved = await writeBookmarkStore(store);
+  return res.json({ ok: true, bookmark: copy, store: saved });
+});
+app.post("/api/bookmarks/:id/use", async (req, res) => {
+  const store = await readBookmarkStore();
+  const bookmark = store.bookmarks.find((item) => item.id === req.params.id);
+  if (!bookmark) return res.status(404).json({ error: "Bookmark not found." });
+  bookmark.lastUsed = nowIso();
+  const recent = {
+    id: bookmarkId(),
+    title: bookmark.title,
+    url: bookmark.url,
+    normalizedUrl: bookmark.normalizedUrl,
+    category: bookmark.category,
+    lastUsed: bookmark.lastUsed,
+    faviconUrl: bookmark.faviconUrl
+  };
+  store.history = [recent, ...store.history.filter((item) => !(item.normalizedUrl === recent.normalizedUrl && item.category === recent.category))].slice(0, 100);
+  return res.json({ ok: true, store: await writeBookmarkStore(store) });
+});
+app.post("/api/bookmarks/history", async (req, res) => {
+  try {
+    const url = String(req.body?.url || "").trim();
+    const normalizedUrl = normalizeBookmarkUrlServer(url);
+    if (!normalizedUrl) return res.status(400).json({ error: "URL is required." });
+    const category = String(req.body?.category || "website") === "video" ? "video" : "website";
+    const store = await readBookmarkStore();
+    const title = String(req.body?.title || "").trim() || titleFromBookmarkUrl(url);
+    const lastUsed = nowIso();
+    const bookmark = store.bookmarks.find((item) => item.normalizedUrl === normalizedUrl && item.category === category);
+    if (bookmark) bookmark.lastUsed = lastUsed;
+    const recent = {
+      id: bookmarkId(),
+      title,
+      url,
+      normalizedUrl,
+      category,
+      lastUsed,
+      faviconUrl: bookmark?.faviconUrl || faviconForUrl(url)
+    };
+    store.history = [recent, ...store.history.filter((item) => !(item.normalizedUrl === normalizedUrl && item.category === category))].slice(0, 100);
+    return res.json({ ok: true, store: await writeBookmarkStore(store) });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to save history." });
+  }
+});
+var deleteBookmarkHistoryEntries = async (payload) => {
+  const { url, category = "website", clearAll = false } = payload || {};
+  const store = await readBookmarkStore();
+  if (clearAll || !url) {
+    store.history = store.history.filter((item) => item.category !== category);
+  } else {
+    const normalizedUrl = normalizeBookmarkUrlServer(url);
+    if (!normalizedUrl) throw new Error("URL is required.");
+    store.history = store.history.filter((item) => !(item.normalizedUrl === normalizedUrl && item.category === category));
+  }
+  return writeBookmarkStore(store);
+};
+app.post("/api/bookmarks/history/delete", async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries(req.body);
+    return res.json({ ok: true, store });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to delete history." });
+  }
+});
+app.post("/api/bookmarks/history/clear", async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries({ ...req.body, clearAll: true });
+    return res.json({ ok: true, store });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to clear history." });
+  }
+});
+app.delete("/api/bookmarks/history", async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries(req.body);
+    return res.json({ ok: true, store });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to delete history." });
+  }
+});
+app.post("/api/bookmarks/import", async (req, res) => {
+  try {
+    const content = String(req.body?.content || "");
+    const format = String(req.body?.format || "json").toLowerCase();
+    const store = await readBookmarkStore();
+    const incoming = format === "html" ? parseChromeBookmarksHtml(content) : (() => {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed?.bookmarks)) return parsed.bookmarks;
+      return [];
+    })();
+    for (const item of incoming) {
+      const next = normalizeBookmarkRecord(item);
+      if (!store.bookmarks.some((bookmark) => bookmark.normalizedUrl === next.normalizedUrl && bookmark.category === next.category)) {
+        store.bookmarks.push(next);
+      }
+    }
+    return res.json({ ok: true, store: await writeBookmarkStore(store) });
+  } catch (error) {
+    return res.status(400).json({ error: error?.message || "Failed to import bookmarks." });
+  }
+});
+app.get("/api/bookmarks/export.json", async (_req, res) => {
+  const store = await readBookmarkStore();
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="creative-asset-extractor-bookmarks.json"');
+  return res.send(JSON.stringify(store, null, 2));
+});
+app.get("/api/bookmarks/export.html", async (_req, res) => {
+  const store = await readBookmarkStore();
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="creative-asset-extractor-bookmarks.html"');
+  return res.send(buildChromeBookmarksHtml(store));
+});
 var resolvePackageMeta = async () => {
   const candidates = [
     path3.join(process.cwd(), "package.json"),

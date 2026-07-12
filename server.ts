@@ -413,6 +413,9 @@ const feedbackConfigPath = path.join(appDataDir, 'feedback-config.json');
 const activityLogPath = path.join(appDataDir, 'logs', 'activity.jsonl');
 const feedbackScreenshotDir = path.join(appDataDir, 'feedback', 'screenshots');
 const MAX_ACTIVITY_LOG_ENTRIES = 100;
+const bookmarksDir = path.join(appDataDir, 'bookmarks');
+const bookmarksPath = path.join(bookmarksDir, 'bookmarks.json');
+const bookmarkBackupsDir = path.join(bookmarksDir, 'backups');
 // Prefer IPv4 because some media CDNs (notably videos-cdn.ispot.tv) publish an
 // IPv6 route that is unreachable on otherwise healthy local networks.
 const relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
@@ -1054,6 +1057,403 @@ const limiter = rateLimit({
   },
 });
 app.use('/api/', limiter);
+
+type BookmarkCategory = 'website' | 'video';
+type BookmarkFolderRecord = {
+  id: string;
+  title: string;
+  parentId?: string | null;
+  createdAt: string;
+  sortIndex: number;
+};
+type BookmarkRecord = {
+  id: string;
+  title: string;
+  url: string;
+  normalizedUrl: string;
+  category: BookmarkCategory;
+  folderId?: string | null;
+  createdAt: string;
+  lastUsed?: string | null;
+  notes?: string;
+  tags: string[];
+  favorite: boolean;
+  faviconUrl?: string;
+  extraction?: {
+    imageCount?: number;
+    videoCount?: number;
+    fontCount?: number;
+    colorCount?: number;
+    extractionDate?: string;
+    outputFolder?: string;
+  };
+  sortIndex: number;
+};
+type RecentRecord = {
+  id: string;
+  title: string;
+  url: string;
+  normalizedUrl: string;
+  category: BookmarkCategory;
+  lastUsed: string;
+  faviconUrl?: string;
+};
+type BookmarkStoreFile = {
+  version: number;
+  bookmarks: BookmarkRecord[];
+  folders: BookmarkFolderRecord[];
+  history: RecentRecord[];
+  updatedAt: string;
+  lastBackupDate?: string;
+};
+
+const nowIso = () => new Date().toISOString();
+const bookmarkId = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+
+const normalizeBookmarkUrlServer = (value: string) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    parsed.hash = '';
+    if ((parsed.protocol === 'https:' && parsed.port === '443') || (parsed.protocol === 'http:' && parsed.port === '80')) parsed.port = '';
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+$/g, '') || '/';
+    if (parsed.pathname === '/') parsed.pathname = '';
+    return parsed.toString().replace(/\/$/g, '');
+  } catch {
+    return raw.replace(/\/+$/g, '');
+  }
+};
+
+const titleFromBookmarkUrl = (value: string) => {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return parsed.hostname.replace(/^www\./i, '');
+  } catch {
+    return String(value || '').trim() || 'Untitled';
+  }
+};
+
+const faviconForUrl = (value: string) => {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(parsed.origin)}&sz=64`;
+  } catch {
+    return '';
+  }
+};
+
+const emptyBookmarkStore = (): BookmarkStoreFile => ({
+  version: 1,
+  bookmarks: [],
+  folders: [],
+  history: [],
+  updatedAt: nowIso(),
+});
+
+const readBookmarkStore = async (): Promise<BookmarkStoreFile> => {
+  try {
+    const raw = await fsp.readFile(bookmarksPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      ...emptyBookmarkStore(),
+      ...parsed,
+      bookmarks: Array.isArray(parsed?.bookmarks) ? parsed.bookmarks : [],
+      folders: Array.isArray(parsed?.folders) ? parsed.folders : [],
+      history: Array.isArray(parsed?.history) ? parsed.history : [],
+    };
+  } catch {
+    return emptyBookmarkStore();
+  }
+};
+
+const rotateBookmarkBackups = async () => {
+  await fsp.mkdir(bookmarkBackupsDir, { recursive: true });
+  const backups = (await fsp.readdir(bookmarkBackupsDir).catch(() => []))
+    .filter((name) => /^bookmarks-\d{4}-\d{2}-\d{2}\.json$/i.test(name))
+    .sort()
+    .reverse();
+  await Promise.all(backups.slice(10).map((name) => fsp.rm(path.join(bookmarkBackupsDir, name), { force: true }).catch(() => undefined)));
+};
+
+const writeBookmarkStore = async (store: BookmarkStoreFile) => {
+  await fsp.mkdir(bookmarksDir, { recursive: true });
+  const today = new Date().toISOString().slice(0, 10);
+  const previous = await readBookmarkStore();
+  if (previous.bookmarks.length || previous.history.length || previous.folders.length) {
+    const backupPath = path.join(bookmarkBackupsDir, `bookmarks-${today}.json`);
+    if (previous.lastBackupDate !== today && !fs.existsSync(backupPath)) {
+      await fsp.mkdir(bookmarkBackupsDir, { recursive: true });
+      await fsp.writeFile(backupPath, JSON.stringify(previous, null, 2));
+      await rotateBookmarkBackups();
+    }
+  }
+  const normalized: BookmarkStoreFile = {
+    ...emptyBookmarkStore(),
+    ...store,
+    lastBackupDate: today,
+    updatedAt: nowIso(),
+  };
+  await fsp.writeFile(bookmarksPath, JSON.stringify(normalized, null, 2));
+  return normalized;
+};
+
+const normalizeBookmarkRecord = (payload: any, existing?: BookmarkRecord): BookmarkRecord => {
+  const url = String(payload?.url ?? existing?.url ?? '').trim();
+  const normalizedUrl = normalizeBookmarkUrlServer(url);
+  if (!normalizedUrl) throw new Error('Bookmark URL is required.');
+  const category = String(payload?.category ?? existing?.category ?? 'website') === 'video' ? 'video' : 'website';
+  const title = String(payload?.title ?? existing?.title ?? titleFromBookmarkUrl(url)).trim() || titleFromBookmarkUrl(url);
+  const tags = Array.isArray(payload?.tags)
+    ? payload.tags.map((tag: unknown) => String(tag).trim()).filter(Boolean)
+    : Array.isArray(existing?.tags)
+      ? existing.tags
+      : [];
+  return {
+    id: existing?.id || bookmarkId(),
+    title,
+    url,
+    normalizedUrl,
+    category,
+    folderId: payload?.folderId ?? existing?.folderId ?? null,
+    createdAt: existing?.createdAt || nowIso(),
+    lastUsed: payload?.lastUsed ?? existing?.lastUsed ?? null,
+    notes: String(payload?.notes ?? existing?.notes ?? ''),
+    tags,
+    favorite: Boolean(payload?.favorite ?? existing?.favorite ?? false),
+    faviconUrl: String(payload?.faviconUrl ?? existing?.faviconUrl ?? faviconForUrl(url)),
+    extraction: payload?.extraction ?? existing?.extraction,
+    sortIndex: Number.isFinite(Number(payload?.sortIndex ?? existing?.sortIndex))
+      ? Number(payload?.sortIndex ?? existing?.sortIndex)
+      : Date.now(),
+  };
+};
+
+const buildChromeBookmarksHtml = (store: BookmarkStoreFile) => {
+  const esc = (value: string) =>
+    String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const rows = store.bookmarks
+    .sort((a, b) => a.sortIndex - b.sortIndex)
+    .map((bookmark) => {
+      const addDate = Math.floor(Date.parse(bookmark.createdAt || nowIso()) / 1000);
+      const lastVisit = bookmark.lastUsed ? Math.floor(Date.parse(bookmark.lastUsed) / 1000) : addDate;
+      return `        <DT><A HREF="${esc(bookmark.url)}" ADD_DATE="${addDate}" LAST_VISIT="${lastVisit}" TAGS="${esc((bookmark.tags || []).join(','))}">${esc(bookmark.title)}</A>`;
+    })
+    .join('\n');
+  return `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+    <DT><H3 ADD_DATE="${Math.floor(Date.now() / 1000)}">Creative Asset Extractor</H3>
+    <DL><p>
+${rows}
+    </DL><p>
+</DL><p>
+`;
+};
+
+const parseChromeBookmarksHtml = (content: string): Partial<BookmarkRecord>[] => {
+  const html = String(content || '');
+  const results: Partial<BookmarkRecord>[] = [];
+  const linkRegex = /<A\b([^>]*)>([\s\S]*?)<\/A>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = linkRegex.exec(html))) {
+    const attrs = match[1] || '';
+    const href = attrs.match(/\bHREF=["']([^"']+)["']/i)?.[1] || '';
+    if (!href) continue;
+    const title = (match[2] || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+    const tagsRaw = attrs.match(/\bTAGS=["']([^"']*)["']/i)?.[1] || '';
+    results.push({
+      url: href,
+      title: title || titleFromBookmarkUrl(href),
+      category: /(?:youtu\.be|youtube|vimeo|instagram|facebook|x\.com|tiktok|ispot|brightcove)/i.test(href) ? 'video' : 'website',
+      tags: tagsRaw.split(',').map((tag) => tag.trim()).filter(Boolean),
+    });
+  }
+  return results;
+};
+
+app.get('/api/bookmarks', async (_req, res) => {
+  try {
+    return res.json({ ok: true, store: await readBookmarkStore() });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || 'Failed to read bookmarks.' });
+  }
+});
+
+app.post('/api/bookmarks', async (req, res) => {
+  try {
+    const store = await readBookmarkStore();
+    const next = normalizeBookmarkRecord(req.body);
+    const existingIndex = store.bookmarks.findIndex((bookmark) => bookmark.normalizedUrl === next.normalizedUrl && bookmark.category === next.category);
+    if (existingIndex >= 0) {
+      store.bookmarks[existingIndex] = normalizeBookmarkRecord({ ...store.bookmarks[existingIndex], ...req.body }, store.bookmarks[existingIndex]);
+    } else {
+      store.bookmarks.push(next);
+    }
+    const saved = await writeBookmarkStore(store);
+    const bookmark = saved.bookmarks.find((item) => item.normalizedUrl === next.normalizedUrl && item.category === next.category) || next;
+    return res.json({ ok: true, bookmark, store: saved });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to save bookmark.' });
+  }
+});
+
+app.put('/api/bookmarks/:id', async (req, res) => {
+  try {
+    const store = await readBookmarkStore();
+    const index = store.bookmarks.findIndex((bookmark) => bookmark.id === req.params.id);
+    if (index < 0) return res.status(404).json({ error: 'Bookmark not found.' });
+    store.bookmarks[index] = normalizeBookmarkRecord({ ...store.bookmarks[index], ...req.body }, store.bookmarks[index]);
+    const saved = await writeBookmarkStore(store);
+    return res.json({ ok: true, bookmark: saved.bookmarks[index], store: saved });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to update bookmark.' });
+  }
+});
+
+app.delete('/api/bookmarks/:id', async (req, res, next) => {
+  if (req.params.id === 'history') return next();
+  const store = await readBookmarkStore();
+  store.bookmarks = store.bookmarks.filter((bookmark) => bookmark.id !== req.params.id);
+  return res.json({ ok: true, store: await writeBookmarkStore(store) });
+});
+
+app.post('/api/bookmarks/:id/duplicate', async (req, res) => {
+  const store = await readBookmarkStore();
+  const source = store.bookmarks.find((bookmark) => bookmark.id === req.params.id);
+  if (!source) return res.status(404).json({ error: 'Bookmark not found.' });
+  const copy = { ...source, id: bookmarkId(), title: `${source.title} copy`, createdAt: nowIso(), normalizedUrl: `${source.normalizedUrl}#copy-${Date.now()}`, sortIndex: Date.now() };
+  store.bookmarks.push(copy);
+  const saved = await writeBookmarkStore(store);
+  return res.json({ ok: true, bookmark: copy, store: saved });
+});
+
+app.post('/api/bookmarks/:id/use', async (req, res) => {
+  const store = await readBookmarkStore();
+  const bookmark = store.bookmarks.find((item) => item.id === req.params.id);
+  if (!bookmark) return res.status(404).json({ error: 'Bookmark not found.' });
+  bookmark.lastUsed = nowIso();
+  const recent: RecentRecord = {
+    id: bookmarkId(),
+    title: bookmark.title,
+    url: bookmark.url,
+    normalizedUrl: bookmark.normalizedUrl,
+    category: bookmark.category,
+    lastUsed: bookmark.lastUsed,
+    faviconUrl: bookmark.faviconUrl,
+  };
+  store.history = [recent, ...store.history.filter((item) => !(item.normalizedUrl === recent.normalizedUrl && item.category === recent.category))].slice(0, 100);
+  return res.json({ ok: true, store: await writeBookmarkStore(store) });
+});
+
+app.post('/api/bookmarks/history', async (req, res) => {
+  try {
+    const url = String(req.body?.url || '').trim();
+    const normalizedUrl = normalizeBookmarkUrlServer(url);
+    if (!normalizedUrl) return res.status(400).json({ error: 'URL is required.' });
+    const category = String(req.body?.category || 'website') === 'video' ? 'video' : 'website';
+    const store = await readBookmarkStore();
+    const title = String(req.body?.title || '').trim() || titleFromBookmarkUrl(url);
+    const lastUsed = nowIso();
+    const bookmark = store.bookmarks.find((item) => item.normalizedUrl === normalizedUrl && item.category === category);
+    if (bookmark) bookmark.lastUsed = lastUsed;
+    const recent: RecentRecord = {
+      id: bookmarkId(),
+      title,
+      url,
+      normalizedUrl,
+      category,
+      lastUsed,
+      faviconUrl: bookmark?.faviconUrl || faviconForUrl(url),
+    };
+    store.history = [recent, ...store.history.filter((item) => !(item.normalizedUrl === normalizedUrl && item.category === category))].slice(0, 100);
+    return res.json({ ok: true, store: await writeBookmarkStore(store) });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to save history.' });
+  }
+});
+
+const deleteBookmarkHistoryEntries = async (payload: any) => {
+  const { url, category = 'website', clearAll = false } = payload || {};
+  const store = await readBookmarkStore();
+  if (clearAll || !url) {
+    store.history = store.history.filter((item) => item.category !== category);
+  } else {
+    const normalizedUrl = normalizeBookmarkUrlServer(url);
+    if (!normalizedUrl) throw new Error('URL is required.');
+    store.history = store.history.filter((item) => !(item.normalizedUrl === normalizedUrl && item.category === category));
+  }
+  return writeBookmarkStore(store);
+};
+
+app.post('/api/bookmarks/history/delete', async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries(req.body);
+    return res.json({ ok: true, store });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to delete history.' });
+  }
+});
+
+app.post('/api/bookmarks/history/clear', async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries({ ...req.body, clearAll: true });
+    return res.json({ ok: true, store });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to clear history.' });
+  }
+});
+
+app.delete('/api/bookmarks/history', async (req, res) => {
+  try {
+    const store = await deleteBookmarkHistoryEntries(req.body);
+    return res.json({ ok: true, store });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to delete history.' });
+  }
+});
+
+app.post('/api/bookmarks/import', async (req, res) => {
+  try {
+    const content = String(req.body?.content || '');
+    const format = String(req.body?.format || 'json').toLowerCase();
+    const store = await readBookmarkStore();
+    const incoming = format === 'html'
+      ? parseChromeBookmarksHtml(content)
+      : (() => {
+          const parsed = JSON.parse(content);
+          if (Array.isArray(parsed)) return parsed;
+          if (Array.isArray(parsed?.bookmarks)) return parsed.bookmarks;
+          return [];
+        })();
+    for (const item of incoming) {
+      const next = normalizeBookmarkRecord(item);
+      if (!store.bookmarks.some((bookmark) => bookmark.normalizedUrl === next.normalizedUrl && bookmark.category === next.category)) {
+        store.bookmarks.push(next);
+      }
+    }
+    return res.json({ ok: true, store: await writeBookmarkStore(store) });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || 'Failed to import bookmarks.' });
+  }
+});
+
+app.get('/api/bookmarks/export.json', async (_req, res) => {
+  const store = await readBookmarkStore();
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="creative-asset-extractor-bookmarks.json"');
+  return res.send(JSON.stringify(store, null, 2));
+});
+
+app.get('/api/bookmarks/export.html', async (_req, res) => {
+  const store = await readBookmarkStore();
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="creative-asset-extractor-bookmarks.html"');
+  return res.send(buildChromeBookmarksHtml(store));
+});
 
 const resolvePackageMeta = async () => {
   const candidates = [

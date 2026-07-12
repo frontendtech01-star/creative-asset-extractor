@@ -30,6 +30,21 @@ import { requestOpenFeedback } from '../lib/feedbackContext';
 import { buildFontDisplayName, getFontFamilyFolderName, prettifyFontFamilyLabel } from '../lib/fontAsset';
 import { FriendlyError } from './ProgressExperience';
 import ValidatedVideoThumb from './ValidatedVideoThumb';
+import {
+  AutocompletePanel,
+  BookmarkStarButton,
+  PinnedBookmarks,
+  RecentRows,
+} from './BookmarkWidgets';
+import {
+  BookmarkItem,
+  BookmarkStore,
+  clearRecentHistory,
+  deleteRecentHistory,
+  recordBookmarkHistory,
+  saveBookmark,
+  titleFromUrl,
+} from '../lib/bookmarkStore';
 
 const isHttpUrl = (value: string) => {
   try {
@@ -381,9 +396,25 @@ type AutoStartRequest = {
 type VideoDownloaderPageProps = {
   autoStartRequest?: AutoStartRequest | null;
   onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
+  bookmarkStore?: BookmarkStore | null;
+  onBookmarksChanged?: () => void;
+  onOpenBookmark?: (bookmark: BookmarkItem) => void;
+  registerControls?: (controls: {
+    focusUrlInput: () => void;
+    startDownload: () => void;
+    reset: () => void;
+    getCurrentUrl: () => string;
+  }) => void;
 };
 
-export default function VideoDownloaderPage({ autoStartRequest = null, onDownloadReady }: VideoDownloaderPageProps) {
+export default function VideoDownloaderPage({
+  autoStartRequest = null,
+  onDownloadReady,
+  bookmarkStore = null,
+  onBookmarksChanged,
+  onOpenBookmark,
+  registerControls,
+}: VideoDownloaderPageProps) {
   const [urlInput, setUrlInput] = useState('');
   const [jobs, setJobs] = useState<DownloaderJob[]>([]);
   const [jobErrors, setJobErrors] = useState<Array<{ url: string; error: string }>>([]);
@@ -396,6 +427,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
   const [bulkImageDownloading, setBulkImageDownloading] = useState(false);
   const [bulkImageResult, setBulkImageResult] = useState<{ ok: boolean; message: string } | null>(null);
   const handledAutoStartIdRef = React.useRef<number | null>(null);
+  const urlInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   const inputUrls = useMemo(() => parseInputUrls(urlInput), [urlInput]);
   const detectedPlatform = useMemo(
@@ -407,6 +439,18 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
   const completeCount = jobs.filter((job) => job.status === 'completed').length;
   const failedCount = jobs.filter((job) => job.status === 'error').length;
   const completedJobs = jobs.filter((job) => job.status === 'completed' && job.result);
+
+  const resetVideoDownloader = React.useCallback(() => {
+    setUrlInput('');
+    setJobErrors([]);
+    setBusy(false);
+    setActiveQuality(null);
+    setStartTime('');
+    setEndTime('');
+    setCookiesFilePath('');
+    setJobs([]);
+    window.setTimeout(() => urlInputRef.current?.focus(), 30);
+  }, []);
 
   useEffect(() => {
     writeVideoDownloaderSession({
@@ -672,6 +716,7 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
       platform: activeDetectedPlatform || undefined,
       message: urls.length === 1 ? 'Video download started' : `${urls.length} video downloads started`,
     });
+    void Promise.all(urls.map((item) => recordBookmarkHistory(item, 'video', titleFromUrl(item)))).catch(() => undefined);
 
     try {
       const started =
@@ -749,6 +794,15 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
     });
   }, [autoStartRequest]);
 
+  useEffect(() => {
+    registerControls?.({
+      focusUrlInput: () => urlInputRef.current?.focus(),
+      startDownload: () => void downloadQueue('fhd'),
+      reset: resetVideoDownloader,
+      getCurrentUrl: () => urlInput,
+    });
+  }, [downloadQueue, registerControls, resetVideoDownloader, urlInput]);
+
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-4 flex flex-wrap justify-center gap-2">
@@ -769,16 +823,60 @@ export default function VideoDownloaderPage({ autoStartRequest = null, onDownloa
 
         <div className="p-5 sm:p-6">
             <form onSubmit={(event) => { event.preventDefault(); void downloadQueue('fhd'); }} className="space-y-4">
+              <PinnedBookmarks
+                store={bookmarkStore}
+                category="video"
+                onOpen={(bookmark) => onOpenBookmark?.(bookmark)}
+              />
+              <div className="relative">
               <textarea
                 aria-label="Video URL"
+                ref={urlInputRef}
                 value={urlInput}
                 onChange={(event) => {
                   setUrlInput(event.target.value);
                   setJobErrors([]);
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void downloadQueue('fhd');
+                  }
+                }}
                 rows={5}
                 placeholder="Paste one or more public video URLs, one per line"
                 className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                title="Download Video (Enter)"
+              />
+              <AutocompletePanel
+                query={urlInput}
+                store={bookmarkStore}
+                category="video"
+                onPick={(nextUrl) => {
+                  setUrlInput(nextUrl);
+                  setJobErrors([]);
+                }}
+              />
+              </div>
+              <div className="flex justify-end">
+                <BookmarkStarButton
+                  url={inputUrls[0] || urlInput}
+                  category="video"
+                  store={bookmarkStore}
+                  onChanged={() => onBookmarksChanged?.()}
+                />
+              </div>
+              <RecentRows
+                store={bookmarkStore}
+                category="video"
+                title="Recent Downloads"
+                onOpen={(nextUrl) => {
+                  setUrlInput(nextUrl);
+                  setJobErrors([]);
+                }}
+                onBookmark={(nextUrl) => void saveBookmark({ url: nextUrl, category: 'video', title: titleFromUrl(nextUrl), favorite: true, tags: [] }).then(() => onBookmarksChanged?.())}
+                onDelete={(nextUrl) => void deleteRecentHistory(nextUrl, 'video').then(() => onBookmarksChanged?.()).catch((error) => setJobErrors([{ url: nextUrl, error: error?.message || 'Could not delete recent download.' }] ))}
+                onClear={() => void clearRecentHistory('video').then(() => onBookmarksChanged?.()).catch((error) => setJobErrors([{ url: 'Recent Downloads', error: error?.message || 'Could not clear recent downloads.' }] ))}
               />
 
               <div className="flex flex-wrap items-center gap-2">

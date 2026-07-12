@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useState } from 'react';
-import { CheckCircle2, FileText, MessageSquare, Image as ImageIcon, Type, Palette, Sparkles, Download, Globe, Video, FolderOpen, RotateCcw, X } from 'lucide-react';
+import { CheckCircle2, Image as ImageIcon, Type, Palette, Sparkles, Download, Globe, Video, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { WebsiteExtracterToolbar } from './components/WebsitePreviewPanel';
 import VideoDownloaderPage from './components/VideoDownloaderPage';
 import { clsx, type ClassValue } from 'clsx';
@@ -47,6 +47,29 @@ import { FeedbackModal } from './components/FeedbackModal';
 import { logActivity, reportOperationFailure } from './lib/activityLog';
 import { consumeFeedbackDraft, type FeedbackDraft } from './lib/feedbackContext';
 import { LatestReleaseModal } from './components/LatestReleaseModal';
+import {
+  AppMenu,
+  AutocompletePanel,
+  BookmarkManagerModal,
+  BookmarkSearchModal,
+  BookmarkStarButton,
+  KeyboardShortcutsModal,
+  PinnedBookmarks,
+  RecentRows,
+  isEditableTarget,
+} from './components/BookmarkWidgets';
+import {
+  BookmarkItem,
+  BookmarkStore,
+  clearRecentHistory,
+  deleteRecentHistory,
+  emptyBookmarkStore,
+  fetchBookmarkStore,
+  markBookmarkUsed,
+  recordBookmarkHistory,
+  saveBookmark,
+  titleFromUrl,
+} from './lib/bookmarkStore';
 import {
   clearAppSessionState,
   readMainSection,
@@ -542,6 +565,12 @@ export default function App() {
   const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [productName, setProductName] = useState('Creative Asset Extractor');
+  const [bookmarkStore, setBookmarkStore] = useState<BookmarkStore>(emptyBookmarkStore());
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false);
+  const [bookmarkSearchOpen, setBookmarkSearchOpen] = useState(false);
+  const [keyboardShortcutsOpen, setKeyboardShortcutsOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [videoDownloaderAutoStart, setVideoDownloaderAutoStart] = useState<{
     id: number;
     url: string;
@@ -557,6 +586,45 @@ export default function App() {
   const lastAutoFilledUrlRef = React.useRef(initialUrl.trim());
   const clipboardAutoFillPausedRef = React.useRef(false);
   const videoDownloaderAutoStartSeq = React.useRef(0);
+  const websiteInputRef = React.useRef<HTMLInputElement | null>(null);
+  const videoDownloaderFocusRef = React.useRef<(() => void) | null>(null);
+  const videoDownloaderDownloadRef = React.useRef<(() => void) | null>(null);
+  const videoDownloaderResetRef = React.useRef<(() => void) | null>(null);
+  const videoDownloaderCurrentUrlRef = React.useRef<(() => string) | null>(null);
+
+  const reloadBookmarks = React.useCallback(() => {
+    void fetchBookmarkStore()
+      .then(setBookmarkStore)
+      .catch(() => setBookmarkStore(emptyBookmarkStore()));
+  }, []);
+
+  React.useEffect(() => {
+    reloadBookmarks();
+  }, [reloadBookmarks]);
+
+  const recordRecent = React.useCallback(async (targetUrl: string, category: 'website' | 'video', title?: string) => {
+    if (!String(targetUrl || '').trim()) return;
+    try {
+      const store = await recordBookmarkHistory(targetUrl, category, title);
+      setBookmarkStore(store || emptyBookmarkStore());
+    } catch {
+      // Recent history should never block extraction/download.
+    }
+  }, []);
+
+  const bookmarkCurrentUrl = React.useCallback(async () => {
+    const currentUrl = mainSection === 'video-downloader' ? (videoDownloaderCurrentUrlRef.current?.() || '') : url;
+    const category = mainSection === 'video-downloader' ? 'video' : 'website';
+    if (!currentUrl.trim()) return;
+    const existing = bookmarkStore.bookmarks.find((bookmark) => bookmark.normalizedUrl === currentUrl.trim() || bookmark.url === currentUrl.trim());
+    if (existing) {
+      await markBookmarkUsed(existing.id).then(setBookmarkStore).catch(() => undefined);
+      return;
+    }
+    await saveBookmark({ url: currentUrl, category, title: titleFromUrl(currentUrl), favorite: true, tags: [] }).catch(() => undefined);
+    reloadBookmarks();
+  }, [bookmarkStore.bookmarks, mainSection, reloadBookmarks, url]);
+
 
   React.useEffect(() => {
     if (!assets?.videos?.length) return;
@@ -642,9 +710,10 @@ export default function App() {
     }
   };
 
-  const handleExtractFromOpenWebsite = async () => {
-    const { targetUrl, proxyUrl } = parseWebsiteExtractionInput(url);
-    const rawTarget = targetUrl || String(url || '').trim();
+  const handleExtractFromOpenWebsite = async (overrideUrl?: string) => {
+    const inputValue = typeof overrideUrl === 'string' ? overrideUrl : url;
+    const { targetUrl, proxyUrl } = parseWebsiteExtractionInput(inputValue);
+    const rawTarget = targetUrl || String(inputValue || '').trim();
     let directVideoTarget = '';
     try {
       directVideoTarget = new URL(rawTarget).href;
@@ -666,7 +735,7 @@ export default function App() {
       return;
     }
 
-    const target = targetUrl || resolveWebsitePreviewUrl(url);
+    const target = targetUrl || resolveWebsitePreviewUrl(inputValue);
     if (!target) {
       setError('Enter a public website URL to extract.');
       return;
@@ -943,16 +1012,18 @@ export default function App() {
   };
 
   const handleResetApp = async () => {
+    videoDownloaderResetRef.current?.();
+    setVideoDownloaderAutoStart(null);
+    await clearDownloaderJobs().catch(() => undefined);
     handleNewExtraction();
-    setMainSection('website-extraction');
     setActiveTab('images');
     setValidImageCount(0);
     setDownloadReadyNotice(null);
     clearAppSessionState();
     clearExtractSession();
     clearPersistedClipboardUrl();
-    await clearDownloaderJobs().catch(() => undefined);
-    window.setTimeout(() => window.location.reload(), 50);
+    setMainNav('website-extraction');
+    window.setTimeout(() => websiteInputRef.current?.focus(), 50);
   };
 
   const friendlyExtractionError = (message: string, isYouTube = false) => {
@@ -1106,6 +1177,7 @@ export default function App() {
     }
 
     setExtractPartial(false);
+    void recordRecent(sourceUrl, 'website', titleFromUrl(sourceUrl));
     const nextCompletion = {
       title: 'Extract complete',
       detail:
@@ -1437,72 +1509,194 @@ export default function App() {
     writeMainSection(section);
   };
 
+  const extractWebsiteBookmarkFromChrome = React.useCallback((nextUrl: string) => {
+    const cleanUrl = String(nextUrl || '').trim();
+    if (!cleanUrl) return;
+    setMainNav('website-extraction');
+    setUrl(cleanUrl);
+    lastAutoFilledUrlRef.current = cleanUrl;
+    userEditedUrlRef.current = false;
+    setPendingClipboardUrl(null);
+    window.requestAnimationFrame(() => {
+      websiteInputRef.current?.focus();
+      void handleExtractFromOpenWebsite(cleanUrl);
+    });
+  }, [handleExtractFromOpenWebsite]);
+
+  const openBookmark = React.useCallback((bookmark: BookmarkItem) => {
+    void markBookmarkUsed(bookmark.id).then(setBookmarkStore).catch(() => undefined);
+    if (bookmark.category === 'video') {
+      setMainNav('video-downloader');
+      window.requestAnimationFrame(() => {
+        videoDownloaderAutoStartSeq.current += 1;
+        setVideoDownloaderAutoStart({ id: videoDownloaderAutoStartSeq.current, url: bookmark.url });
+      });
+      return;
+    }
+    extractWebsiteBookmarkFromChrome(bookmark.url);
+  }, [extractWebsiteBookmarkFromChrome]);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isMod = event.metaKey || event.ctrlKey;
+      const targetIsEditable = isEditableTarget(event.target);
+
+      if (!targetIsEditable && !isMod && !event.altKey && !event.shiftKey) {
+        if (event.key === '?') {
+          event.preventDefault();
+          setKeyboardShortcutsOpen(true);
+          return;
+        }
+        if (event.key.toLowerCase() === 'w') {
+          event.preventDefault();
+          setMainNav('website-extraction');
+          window.requestAnimationFrame(() => websiteInputRef.current?.focus());
+          return;
+        }
+        if (event.key.toLowerCase() === 'v') {
+          event.preventDefault();
+          setMainNav('video-downloader');
+          window.requestAnimationFrame(() => videoDownloaderFocusRef.current?.());
+          return;
+        }
+      }
+
+      if (!isMod) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (focusMode && !loading) {
+            setFocusMode(false);
+            return;
+          }
+          if (mainSection === 'video-downloader') {
+            videoDownloaderResetRef.current?.();
+          } else {
+            handleCancelExtract();
+          }
+        }
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'r' && !event.shiftKey) {
+        event.preventDefault();
+        void handleResetApp();
+      } else if (key === 'l' && !event.shiftKey) {
+        event.preventDefault();
+        if (mainSection === 'video-downloader') videoDownloaderFocusRef.current?.();
+        else websiteInputRef.current?.focus();
+      } else if (key === 'k' && !event.shiftKey) {
+        event.preventDefault();
+        setBookmarkSearchOpen(true);
+      } else if (key === 'd' && !event.shiftKey) {
+        event.preventDefault();
+        void bookmarkCurrentUrl();
+      } else if (key === 'c' && event.shiftKey) {
+        event.preventDefault();
+        const currentUrl = mainSection === 'video-downloader' ? videoDownloaderCurrentUrlRef.current?.() : url;
+        if (currentUrl) void navigator.clipboard?.writeText(currentUrl);
+      } else if (key === 'o' && event.shiftKey) {
+        event.preventDefault();
+        void openFolder('downloads', extractedUrl || url);
+      } else if (key === 'r' && event.shiftKey) {
+        event.preventDefault();
+        if (mainSection === 'video-downloader') videoDownloaderDownloadRef.current?.();
+        else void handleWebsiteExtract(undefined, undefined, extractedUrl || url);
+      } else if (key === '1') {
+        event.preventDefault();
+        setMainNav('website-extraction');
+      } else if (key === '2') {
+        event.preventDefault();
+        setMainNav('video-downloader');
+      } else if (key === '3') {
+        event.preventDefault();
+        setBookmarkManagerOpen(true);
+      } else if (key === '4') {
+        event.preventDefault();
+        void openFolder('downloads', extractedUrl || url);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [bookmarkCurrentUrl, extractedUrl, focusMode, handleResetApp, loading, mainSection, url]);
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-blue-100 selection:text-blue-900">
       <header className="bg-white border-b border-zinc-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2 shrink-0">
-              <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold text-xl shrink-0">
-                C
+          {focusMode ? (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold text-xl shrink-0">
+                  C
+                </div>
+                <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
+                <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">Focus Mode</span>
               </div>
-              <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
-              <span className="text-xs font-medium text-violet-700">Beta Release</span>
+              <button
+                type="button"
+                onClick={() => setFocusMode(false)}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+              >
+                Exit Focus Mode
+              </button>
             </div>
-            <nav className="flex flex-wrap items-center justify-end gap-1">
-              <button
-                type="button"
-                onClick={() => setMainNav('website-extraction')}
-                className={cn(
-                  'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
-                  mainSection === 'website-extraction' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
-                )}
-              >
-                <Globe className="h-3.5 w-3.5" />
-                Website Extractor
-              </button>
-              <button
-                type="button"
-                onClick={() => setMainNav('video-downloader')}
-                className={cn(
-                  'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
-                  mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
-                )}
-              >
-                <Download className="h-3.5 w-3.5" />
-                Image/Video Downloader
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleResetApp()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white min-w-[9.5rem]"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Reset
-              </button>
-              <button
-                type="button"
-                onClick={() => openFeedback()}
-                className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white min-w-[9.5rem]"
-              >
-                <MessageSquare className="h-3.5 w-3.5" />
-                Feedback
-              </button>
-              <button
-                type="button"
-                onClick={() => void openReleaseNotes()}
-                className={cn(
-                  'relative inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition min-w-[9.5rem]',
-                  releaseUpdateAvailable
-                    ? 'release-blink-once border border-blue-800 bg-blue-700 text-white ring-2 ring-blue-200 hover:bg-blue-800'
-                    : 'border border-blue-700 bg-blue-600 text-white hover:bg-blue-700'
-                )}
-              >
-                <FileText className="h-3.5 w-3.5" />
-                Release Notes
-              </button>
-            </nav>
-          </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2 shrink-0">
+                <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold text-xl shrink-0">
+                  C
+                </div>
+                <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
+                <span className="text-xs font-medium text-violet-700">Beta Release</span>
+              </div>
+              <nav className="flex flex-wrap items-center justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMainNav('website-extraction')}
+                  title="Website Extractor · Shortcut: W"
+                  className={cn(
+                    'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
+                    mainSection === 'website-extraction' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
+                  )}
+                >
+                  <Globe className="h-3.5 w-3.5" />
+                  Website Extractor
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMainNav('video-downloader')}
+                  title="Image/Video Downloader · Shortcut: V"
+                  className={cn(
+                    'inline-flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition min-w-[9.5rem]',
+                    mainSection === 'video-downloader' ? 'bg-blue-600 text-white' : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
+                  )}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Image/Video Downloader
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleResetApp()}
+                  title="Reset App (⌘R / Ctrl+R)"
+                  className="inline-flex items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:border-blue-600 hover:bg-blue-600 hover:text-white min-w-[9.5rem]"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset
+                </button>
+                <AppMenu
+                  open={menuOpen}
+                  onToggle={() => setMenuOpen((value) => !value)}
+                  onClose={() => setMenuOpen(false)}
+                  releaseUpdateAvailable={releaseUpdateAvailable}
+                  onFeedback={() => openFeedback()}
+                  onBookmarks={() => setBookmarkManagerOpen(true)}
+                  onKeyboardShortcuts={() => setKeyboardShortcutsOpen(true)}
+                  onReleaseNotesAndUpdates={() => void openReleaseNotes()}
+                />
+              </nav>
+            </div>
+          )}
         </div>
       </header>
 
@@ -1511,19 +1705,53 @@ export default function App() {
           <VideoDownloaderPage
             autoStartRequest={videoDownloaderAutoStart}
             onDownloadReady={showDownloadReadyNotice}
+            bookmarkStore={bookmarkStore}
+            onBookmarksChanged={reloadBookmarks}
+            onOpenBookmark={openBookmark}
+            registerControls={(controls) => {
+              videoDownloaderFocusRef.current = controls.focusUrlInput;
+              videoDownloaderDownloadRef.current = controls.startDownload;
+              videoDownloaderResetRef.current = controls.reset;
+              videoDownloaderCurrentUrlRef.current = controls.getCurrentUrl;
+            }}
           />
         ) : null}
 
         {mainSection === 'website-extraction' ? (
         <>
         <div className="mx-auto mb-8 max-w-5xl">
-	          <WebsiteExtracterToolbar
-	            url={url}
-	            onUrlChange={handleUrlChange}
+          <WebsiteExtracterToolbar
+            url={url}
+            onUrlChange={handleUrlChange}
             onExtractFromOpenWebsite={handleExtractFromOpenWebsite}
             loading={loading}
             extractFromOpenWebsiteLoading={previewCapturing}
+            inputRef={websiteInputRef}
+            onSubmit={() => void handleExtractFromOpenWebsite()}
+            rightSlot={
+              <BookmarkStarButton
+                url={url}
+                category="website"
+                store={bookmarkStore}
+                onChanged={reloadBookmarks}
+              />
+            }
           />
+
+          <div className="mt-3 space-y-3">
+            <PinnedBookmarks store={bookmarkStore} category="website" onOpen={openBookmark} />
+            <RecentRows
+              store={bookmarkStore}
+              category="website"
+              title="Recent Searches"
+              onOpen={(nextUrl) => {
+                extractWebsiteBookmarkFromChrome(nextUrl);
+              }}
+              onBookmark={(nextUrl) => void saveBookmark({ url: nextUrl, category: 'website', title: titleFromUrl(nextUrl), favorite: true, tags: [] }).then(reloadBookmarks)}
+              onDelete={(nextUrl) => void deleteRecentHistory(nextUrl, 'website').then(setBookmarkStore).catch((error) => setError(error?.message || 'Could not delete recent search.'))}
+              onClear={() => void clearRecentHistory('website').then(setBookmarkStore).catch((error) => setError(error?.message || 'Could not clear recent searches.'))}
+            />
+          </div>
 
           {(clipboardDetected || pendingClipboardUrl) ? (
             <div className="mt-3 flex flex-col gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900 sm:flex-row sm:items-center sm:justify-between">
@@ -1738,6 +1966,24 @@ export default function App() {
           </div>
         </div>
       ) : null}
+
+      <BookmarkManagerModal
+        open={bookmarkManagerOpen}
+        store={bookmarkStore}
+        onClose={() => setBookmarkManagerOpen(false)}
+        onReload={reloadBookmarks}
+        onOpenBookmark={openBookmark}
+      />
+      <BookmarkSearchModal
+        open={bookmarkSearchOpen}
+        store={bookmarkStore}
+        onClose={() => setBookmarkSearchOpen(false)}
+        onOpenBookmark={openBookmark}
+      />
+      <KeyboardShortcutsModal
+        open={keyboardShortcutsOpen}
+        onClose={() => setKeyboardShortcutsOpen(false)}
+      />
 
       <FeedbackModal
         open={feedbackOpen}

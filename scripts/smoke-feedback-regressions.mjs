@@ -92,8 +92,9 @@ const fetchBuffer = async (route, init = {}, timeoutMs = 120000) => {
 };
 
 const checkStaticFeedbackContracts = async () => {
-  const [app, fontExtractor, fontAsset, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes, server, extractionWs, extractionProgress] = await Promise.all([
+  const [app, appMenu, fontExtractor, fontAsset, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes, server, extractionWs, extractionProgress] = await Promise.all([
     readText('src/App.tsx'),
+    readText('src/components/BookmarkWidgets.tsx'),
     readText('src/components/FontExtractor.tsx'),
     readText('src/lib/fontAsset.ts'),
     readText('src/components/ImageExtractor.tsx'),
@@ -117,7 +118,9 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Download-ready popup', app, 'downloadReadyNotice');
   assertIncludes('Download-ready popup', app, 'Open Downloads');
   assertIncludes('Download-ready popup dismissal', app, 'setDownloadReadyNotice(null)');
-  assertIncludes('Website clear downloads confirmation', app, "window.confirm('Delete downloaded files and the extracted website folder?')");
+  if (app.includes("window.confirm('Delete downloaded files and the extracted website folder?')") || app.includes('Clear Downloads')) {
+    fail('Website Clear Downloads UI must stay removed');
+  }
   assertIncludes('Image download popup callback', imageExtractor, 'onDownloadReady');
   assertIncludes('Font download popup callback', fontExtractor, 'onDownloadReady');
   assertIncludes('Global font format controls', fontExtractor, 'Download formats');
@@ -161,7 +164,9 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'handledAutoStartIdRef');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, "downloadQueue(autoStartRequest.quality || 'fhd'");
-  assertIncludes('Video clear downloads confirmation', videoDownloaderPage, "window.confirm('Delete all downloaded videos and extracted platform folders?')");
+  if (videoDownloaderPage.includes("window.confirm('Delete all downloaded videos and extracted platform folders?')") || videoDownloaderPage.includes('Clear Downloads')) {
+    fail('Video Clear Downloads UI must stay removed');
+  }
   assertIncludes('YouTube backup link', videoDownloaderPage, 'https://yt5s.in/en271/');
   assertIncludes('YouTube backup link', videoDownloaderPage, 'Open YT5S backup');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'isYouTubeUnavailableError');
@@ -192,7 +197,8 @@ const checkStaticFeedbackContracts = async () => {
     fail('Extracted-video bulk download UI must stay removed');
   }
   assertIncludes('Release button highlight', app, 'releaseUpdateAvailable');
-  assertIncludes('Release button highlight', app, 'release-blink-once');
+  assertIncludes('Release button highlight', appMenu, 'releaseUpdateAvailable');
+  assertIncludes('Release button highlight', appMenu, 'release-blink-once');
   assertIncludes('Release notes manual open', app, 'const openReleaseNotes = async () =>');
   if (/setReleaseViewMode\('update'\)[\s\S]{0,120}setReleaseOpen\(true\)/.test(app)) {
     fail('Release update check must not auto-open the release popup on launch');
