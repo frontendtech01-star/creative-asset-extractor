@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Check, Copy, Download, ExternalLink, Video as VideoIcon, Youtube, Search, Globe, XCircle } from 'lucide-react';
+import { Check, Copy, Download, Video as VideoIcon, Search, Globe } from 'lucide-react';
 import { getDesktopBridge } from '../lib/desktopBridge';
 import {
   canonicalBrightcovePlayerUrlFromItem,
@@ -9,67 +9,6 @@ import {
   isUsableExtractedVideo,
   isWistiaHelperResourceUrl,
 } from '../lib/visibleVideos';
-import {
-  cancelDownloaderJob,
-  startDownloaderJob,
-  waitForDownloaderJob,
-  type DownloaderJob,
-  type DownloaderQuality,
-} from '../lib/videoDownloader';
-
-type WebsiteBulkDownloadJob = {
-  id: string;
-  title: string;
-  url: string;
-  status: 'queued' | 'running' | 'completed' | 'error';
-  progress: number;
-  message: string;
-  error?: string;
-};
-
-const isSupportedBulkDownloaderUrl = (rawUrl: string) => {
-  if (isTechnicalPlayerResourceUrl(rawUrl)) return false;
-  if (isDirectVideoAssetUrl(rawUrl)) return true;
-  try {
-    const host = new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
-    return (
-      host.includes('youtube.com') ||
-      host === 'youtu.be' ||
-      host.includes('vimeo.com') ||
-      host.includes('instagram.com') ||
-      host.includes('facebook.com') ||
-      host === 'fb.watch' ||
-      host === 'x.com' ||
-      host.includes('twitter.com') ||
-      host === 'players.brightcove.net' ||
-      host.endsWith('.players.brightcove.net') ||
-      host.includes('brightcove.net') ||
-      host === 'ispot.tv' ||
-      host.endsWith('.ispot.tv')
-    );
-  } catch {
-    return false;
-  }
-};
-
-const isWebsitePlatformDownloadUrl = (rawUrl: string) => {
-  try {
-    const host = new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
-    return (
-      host.includes('youtube.com') ||
-      host === 'youtu.be' ||
-      host.includes('vimeo.com') ||
-      host.includes('facebook.com') ||
-      host === 'fb.watch' ||
-      host === 'players.brightcove.net' ||
-      host.endsWith('.players.brightcove.net') ||
-      host === 'ispot.tv' ||
-      host.endsWith('.ispot.tv')
-    );
-  } catch {
-    return false;
-  }
-};
 
 const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
@@ -196,15 +135,6 @@ const resolveEmbeddedVideoLink = (video: any) => {
   return resolvePlatformVideoUrl(video) || String([video?.embedUrl, video?.url, video?.sourceUrl, video?.pageUrl].find((candidate) => typeof candidate === 'string' && /^https?:\/\//i.test(candidate) && !isTechnicalPlayerResourceUrl(candidate)) || '');
 };
 
-const resolveBulkDownloadUrls = (videos: any[], seedUrl: string) =>
-  Array.from(
-    new Set(
-      videos
-        .map((video) => resolveVideoDownloadRequest(video, seedUrl).url)
-        .filter((url) => typeof url === 'string' && /^https?:\/\//i.test(url) && isSupportedBulkDownloaderUrl(url))
-    )
-  );
-
 const isEmbeddedVideo = (video: any) => {
   const url = String(video?.url || '');
   if (video?.isDirect || video?.isVimeoDirect || video?.isWistiaDirect || video?.isYouTubeDirect) return false;
@@ -325,15 +255,10 @@ export default function VideoExtractor({
   videos: any[];
   seedUrl?: string;
   hideManualSearch?: boolean;
-  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
   onOpenInDownloader?: (request: { url: string; sourcePageUrl?: string; saveToWebsiteAssets?: boolean }) => void;
 }) {
-  const [downloading, setDownloading] = useState<string | null>(null);
-  const [activeCardJob, setActiveCardJob] = useState<{ cardUrl: string; job: DownloaderJob } | null>(null);
   const [downloadResult, setDownloadResult] = useState<{ url: string; message: string; error?: boolean } | null>(null);
-  const [bulkDownloading, setBulkDownloading] = useState(false);
-  const [bulkJobs, setBulkJobs] = useState<WebsiteBulkDownloadJob[]>([]);
-  const [bulkMessage, setBulkMessage] = useState<{ text: string; error?: boolean } | null>(null);
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
@@ -350,202 +275,19 @@ export default function VideoExtractor({
     }
   }, []);
 
-  useEffect(() => {
-    if (visibleVideos.length > 0) return;
-    setBulkDownloading(false);
-    setBulkJobs([]);
-    setBulkMessage(null);
-  }, [visibleVideos.length]);
-
-  const handleDownload = async (video: any, title: string, quality: DownloaderQuality = 'fhd') => {
+  const handleDownload = (video: any) => {
     const cardUrl = String(video?.url || '');
     const request = resolveVideoDownloadRequest(video, seedUrl);
-    if (onOpenInDownloader && isWebsitePlatformDownloadUrl(request.url)) {
-      onOpenInDownloader({
-        url: request.url,
-        sourcePageUrl: seedUrl || request.sourcePageUrl,
-        saveToWebsiteAssets: true,
-      });
-      return;
-    }
-    setDownloading(cardUrl);
-    setDownloadResult(null);
-    try {
-      if (!request.url) throw new Error('No downloadable video link was found.');
-      const started = await startDownloaderJob({
-        url: request.url,
-        quality,
-        title,
-        sourcePageUrl: seedUrl || request.sourcePageUrl,
-        saveToWebsiteAssets: true,
-      });
-      setActiveCardJob({ cardUrl, job: started });
-      const completed = await waitForDownloaderJob(started, (job) => setActiveCardJob({ cardUrl, job }));
-      if (completed.status === 'cancelled') {
-        setDownloadResult({ url: cardUrl, message: 'Download cancelled.' });
-        return;
-      }
-      if (completed.status === 'error' || !completed.result?.displayPath) {
-        throw new Error(completed.error || 'Download failed');
-      }
-      setDownloadResult({
-        url: cardUrl,
-        message: `Video downloaded: ${completed.result.displayPath}`,
-      });
-    } catch (error: any) {
-      const msg = error?.message || '';
-      if (!/no downloadable vimeo stream/i.test(msg)) {
-        console.error('Download error:', error);
-      }
-      setDownloadResult({ url: cardUrl, message: msg || 'Failed to download video.', error: true });
-    } finally {
-      setDownloading(null);
-      setActiveCardJob(null);
-    }
-  };
-
-  const handleCancelCardDownload = async (cardUrl: string) => {
-    if (!activeCardJob || activeCardJob.cardUrl !== cardUrl) return;
-    try {
-      const cancelled = await cancelDownloaderJob(activeCardJob.job.id);
-      setActiveCardJob({ cardUrl, job: cancelled });
-      setDownloadResult({ url: cardUrl, message: 'Download cancelled.' });
-    } catch (error: any) {
-      setDownloadResult({ url: cardUrl, message: error?.message || 'Could not cancel download.', error: true });
-    }
-  };
-
-  const handleOpenInDownloader = (video: any) => {
-    const request = resolveVideoDownloadRequest(video, seedUrl);
-    const cardUrl = String(video?.url || '');
     if (!request.url) {
       setDownloadResult({ url: cardUrl, message: 'No downloadable video link was found.', error: true });
       return;
     }
+    setDownloadResult(null);
     onOpenInDownloader?.({
       url: request.url,
       sourcePageUrl: seedUrl || request.sourcePageUrl,
       saveToWebsiteAssets: true,
     });
-  };
-
-  const handleBulkDownload = async () => {
-    const seen = new Set<string>();
-    const items = visibleVideos
-      .map((video, idx) => {
-        const request = resolveVideoDownloadRequest(video, seedUrl);
-        const title = videoCardTitle(video, idx, visibleVideos);
-        return {
-          id: `${idx}:${request.url}`,
-          title,
-          request,
-        };
-      })
-      .filter((item) => {
-        const url = String(item.request.url || '');
-        if (!/^https?:\/\//i.test(url) || !isSupportedBulkDownloaderUrl(url) || seen.has(url)) return false;
-        seen.add(url);
-        return true;
-      });
-    setBulkMessage(null);
-    setBulkJobs([]);
-    if (items.length === 0) {
-      setBulkMessage({ text: 'No supported player links were found for bulk MP4 download.', error: true });
-      return;
-    }
-
-    setBulkDownloading(true);
-    setBulkJobs(
-      items.map((item) => ({
-        id: item.id,
-        title: item.title,
-        url: item.request.url,
-        status: 'queued',
-        progress: 0,
-        message: 'Queued',
-      }))
-    );
-    try {
-      setBulkMessage({ text: `${items.length} player link${items.length === 1 ? '' : 's'} queued. Saving MP4 files to this website's CreativeAssets/Videos folder...` });
-      const completed: WebsiteBulkDownloadJob[] = [];
-      for (const item of items) {
-        setBulkJobs((current) =>
-          current.map((job) =>
-            job.id === item.id
-              ? { ...job, status: 'running', progress: 15, message: 'Downloading MP4...' }
-              : job
-          )
-        );
-        try {
-          const started = await startDownloaderJob({
-            url: item.request.url,
-            quality: 'fhd',
-            title: item.title,
-            sourcePageUrl: seedUrl || item.request.sourcePageUrl,
-            saveToWebsiteAssets: true,
-          });
-          const completedJob = await waitForDownloaderJob(started, (job) => {
-            setBulkJobs((current) =>
-              current.map((existing) =>
-                existing.id === item.id
-                  ? {
-                      ...existing,
-                      status: job.status === 'completed' ? 'completed' : job.status === 'error' ? 'error' : 'running',
-                      progress: job.progress || existing.progress,
-                      message: job.message || existing.message,
-                      error: job.error,
-                    }
-                  : existing
-              )
-            );
-          });
-          if (completedJob.status === 'cancelled') throw new Error('Download cancelled');
-          if (completedJob.status === 'error' || !completedJob.result?.displayPath) throw new Error(completedJob.error || 'Download failed');
-          const done: WebsiteBulkDownloadJob = {
-            id: item.id,
-            title: item.title,
-            url: item.request.url,
-            status: 'completed',
-            progress: 100,
-            message: `Saved: ${completedJob.result.displayPath}`,
-          };
-          completed.push(done);
-          setBulkJobs((current) => current.map((job) => (job.id === item.id ? done : job)));
-        } catch (error: any) {
-          const failedJob: WebsiteBulkDownloadJob = {
-            id: item.id,
-            title: item.title,
-            url: item.request.url,
-            status: 'error',
-            progress: 100,
-            message: 'Download failed',
-            error: error?.message || 'Download failed',
-          };
-          completed.push(failedJob);
-          setBulkJobs((current) => current.map((job) => (job.id === item.id ? failedJob : job)));
-        }
-      }
-      const failed = completed.filter((job) => job.status === 'error').length;
-      const succeeded = completed.filter((job) => job.status === 'completed').length;
-      setBulkMessage({
-        text: failed
-          ? `${succeeded} MP4 download${succeeded === 1 ? '' : 's'} saved to this website's CreativeAssets/Videos folder. ${failed} failed.`
-          : `${succeeded} MP4 download${succeeded === 1 ? '' : 's'} saved to this website's CreativeAssets/Videos folder.`,
-        error: failed > 0 && succeeded === 0,
-      });
-      if (succeeded > 0) {
-        onDownloadReady?.({
-          title: 'Videos saved',
-          detail: `${succeeded} MP4 download${succeeded === 1 ? '' : 's'} ready in Downloads.`,
-          target: 'videos',
-          sourcePageUrl: seedUrl || undefined,
-        });
-      }
-    } catch (error: any) {
-      setBulkMessage({ text: error?.message || 'Bulk MP4 download failed.', error: true });
-    } finally {
-      setBulkDownloading(false);
-    }
   };
 
   const handleManualSearch = (e: React.FormEvent) => {
@@ -586,15 +328,6 @@ export default function VideoExtractor({
     }
   };
 
-  const handleOpenEmbeddedLink = async (link: string) => {
-    const bridge = getDesktopBridge();
-    if (bridge) {
-      const opened = await bridge.openExternalUrl(link);
-      if (opened) return;
-    }
-    window.location.assign(link);
-  };
-
   const renderExternalOptions = (url: string) => (
     <div className="grid grid-cols-1 gap-4">
       <a
@@ -610,12 +343,10 @@ export default function VideoExtractor({
     </div>
   );
 
-  const bulkDownloadUrls = resolveBulkDownloadUrls(visibleVideos, seedUrl);
-
   return (
     <div className="space-y-8">
       {/* Manual Video Downloader Section */}
-      <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
+      {!hideManualSearch ? <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center">
             <Search className="w-5 h-5 text-indigo-600" />
@@ -683,7 +414,7 @@ export default function VideoExtractor({
             {renderExternalOptions(activeManualUrl)}
           </div>
         )}
-      </div>
+      </div> : null}
 
       {visibleVideos.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-zinc-500 bg-white border border-zinc-200 rounded-2xl border-dashed">
@@ -693,74 +424,8 @@ export default function VideoExtractor({
         </div>
       ) : (
         <>
-          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-zinc-900">Bulk Download Extracted Videos</h4>
-                <p className="mt-1 text-xs text-zinc-500">
-                  Saves {bulkDownloadUrls.length} resolved player link{bulkDownloadUrls.length === 1 ? '' : 's'} as fast Mac-compatible FHD MP4 files.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void handleBulkDownload()}
-                disabled={bulkDownloading || bulkDownloadUrls.length === 0}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Download className="h-4 w-4" />
-                {bulkDownloading ? 'Downloading All Video...' : 'Download All Video'}
-              </button>
-            </div>
-            {bulkJobs.length ? (
-              <div className="mt-4 space-y-2">
-                {bulkJobs.map((job) => (
-                  <div key={job.id} className="rounded-lg bg-zinc-50 p-3">
-                    <div className="flex items-center justify-between gap-3 text-xs font-semibold text-zinc-700">
-                      <span className="truncate">{job.title || job.url}</span>
-                      <span>{job.status === 'completed' ? '100%' : job.status === 'error' ? 'Failed' : `${Math.round(job.progress || 0)}%`}</span>
-                    </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-200">
-                      <div
-                        className={job.status === 'error' ? 'h-full bg-red-500' : 'h-full bg-zinc-900 transition-all'}
-                        style={{ width: `${Math.max(job.status === 'error' ? 100 : 2, job.status === 'completed' ? 100 : job.progress || 0)}%` }}
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-zinc-500">{job.error || job.message}</p>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {bulkMessage ? (
-              <p className={`mt-3 text-xs font-medium ${bulkMessage.error ? 'text-red-600' : 'text-emerald-700'}`}>
-                {bulkMessage.text}
-              </p>
-            ) : null}
-          </div>
-
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {visibleVideos.map((video, idx) => {
-            if (video.isYouTube && !video.isYouTubeDirect) {
-              return (
-                <div key={idx} className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col col-span-1 md:col-span-2 lg:col-span-3">
-                  <div className="p-6 flex flex-col md:flex-row items-center gap-6">
-                    <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center flex-shrink-0">
-                      <Youtube className="w-8 h-8 text-red-600" />
-                    </div>
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-zinc-900">YouTube Video Detected</h3>
-                      <p className="text-zinc-600 mt-1 text-sm">
-                        Direct extraction is restricted by YouTube. You can download this video using our integrated third-party downloaders below.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="bg-zinc-50 p-6 border-t border-zinc-100">
-                    <h4 className="text-sm font-medium text-zinc-700 mb-4">Quick Download Options</h4>
-                    {renderExternalOptions(video.url)}
-                  </div>
-                </div>
-              );
-            }
-
             const isYouTubeDirect = video.isYouTubeDirect;
             const displayTitle = isYouTubeDirect
               ? `YouTube Video Stream (${video.resolution || 'Unknown'})`
@@ -770,7 +435,14 @@ export default function VideoExtractor({
             const embedPreviewUrl = embedded ? resolveEmbedPreviewUrl(video) : '';
             const embeddedThumbnail = embedded ? resolveEmbeddedThumbnail(video) : '';
             const showLiveEmbed = Boolean(embedPreviewUrl && providerAllowsLocalEmbed(video));
-            const showCardDownloadButton = embedded;
+            const isDirectCdnVideo = Boolean(
+              video?.isDirect ||
+              video?.isVimeoDirect ||
+              video?.isWistiaDirect ||
+              video?.isYouTubeDirect ||
+              isDirectVideoAssetUrl(String(video?.url || ''))
+            );
+            const copyUrl = isDirectCdnVideo ? String(video?.url || '') : (embeddedLink || String(video?.url || ''));
 
             return (
               <div
@@ -853,78 +525,37 @@ export default function VideoExtractor({
                       )}
                     </div>
                   </div>
-                  {showCardDownloadButton ? (
-                    <div className="space-y-2">
+                  <div className="space-y-2">
+                    {!isDirectCdnVideo ? (
                       <button
                         type="button"
-                        onClick={() => handleDownload(video, displayTitle)}
-                        disabled={downloading === video.url}
-                        className="w-full flex items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        onClick={() => handleDownload(video)}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                       >
-                        {downloading === video.url ? (
-                          <span className="animate-pulse">Downloading Video...</span>
-                        ) : (
-                          <>
-                            <Download className="w-4 h-4" />
-                            Download Video
-                          </>
-                        )}
+                        <Download className="w-4 h-4" />
+                        Download Video
                       </button>
-                      <div className="flex gap-2">
-                        {onOpenInDownloader ? (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenInDownloader(video)}
-                            className="min-w-0 flex-1 flex items-center gap-2 border border-blue-200 bg-blue-50 text-blue-800 px-3 py-2 rounded-xl font-medium text-xs hover:bg-blue-100 transition-colors"
-                            title="Open this link in Video Downloader"
-                          >
-                            <Download className="w-4 h-4 shrink-0" />
-                            <span className="truncate">Video Downloader</span>
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => void handleOpenEmbeddedLink(embeddedLink || video.url)}
-                          className="min-w-0 flex-1 flex items-center gap-2 border border-zinc-300 bg-white text-zinc-900 px-3 py-2 rounded-xl font-medium text-xs hover:bg-zinc-50 transition-colors"
-                          title={embeddedLink || video.url}
-                        >
-                          <ExternalLink className="w-4 h-4 shrink-0" />
-                          <span className="truncate">Open Player</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleCopyEmbeddedLink(embeddedLink || video.url)}
-                          className="shrink-0 rounded-xl border border-zinc-300 bg-white px-3 text-zinc-900 transition-colors hover:bg-zinc-50"
-                          title="Copy player link"
-                          aria-label="Copy player link"
-                        >
-                          <span className="flex items-center gap-1.5 text-xs font-semibold">
-                            {copiedEmbeddedLink === (embeddedLink || video.url) ? (
-                              <>
-                                <Check className="h-4 w-4 text-emerald-600" />
-                                Copied
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="h-4 w-4" />
-                                Copy
-                              </>
-                            )}
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                  {downloading === video.url && activeCardJob ? (
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => void handleCancelCardDownload(video.url)}
-                      className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100"
+                      onClick={() => void handleCopyEmbeddedLink(copyUrl)}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-50"
+                      title="Copy video URL"
+                      aria-label="Copy video URL"
                     >
-                      <XCircle className="h-4 w-4" />
-                      Cancel download
+                      {copiedEmbeddedLink === copyUrl ? (
+                        <>
+                          <Check className="h-4 w-4 text-emerald-600" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" />
+                          Copy URL
+                        </>
+                      )}
                     </button>
-                  ) : null}
+                  </div>
                   {downloadResult?.url === video.url ? (
                     <p className={`mt-2 text-xs font-medium ${downloadResult.error ? 'text-red-600' : 'text-emerald-700'}`}>
                       {downloadResult.message}

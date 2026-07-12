@@ -6,7 +6,7 @@ import { buildImagePreviewRequest, buildImageThumbRequest, getImageAssetKey } fr
 type ThumbPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
 type LazyCachedImageThumbProps = {
-  img: { url?: string; cachedUrl?: string };
+  img: { url?: string; cachedUrl?: string; dataUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string };
   sourcePageUrl?: string;
   alt: string;
   fallbackLabel?: string;
@@ -16,8 +16,37 @@ type LazyCachedImageThumbProps = {
   onFailed?: () => void;
 };
 
+const sanitizeInlineSvgDataUrl = (url: string) => {
+  if (!/^data:image\/svg\+xml/i.test(url)) return url;
+  try {
+    const commaIndex = url.indexOf(',');
+    if (commaIndex < 0) return url;
+    const meta = url.slice(0, commaIndex);
+    const payload = url.slice(commaIndex + 1);
+    const isBase64 = /;base64/i.test(meta);
+    const svgText = isBase64 ? atob(payload) : decodeURIComponent(payload);
+    let sanitized = svgText
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, '')
+      .replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || '#000000').trim())
+      .replace(/var\(\s*--[^)]+\)/gi, '#000000');
+    const tagMatch = sanitized.match(/<svg\b[^>]*>/i);
+    if (tagMatch) {
+      let tag = tagMatch[0];
+      if (!/\sxmlns=/.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (!/\sxml:space=/.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xml:space="preserve"');
+      sanitized = sanitized.replace(tagMatch[0], tag);
+    }
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sanitized)}`;
+  } catch {
+    return url;
+  }
+};
+
 const buildThumbCandidates = (
-  img: { url?: string; cachedUrl?: string },
+  img: { url?: string; cachedUrl?: string; dataUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string },
   _sourcePageUrl: string
 ) => {
   const candidates: string[] = [];
@@ -28,16 +57,40 @@ const buildThumbCandidates = (
     }
   };
   const cached = String(img?.cachedUrl || '').trim();
+  const embeddedDataUrl = String(img?.dataUrl || '').trim();
   const originalUrl = getImageAssetKey(img);
+  const source = String((img as any)?.source || '').toLowerCase();
+  const isSvgAsset =
+    /\.svg(?:$|[?#])/i.test(originalUrl) ||
+    /\.svg(?:$|[?#])/i.test(cached) ||
+    String((img as any)?.type || '').toLowerCase() === 'svg' ||
+    String((img as any)?.mimeType || '').toLowerCase().includes('svg');
+  const isGeneratedFontAwesomeSvg =
+    source.includes('font-awesome-icon-svg') ||
+    (String((img as any)?.filename || '').toLowerCase().endsWith('.svg') && source.includes('font-awesome'));
+
+  if (isSvgAsset && embeddedDataUrl.startsWith('data:image/svg+xml')) {
+    addCandidate(sanitizeInlineSvgDataUrl(embeddedDataUrl));
+  }
+  if (isGeneratedFontAwesomeSvg && originalUrl.startsWith('data:image/svg+xml')) {
+    addCandidate(sanitizeInlineSvgDataUrl(originalUrl));
+    return candidates;
+  }
+  if (isGeneratedFontAwesomeSvg && cached.startsWith('data:image/svg+xml')) {
+    addCandidate(sanitizeInlineSvgDataUrl(cached));
+    return candidates;
+  }
 
   if (cached.startsWith('data:image/')) {
-    addCandidate(cached);
+    addCandidate(sanitizeInlineSvgDataUrl(cached));
   }
   if (cached.startsWith('/cached-images-original/')) {
+    const previewRequest = isSvgAsset ? buildImagePreviewRequest(img, _sourcePageUrl) : '';
+    if (previewRequest) addCandidate(apiUrl(previewRequest));
     addCandidate(apiUrl(cached));
   }
   if (originalUrl.startsWith('data:')) {
-    addCandidate(originalUrl);
+    addCandidate(sanitizeInlineSvgDataUrl(originalUrl));
     return candidates;
   }
 
@@ -50,9 +103,10 @@ const buildThumbCandidates = (
       /\/jellies\/(?:max|relative)\//i.test(originalUrl);
     const thumbPreview = buildImageThumbRequest(img, _sourcePageUrl);
     const fallbackPreview = buildImagePreviewRequest(img, _sourcePageUrl);
-    if (isSequenceOrToyotaAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
+    if (isSvgAsset && fallbackPreview) addCandidate(apiUrl(fallbackPreview));
     addCandidate(originalUrl);
-    if (!isSequenceOrToyotaAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
+    if (isSequenceOrToyotaAsset && fallbackPreview) addCandidate(apiUrl(fallbackPreview));
+    if (!isSvgAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
     if (fallbackPreview) addCandidate(apiUrl(fallbackPreview));
   }
   return candidates.filter(Boolean);
@@ -72,11 +126,13 @@ export default function LazyCachedImageThumb({
   const [candidateIndex, setCandidateIndex] = useState(0);
   const assetKey = getImageAssetKey(img);
   const cachedPath = String(img?.cachedUrl || '').trim();
+  const embeddedDataUrl = String(img?.dataUrl || '').trim();
+  const typeKey = `${String(img?.type || '')}:${String(img?.mimeType || '')}:${String(img?.source || '')}:${String(img?.filename || '')}`;
   const reportedReadyRef = useRef(false);
   const reportedFailedRef = useRef(false);
   const candidates = useMemo(
     () => buildThumbCandidates(img, sourcePageUrl),
-    [assetKey, sourcePageUrl, cachedPath]
+    [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, typeKey]
   );
   const src = candidates[candidateIndex] || '';
 
@@ -101,7 +157,7 @@ export default function LazyCachedImageThumb({
     setPhase('loading');
     const timeout = window.setTimeout(() => {
       advanceCandidateOrFail();
-    }, 4500);
+    }, 8000);
     return () => window.clearTimeout(timeout);
   }, [src, phase, candidateIndex, candidates.length]);
 

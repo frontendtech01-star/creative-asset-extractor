@@ -27,11 +27,22 @@ export class ExtractionProgressManager {
   private clients = new Set<WebSocket>();
   private currentPhase: ExtractPhase = 'loading';
   private currentCounters: ExtractCounters = { images: 0, videos: 0, fonts: 0, colors: 0 };
+  private terminalEvent: Extract<ProgressEvent, { type: 'complete' | 'error' }> | null = null;
 
   addClient(ws: WebSocket) {
     this.clients.add(ws);
     ws.on('close', () => this.clients.delete(ws));
     ws.on('error', () => this.clients.delete(ws));
+    if (ws.readyState === WebSocket.OPEN) {
+      if (this.terminalEvent) {
+        ws.send(JSON.stringify({ type: 'counters', counters: this.currentCounters }));
+        ws.send(JSON.stringify(this.terminalEvent));
+        ws.close();
+        return;
+      }
+      ws.send(JSON.stringify({ type: 'phase', phase: this.currentPhase }));
+      ws.send(JSON.stringify({ type: 'counters', counters: this.currentCounters }));
+    }
   }
 
   private broadcast(event: ProgressEvent) {
@@ -58,12 +69,23 @@ export class ExtractionProgressManager {
   }
 
   complete(result: any) {
-    this.broadcast({ type: 'complete', result });
+    // The finalized payload is the source of truth. Live discovery counters can
+    // be stale (or still zero for clients that connect during finalization), so
+    // publish the exact post-dedupe counts immediately before completion.
+    this.updateCounters({
+      images: Array.isArray(result?.images) ? result.images.length : 0,
+      videos: Array.isArray(result?.videos) ? result.videos.length : 0,
+      fonts: Array.isArray(result?.fonts) ? result.fonts.length : 0,
+      colors: Array.isArray(result?.colors) ? result.colors.length : 0,
+    });
+    this.terminalEvent = { type: 'complete', result };
+    this.broadcast(this.terminalEvent);
     this.cleanup();
   }
 
   fail(error: string) {
-    this.broadcast({ type: 'error', message: error });
+    this.terminalEvent = { type: 'error', message: error };
+    this.broadcast(this.terminalEvent);
     this.cleanup();
   }
 

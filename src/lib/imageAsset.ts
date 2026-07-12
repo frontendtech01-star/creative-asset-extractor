@@ -44,6 +44,10 @@ export const buildImagePreviewRequest = (
       ? cached
       : remote;
   if (!requestUrl) return '';
+  // Inline SVG/data images can exceed the server's request-header limits when
+  // shoved into a query string. They are already browser-displayable, so keep
+  // them on the direct fast path instead of proxying through /api/image-preview.
+  if (requestUrl.startsWith('data:')) return '';
   const params = new URLSearchParams({ url: requestUrl });
   if (remote.startsWith('http')) params.set('originalUrl', remote);
   if (sourcePageUrl) params.set('sourcePageUrl', sourcePageUrl);

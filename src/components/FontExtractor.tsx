@@ -4,10 +4,7 @@ import { apiFetch, apiUrl } from '../lib/api';
 import {
   buildFontDisplayName,
   buildFontZipItem,
-  getAvailableFontDownloadFormats,
-  getFontFamilyFolderName,
   getFontFilenameBase,
-  getFontOutputFormat,
   getFontSelectionKey,
   isJunkFontLabel,
   normalizeFontStyleKey,
@@ -15,11 +12,11 @@ import {
   resolveFontIdentityFields,
   resolveFontAssetUrl,
   resolveFontSourceFormat,
-  resolveFontTargetFormat,
-  type FontDownloadFormat,
+  type FontZipOutputFormat,
 } from '../lib/fontAsset';
 
 const DEFAULT_PREVIEW_TEXT = "Rome wasn't built in a day, but they were laying bricks every hour";
+const FONT_DOWNLOAD_FORMATS = ['woff', 'ttf'] as FontZipOutputFormat[];
 
 const previewFamily = (value: string) => {
   let hash = 0;
@@ -70,11 +67,6 @@ const getFontVariantKey = (font: any) => {
     normalizeFontStyleKey(String(identity.style || '')),
     resolveFontSourceFormat(font),
   ].join('|').toLowerCase();
-};
-
-const getInstallableFontFormat = (font: any, selectedFormats: Record<string, FontDownloadFormat>) => {
-  const explicit = getFontOutputFormat(font, selectedFormats);
-  return explicit;
 };
 
 const getFontSourceVerifier = (font: any) => {
@@ -147,8 +139,8 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
   }, [family, urls]);
 
   return (
-    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-      <p className="min-h-16 text-lg leading-6 text-zinc-900" style={loaded ? { fontFamily: `"${family}"` } : undefined}>
+    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2.5">
+      <p className="min-h-12 text-base leading-5 text-zinc-900" style={loaded ? { fontFamily: `"${family}"` } : undefined}>
         {text || DEFAULT_PREVIEW_TEXT}
       </p>
     </div>
@@ -162,7 +154,7 @@ export default function FontExtractor({
 }: {
   fonts: any[];
   sourcePageUrl?: string;
-  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -171,53 +163,48 @@ export default function FontExtractor({
   const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [selectedFormats, setSelectedFormats] = useState<Record<string, FontDownloadFormat>>({});
+  const [zipFormats, setZipFormats] = useState<Set<FontZipOutputFormat>>(new Set(FONT_DOWNLOAD_FORMATS));
+  const [fixVerticalMetrics, setFixVerticalMetrics] = useState(true);
+  const [fontVerticalMetrics, setFontVerticalMetrics] = useState<Record<string, boolean>>({});
+  const [fontFormats, setFontFormats] = useState<Record<string, FontZipOutputFormat[]>>({});
   const [copiedFontUrl, setCopiedFontUrl] = useState('');
-
-  useEffect(() => {
-    setSelected(new Set());
-    setSelectedFormats({});
-  }, [fonts, sourcePageUrl]);
 
   const handleDownload = async (font: any) => {
     const url = getFontSelectionKey(font);
     setDownloading(url);
-    const originalFormat = resolveFontSourceFormat(font);
-    const formatChoice = getInstallableFontFormat(font, selectedFormats);
-    const toFormat = resolveFontTargetFormat(font, formatChoice);
-    const initiatedLabel = formatChoice === 'original' ? `${originalFormat.toUpperCase()} initiated...` : `${toFormat.toUpperCase()} initiated...`;
-    setDownloadingLabel(initiatedLabel);
+    const requestedFormats = fontFormats[url] || FONT_DOWNLOAD_FORMATS;
+    const shouldFixVerticalMetrics = fontVerticalMetrics[url] ?? true;
+    setDownloadingLabel('Downloading...');
     setDownloadResult(null);
 
     try {
-      const params = new URLSearchParams({
-        url: resolveFontAssetUrl(font),
-        originalUrl: url,
-        toFormat,
-        originalFormat,
-        filenameBase: getFontFilenameBase(font),
-        familyFolder: getFontFamilyFolderName(font),
-        cssSource: String(font?.cssSource || ''),
-        fontFamily: String(font?.family || font?.title || font?.name || ''),
-        fontWeight: String(font?.weight || ''),
-        fontStyle: String(font?.style || ''),
-        metadataFilename: String(font?.filename || font?.name || font?.family || '').trim(),
-        save: '1',
+      if (requestedFormats.length === 0) throw new Error('Select at least one download format.');
+      const items = requestedFormats.map((format) => ({
+        ...buildFontZipItem(font, format, getFontFilenameBase(font)),
+        fixVerticalMetrics: shouldFixVerticalMetrics,
+      }));
+      const response = await apiFetch('/api/download-zip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          save: true,
+          filename: `${getFontFilenameBase(font)}.zip`,
+          sourcePageUrl: sourcePageUrl || undefined,
+        }),
       });
-      if (sourcePageUrl) params.set('sourcePageUrl', sourcePageUrl);
-      const response = await apiFetch(`/api/convert-font?${params.toString()}`);
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font save failed');
       const label = getReadableFontLabel(font);
-      const savedFormat = String(result?.format || result?.savedFormat || toFormat || originalFormat).toUpperCase();
-      const formatLabel = savedFormat;
-      const warning = String(result?.warning || '').trim();
-      setDownloadResult({ ok: true, message: `${label} saved to Fonts as ${formatLabel}.${warning ? ` ${warning}` : ''}` });
+      const formatLabel = requestedFormats.map((format) => format.toUpperCase()).join(', ');
+      const message = `${label} saved as ${formatLabel} in ${result.filename || `${getFontFilenameBase(font)}.zip`}.`;
+      setDownloadResult({ ok: true, message });
       onDownloadReady?.({
         title: 'Font saved',
-        detail: `${label} ${formatLabel} is ready in Downloads.${warning ? ` ${warning}` : ''}`,
+        detail: message,
         target: 'fonts',
         sourcePageUrl: sourcePageUrl || undefined,
+        folderPath: result?.folderPath,
       });
     } catch (error: any) {
       console.error('Download error:', error);
@@ -238,15 +225,33 @@ export default function FontExtractor({
     return Array.from(seen.values());
   }, [fonts]);
 
+  useEffect(() => {
+    // Font cards start unselected. Users explicitly tick the fonts they want
+    // before creating a WOFF/TTF ZIP.
+    setSelected(new Set());
+    setZipFormats(new Set(FONT_DOWNLOAD_FORMATS));
+    setFixVerticalMetrics(true);
+    setFontVerticalMetrics(
+      Object.fromEntries(displayFonts.map((font) => [getFontSelectionKey(font), true]).filter(([key]) => Boolean(key)))
+    );
+    setFontFormats(
+      Object.fromEntries(
+        displayFonts
+          .map((font) => [getFontSelectionKey(font), [...FONT_DOWNLOAD_FORMATS]])
+          .filter(([key]) => Boolean(key))
+      )
+    );
+  }, [displayFonts, sourcePageUrl]);
+
   const filteredFonts = displayFonts.filter(font => {
     const label = getReadableFontLabel(font);
     const filename = getOriginalFontFilename(font);
     const matchesSearch = `${label} ${filename}`.toLowerCase().includes(searchTerm.toLowerCase());
     const format = resolveFontSourceFormat(font);
-    return matchesSearch && ['woff', 'woff2', 'ttf', 'otf'].includes(format);
+    return matchesSearch && ['woff', 'woff2', 'ttf'].includes(format);
   });
 
-  const selectedFonts = filteredFonts.filter((font) => selected.has(getFontSelectionKey(font)));
+  const selectedFonts = displayFonts.filter((font) => selected.has(getFontSelectionKey(font)));
   const selectedCount = selectedFonts.length;
   const toggleSelected = (font: any) => {
     const key = getFontSelectionKey(font);
@@ -258,33 +263,33 @@ export default function FontExtractor({
     });
   };
 
-  const setFontFormat = (font: any, format: FontDownloadFormat) => {
-    const key = getFontSelectionKey(font);
-    setSelectedFormats((current) => ({ ...current, [key]: format }));
+  const toggleZipFormat = (format: FontZipOutputFormat) => {
+    setZipFormats((current) => {
+      const next = new Set(current);
+      if (next.has(format)) next.delete(format);
+      else next.add(format);
+      return next;
+    });
   };
 
-  const getZipDownloadFormats = (font: any) => {
-    const available = getAvailableFontDownloadFormats(font);
-    const targets: Array<'ttf' | 'woff'> = [];
-    if (available.includes('ttf')) targets.push('ttf');
-    if (available.includes('woff')) targets.push('woff');
-    if (targets.length > 0) return targets;
-    return [resolveFontTargetFormat(font, getInstallableFontFormat(font, selectedFormats))];
+  const setGlobalVerticalMetrics = (enabled: boolean) => {
+    setFixVerticalMetrics(enabled);
+    setFontVerticalMetrics(
+      Object.fromEntries(displayFonts.map((font) => [getFontSelectionKey(font), enabled]).filter(([key]) => Boolean(key)))
+    );
   };
 
   const handleDownloadAll = async () => {
-    if (selectedFonts.length === 0) return;
+    if (selectedFonts.length === 0 || zipFormats.size === 0) return;
     setDownloadingZip(true);
     setDownloadResult(null);
     try {
+      const requestedFormats = FONT_DOWNLOAD_FORMATS.filter((format) => zipFormats.has(format));
       const items = selectedFonts.flatMap((font) =>
-        getZipDownloadFormats(font).map((format) =>
-          buildFontZipItem(
-            font,
-            format,
-            getFontFilenameBase(font)
-          )
-        )
+        requestedFormats.map((format) => ({
+          ...buildFontZipItem(font, format, getFontFilenameBase(font)),
+          fixVerticalMetrics,
+        }))
       );
       const response = await apiFetch('/api/download-zip', {
         method: 'POST',
@@ -298,13 +303,15 @@ export default function FontExtractor({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font ZIP save failed');
-      const message = `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as TTF and WOFF in ${result.filename || 'fonts.zip'}.`;
+      const formatLabel = requestedFormats.map((format) => format.toUpperCase()).join(', ');
+      const message = `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as ${formatLabel} in ${result.filename || 'fonts.zip'}.`;
       setDownloadResult({ ok: true, message });
       onDownloadReady?.({
         title: 'Fonts saved',
         detail: message,
         target: 'fonts',
         sourcePageUrl: sourcePageUrl || undefined,
+        folderPath: result?.folderPath,
       });
       setSelected(new Set());
     } catch (error: any) {
@@ -366,7 +373,7 @@ export default function FontExtractor({
           </button>
           <button
             onClick={handleDownloadAll}
-            disabled={downloadingZip || selectedCount === 0}
+            disabled={downloadingZip || selectedCount === 0 || zipFormats.size === 0}
             className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 sm:flex-none"
           >
             {downloadingZip ? (
@@ -374,11 +381,46 @@ export default function FontExtractor({
             ) : (
               <>
                 <Download className="w-4 h-4" />
-                Download Selected ({selectedCount})
+                Download All Selected ({selectedCount})
               </>
             )}
           </button>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 pb-4">
+          <div>
+            <p className="text-sm font-semibold text-zinc-900">Fix vertical metrics</p>
+            <p className="mt-1 text-xs text-zinc-500">Auto-adjust vertical metrics during conversion.</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={fixVerticalMetrics}
+            onClick={() => setGlobalVerticalMetrics(!fixVerticalMetrics)}
+            className={`inline-flex h-9 w-20 items-center rounded-lg border px-1 transition-colors ${
+              fixVerticalMetrics ? 'justify-start border-emerald-600 bg-emerald-600 text-white' : 'justify-end border-zinc-300 bg-white text-zinc-700'
+            }`}
+          >
+            <span className="w-1/2 text-center text-sm font-semibold">{fixVerticalMetrics ? 'On' : 'Off'}</span>
+          </button>
+        </div>
+        <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-zinc-500">Download formats</p>
+        <div className="mt-3 flex flex-wrap gap-5">
+          {FONT_DOWNLOAD_FORMATS.map((format) => (
+            <label key={format} className="inline-flex cursor-pointer items-center gap-2 text-sm font-semibold text-zinc-800">
+              <input
+                type="checkbox"
+                checked={zipFormats.has(format)}
+                onChange={() => toggleZipFormat(format)}
+                className="h-5 w-5 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+              />
+              {format.toUpperCase()}
+            </label>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-zinc-500">Selected formats are created for every ticked font. TTF uses Transfonter conversion.</p>
       </div>
 
       <div>
@@ -407,7 +449,7 @@ export default function FontExtractor({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {filteredFonts.map((font, idx) => {
           const selectionKey = getFontSelectionKey(font);
           const identity = resolveFontIdentityFields(font);
@@ -416,15 +458,14 @@ export default function FontExtractor({
           const weight = normalizeFontWeightKey(identity.weight);
           const style = normalizeFontStyleKey(String(identity.style || ''));
           const isSelected = selected.has(selectionKey);
-          const availableFormats = getAvailableFontDownloadFormats(font);
-          const selectedFormat = getInstallableFontFormat(font, selectedFormats);
-          const selectedTargetFormat = resolveFontTargetFormat(font, selectedFormat);
+          const cardFixVerticalMetrics = fontVerticalMetrics[selectionKey] ?? true;
+          const cardFormats = fontFormats[selectionKey] || FONT_DOWNLOAD_FORMATS;
           const sourceVerifier = getFontSourceVerifier(font);
           return (
             <div
               key={`${selectionKey}-${idx}`}
               onClick={() => toggleSelected(font)}
-              className={`group relative cursor-pointer rounded-2xl border p-6 shadow-sm transition-all hover:bg-zinc-100 hover:shadow-md ${
+              className={`group relative cursor-pointer rounded-2xl border p-4 shadow-sm transition-all hover:bg-zinc-100 hover:shadow-md ${
                 isSelected ? 'border-blue-600 bg-zinc-100 ring-2 ring-blue-600/20' : 'border-zinc-200 bg-white'
               }`}
             >
@@ -434,7 +475,7 @@ export default function FontExtractor({
                   event.stopPropagation();
                   toggleSelected(font);
                 }}
-                className={`absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 transition ${
+                className={`absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border-2 transition ${
                   isSelected
                     ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
                     : 'border-white bg-zinc-900/25 text-white opacity-0 shadow-sm group-hover:opacity-100'
@@ -444,7 +485,7 @@ export default function FontExtractor({
               >
                 <Check className="h-5 w-5 stroke-[2.5]" aria-hidden />
               </button>
-              <div className="flex items-start justify-between mb-4">
+              <div className="mb-2 flex items-start justify-between">
                 <div className="min-w-0 pr-12">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Font Family</p>
                   <h3 className="mt-1 max-w-full truncate font-semibold text-zinc-900" title={family}>
@@ -454,7 +495,7 @@ export default function FontExtractor({
                     {format} · {weight} · {style}
                   </p>
                   <span
-                    className={`mt-2 inline-flex rounded-full border px-2 py-1 text-[11px] font-semibold ${sourceVerifier.className}`}
+                    className={`mt-1.5 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${sourceVerifier.className}`}
                     title={sourceVerifier.hint}
                   >
                     {sourceVerifier.label}
@@ -462,30 +503,56 @@ export default function FontExtractor({
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="mt-2 flex flex-col gap-1.5">
                 <div className="block w-full overflow-hidden rounded-xl text-left">
                   <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
                 </div>
-                <div onClick={(event) => event.stopPropagation()} className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                  <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                    Font converter
-                  </label>
-                  <select
-                    value={selectedFormat}
-                    onChange={(event) => setFontFormat(font, event.target.value as FontDownloadFormat)}
-                    className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
-                    aria-label={`Choose download format for ${family}`}
-                  >
-                    {availableFormats.map((option) => {
-                      const optionTarget = resolveFontTargetFormat(font, option);
-                      const optionLabel = option === 'original' ? resolveFontSourceFormat(font).toUpperCase() : optionTarget.toUpperCase();
-                      return (
-                        <option key={option} value={option}>
-                          {optionLabel}
-                        </option>
-                      );
-                    })}
-                  </select>
+                <div onClick={(event) => event.stopPropagation()} className="rounded-xl border border-zinc-200 bg-zinc-50 p-2.5">
+                  <div className="flex items-center justify-between gap-2 border-b border-zinc-200 pb-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-zinc-900">Fix vertical metrics</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={cardFixVerticalMetrics}
+                      onClick={() =>
+                        setFontVerticalMetrics((current) => ({
+                          ...current,
+                          [selectionKey]: !cardFixVerticalMetrics,
+                        }))
+                      }
+                      className={`inline-flex h-7 w-14 shrink-0 items-center rounded-lg border px-1 transition-colors ${
+                        cardFixVerticalMetrics
+                          ? 'justify-start border-emerald-600 bg-emerald-600 text-white'
+                          : 'justify-end border-zinc-300 bg-white text-zinc-700'
+                      }`}
+                    >
+                      <span className="w-1/2 text-center text-xs font-semibold">{cardFixVerticalMetrics ? 'On' : 'Off'}</span>
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Download formats</p>
+                  <div className="mt-1.5 flex flex-wrap gap-2.5">
+                    {FONT_DOWNLOAD_FORMATS.map((formatOption) => (
+                      <label key={formatOption} className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-zinc-800">
+                        <input
+                          type="checkbox"
+                          checked={cardFormats.includes(formatOption)}
+                          onChange={() =>
+                            setFontFormats((current) => {
+                              const active = current[selectionKey] || FONT_DOWNLOAD_FORMATS;
+                              const next = active.includes(formatOption)
+                                ? active.filter((item) => item !== formatOption)
+                                : [...active, formatOption];
+                              return { ...current, [selectionKey]: next };
+                            })
+                          }
+                          className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        {formatOption.toUpperCase()}
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div className="flex gap-2 w-full">
                   <button
@@ -493,24 +560,24 @@ export default function FontExtractor({
                       event.stopPropagation();
                       handleDownload(font);
                     }}
-                    disabled={downloading === selectionKey}
-                    className="flex w-full items-center justify-center gap-2 bg-zinc-900 text-white px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    disabled={downloading === selectionKey || cardFormats.length === 0}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {downloading === selectionKey ? (
-                      <span className="animate-pulse">{downloadingLabel || `${selectedTargetFormat.toUpperCase()} initiated...`}</span>
+                      <span className="animate-pulse">{downloadingLabel || 'Downloading...'}</span>
                     ) : (
                       <>
                         <Download className="w-4 h-4" />
-                        Download {selectedTargetFormat.toUpperCase()}
+                        Download
                       </>
                     )}
                   </button>
                 </div>
                 <div
                   onClick={(event) => event.stopPropagation()}
-                  className="rounded-xl border border-zinc-200 bg-white p-3"
+                  className="rounded-xl border border-zinc-200 bg-white p-2.5"
                 >
-                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
                     Original font URL
                   </p>
                   <div className="flex items-center gap-2">
@@ -518,7 +585,7 @@ export default function FontExtractor({
                       href={String(font?.url || resolveFontAssetUrl(font) || '#')}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="min-w-0 flex-1 truncate rounded-lg bg-zinc-50 px-3 py-2 text-xs font-medium text-blue-700 hover:text-blue-800 hover:underline"
+                      className="min-w-0 flex-1 truncate rounded-lg bg-zinc-50 px-2.5 py-1.5 text-[11px] font-medium text-blue-700 hover:text-blue-800 hover:underline"
                       title={String(font?.url || resolveFontAssetUrl(font) || '')}
                     >
                       {String(font?.url || resolveFontAssetUrl(font) || 'No source URL')}
@@ -526,7 +593,7 @@ export default function FontExtractor({
                     <button
                       type="button"
                       onClick={() => void copyOriginalFontUrl(font)}
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
                       title="Copy original font URL"
                       aria-label="Copy original font URL"
                     >
@@ -537,16 +604,13 @@ export default function FontExtractor({
                       )}
                     </button>
                   </div>
-                  <p className="mt-2 text-[11px] leading-4 text-zinc-500">
-                    If local conversion does not install correctly, copy this URL and convert it with Transfonter.
-                  </p>
                 </div>
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
                     handleSearch(getReadableFontLabel(font));
                   }}
-                  className="w-full flex items-center justify-center gap-2 bg-zinc-100 text-zinc-700 px-4 py-2.5 rounded-xl font-medium text-sm hover:bg-zinc-200 transition-colors"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-200"
                 >
                   <Search className="w-4 h-4" />
                   Find on Web

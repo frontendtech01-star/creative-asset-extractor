@@ -10,6 +10,7 @@ type WsEvent =
   | { type: 'error'; message: string };
 
 export type ExtractionProgress = {
+  extractId: string;
   phase: WebsiteExtractPhase;
   task: string;
   counters: WebsiteExtractCounters;
@@ -19,8 +20,9 @@ export type ExtractionProgress = {
   result: any;
 };
 
-export function useExtractionProgress(active: boolean) {
+export function useExtractionProgress(active: boolean, extractId = '') {
   const [progress, setProgress] = useState<ExtractionProgress>({
+    extractId: '',
     phase: 'loading',
     task: 'Starting extraction...',
     counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
@@ -32,10 +34,11 @@ export function useExtractionProgress(active: boolean) {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !extractId) {
       wsRef.current?.close();
       wsRef.current = null;
       setProgress({
+        extractId: '',
         phase: 'loading',
         task: 'Starting extraction...',
         counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
@@ -48,10 +51,22 @@ export function useExtractionProgress(active: boolean) {
     }
 
     const origin = resolveAppOrigin();
-    const wsUrl = `${origin.replace(/^http/, 'ws')}/ws/extract`;
+    const wsUrl = `${origin.replace(/^http/, 'ws')}/ws/extract?extractId=${encodeURIComponent(extractId)}`;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let closed = false;
+    let finished = false;
+
+    setProgress({
+      extractId,
+      phase: 'loading',
+      task: 'Starting extraction...',
+      counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
+      complete: false,
+      error: null,
+      connected: false,
+      result: null,
+    });
 
     const connect = () => {
       if (closed) return;
@@ -77,10 +92,21 @@ export function useExtractionProgress(active: boolean) {
                 next.counters = { ...prev.counters, ...data.counters };
                 break;
               case 'complete':
+                finished = true;
                 next.complete = true;
                 next.result = data.result;
+                // A client may connect after scanning has finished and receive
+                // only the terminal result. Always derive the displayed final
+                // counts from that authoritative payload.
+                next.counters = {
+                  images: Array.isArray(data.result?.images) ? data.result.images.length : 0,
+                  videos: Array.isArray(data.result?.videos) ? data.result.videos.length : 0,
+                  fonts: Array.isArray(data.result?.fonts) ? data.result.fonts.length : 0,
+                  colors: Array.isArray(data.result?.colors) ? data.result.colors.length : 0,
+                };
                 break;
               case 'error':
+                finished = true;
                 next.error = data.message;
                 next.complete = true;
                 break;
@@ -94,7 +120,7 @@ export function useExtractionProgress(active: boolean) {
 
       ws.onclose = () => {
         setProgress((prev) => ({ ...prev, connected: false }));
-        if (!closed) {
+        if (!closed && !finished) {
           reconnectTimer = setTimeout(connect, 2000);
         }
       };
@@ -114,7 +140,7 @@ export function useExtractionProgress(active: boolean) {
       ws?.close();
       wsRef.current = null;
     };
-  }, [active]);
+  }, [active, extractId]);
 
   return progress;
 }

@@ -13,6 +13,8 @@ import {
   resolveZipRasterTargetFormat,
   getImageSourceFormat,
 } from '../lib/imageAsset';
+import { useBackendImageCacheWarm } from '../lib/useBackendImageCacheWarm';
+import { useImageThumbWarm } from '../lib/useImageThumbWarm';
 
 const getImageSequenceFrame = (img: any) => {
   const url = String(img?.url || '').trim();
@@ -123,10 +125,33 @@ const duplicateImageGroupKey = (img: any) => {
   }
 };
 
-const loadedPreviewArea = (preview?: PreviewState[string]) =>
+const loadedPreviewArea = (preview?: { width?: number; height?: number } | null) =>
   Math.max(0, Number(preview?.width || 0)) * Math.max(0, Number(preview?.height || 0));
 
-const keepLargestVisibleImages = (items: any[], previewState: PreviewState) => {
+const imageAreaScore = (
+  img: any,
+  previewState: PreviewState,
+  fetchedMeta: Record<string, { format?: string; dimensions?: string; size?: string }>,
+  thumbMeta: Record<string, { width?: number; height?: number; bytes?: number; format?: string }>
+) => {
+  const key = getImageAssetKey(img);
+  const previewArea = loadedPreviewArea(previewState[key]);
+  if (previewArea > 0) return previewArea;
+  const thumbArea = loadedPreviewArea(thumbMeta[key]);
+  if (thumbArea > 0) return thumbArea;
+  const extractedArea = Math.max(0, Number(img?.width || 0)) * Math.max(0, Number(img?.height || 0));
+  if (extractedArea > 0) return extractedArea;
+  const dims = String(fetchedMeta[key]?.dimensions || '').match(/(\d+)[×x](\d+)/i);
+  if (dims) return Math.max(0, Number(dims[1] || 0)) * Math.max(0, Number(dims[2] || 0));
+  return 0;
+};
+
+const keepLargestVisibleImages = (
+  items: any[],
+  previewState: PreviewState,
+  fetchedMeta: Record<string, { format?: string; dimensions?: string; size?: string }>,
+  thumbMeta: Record<string, { width?: number; height?: number; bytes?: number; format?: string }>
+) => {
   const chosen = new Map<string, any>();
   const order = new Map<string, number>();
   items.forEach((img, index) => {
@@ -137,8 +162,8 @@ const keepLargestVisibleImages = (items: any[], previewState: PreviewState) => {
       chosen.set(key, img);
       return;
     }
-    const nextArea = loadedPreviewArea(previewState[getImageAssetKey(img)]);
-    const currentArea = loadedPreviewArea(previewState[getImageAssetKey(current)]);
+    const nextArea = imageAreaScore(img, previewState, fetchedMeta, thumbMeta);
+    const currentArea = imageAreaScore(current, previewState, fetchedMeta, thumbMeta);
     if (nextArea > currentArea) chosen.set(key, img);
   });
   return [...chosen.entries()]
@@ -184,7 +209,7 @@ export default function ImageExtractor({
   saveKind?: 'image' | 'icon';
   title?: string;
   onValidCountChange?: (count: number) => void;
-  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string }) => void;
+  onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
 }) {
   React.useEffect(() => {
     onValidCountChange?.(images.length);
@@ -201,6 +226,8 @@ export default function ImageExtractor({
   const [copiedSequenceLabel, setCopiedSequenceLabel] = useState('');
 
   const orderedImages = useMemo(() => sortImagesForDisplay(images), [images]);
+  const { displayImages: warmedImages } = useBackendImageCacheWarm(orderedImages, sourcePageUrl);
+  const thumbMetaByKey = useImageThumbWarm(warmedImages, sourcePageUrl);
 
   const saveDataImage = async (dataUrl: string, filename: string) => {
     const comma = dataUrl.indexOf(',');
@@ -243,6 +270,7 @@ export default function ImageExtractor({
           detail: `${savedName} is ready in Downloads.`,
           target: 'images',
           sourcePageUrl: sourcePageUrl || undefined,
+          folderPath: saved?.folderPath,
         });
         return;
       }
@@ -263,6 +291,7 @@ export default function ImageExtractor({
         detail: `${filename} is ready in Downloads.`,
         target: 'images',
         sourcePageUrl: sourcePageUrl || undefined,
+        folderPath: result?.folderPath,
       });
     } catch (error: any) {
       console.error('Download error:', error);
@@ -326,6 +355,7 @@ export default function ImageExtractor({
         detail: `${addedCount} selected image${addedCount === 1 ? '' : 's'} saved as ${result.filename || 'selected-images.zip'}.`,
         target: 'images',
         sourcePageUrl: sourcePageUrl || undefined,
+        folderPath: result?.folderPath,
       });
       setSelected(new Set());
     } catch (error: any) {
@@ -336,7 +366,7 @@ export default function ImageExtractor({
     }
   };
 
-  const filteredImages = useMemo(() => orderedImages.filter(img => {
+  const filteredImages = useMemo(() => warmedImages.filter(img => {
     const query = searchTerm.toLowerCase().trim();
     const haystack = [
       img.url,
@@ -348,13 +378,13 @@ export default function ImageExtractor({
       getImageSequenceFrame(img) ? '360 image sequence' : '',
     ].map((value) => String(value || '').toLowerCase()).join(' ');
     const matchesSearch = !query || haystack.includes(query);
-    const matchesFilter = filterType === 'all' || img.type.toLowerCase() === filterType.toLowerCase();
+    const matchesFilter = filterType === 'all' || String(img?.type || '').toLowerCase() === filterType.toLowerCase();
     return matchesSearch && matchesFilter;
-  }), [filterType, orderedImages, searchTerm]);
+  }), [filterType, warmedImages, searchTerm]);
 
   const previewableImages = hideFailedPreviewImages(filteredImages, previewState);
   const visibleImages = previewableImages.filter((img) => previewState[getImageAssetKey(img)]?.status === 'ready');
-  const displayImages = keepLargestVisibleImages(previewableImages, previewState);
+  const displayImages = keepLargestVisibleImages(previewableImages, previewState, fetchedMeta, thumbMetaByKey);
   const sequenceDisplayImages = displayImages.filter(isSequenceImage);
   const sequenceDisplayGroups = groupSequenceDisplayImages(sequenceDisplayImages);
   const sequenceKeys = new Set(sequenceDisplayImages.map(getImageAssetKey));
@@ -506,7 +536,13 @@ export default function ImageExtractor({
                 {frameInfo ? `Frame ${padFrame(frameInfo.frame, frameInfo.count)}` : filename}
               </p>
               <div className="mt-1 flex flex-wrap gap-1">
-                {[badges.format, badges.dimensions, badges.size].filter(Boolean).map((label) => (
+                {[
+                  thumbMetaByKey[key]?.format ? String(thumbMetaByKey[key]?.format).toUpperCase() : badges.format,
+                  thumbMetaByKey[key]?.width && thumbMetaByKey[key]?.height
+                    ? `${thumbMetaByKey[key]?.width}×${thumbMetaByKey[key]?.height}`
+                    : badges.dimensions,
+                  badges.size,
+                ].filter(Boolean).map((label) => (
                   <span key={label} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600">
                     {label}
                   </span>

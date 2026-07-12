@@ -94,7 +94,7 @@ try {
   await page.waitForFunction(
     () =>
       document.body?.innerText?.includes('Extract complete') ||
-      document.body?.innerText?.includes('Bulk Download Extracted Videos') ||
+      document.body?.innerText?.includes('Copy URL') ||
       /Videos\s+\d+/i.test(document.body?.innerText || ''),
     { timeout: 120000 }
   ).catch(async () => {
@@ -103,7 +103,7 @@ try {
   });
 
   await clickButtonByText(page, 'Videos');
-  await waitForText(page, 'Bulk Download Extracted Videos', 30000);
+  await waitForText(page, 'Copy URL', 30000);
 
   const result = await page.evaluate(() => {
     const visible = (el) => {
@@ -119,8 +119,13 @@ try {
         text: card.textContent || '',
       }));
     const bodyText = document.body?.innerText || '';
-    return { cards, bodyText };
+    const hasRemovedBulkPanel = bodyText.includes('Bulk Download Extracted Videos') || bodyText.includes('Download All Videos');
+    return { cards, bodyText, hasRemovedBulkPanel };
   });
+
+  if (result.hasRemovedBulkPanel) {
+    fail('Removed extracted-video bulk download UI is visible again');
+  }
 
   const unwantedPattern = /(?:\bswatch\b|publicApi|captions\.js|interFontFace|playPauseLoadingControl|hls_video|\/assets\/external\/x\b|^x$|\bmput\b|193d1b85787a70c44f4b0ede1967e369|b2sw1djdxd\.m3u8)/i;
   const unwantedCards = result.cards.filter((card) => unwantedPattern.test(`${card.title}\n${card.text}`));

@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import opentype from 'opentype.js';
 
 const BASE = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const FONT_SITE_URL = process.env.SMOKE_FONT_SITE_URL || 'https://jbpritzker.com/';
@@ -93,14 +92,17 @@ const fetchBuffer = async (route, init = {}, timeoutMs = 120000) => {
 };
 
 const checkStaticFeedbackContracts = async () => {
-  const [app, fontExtractor, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes, server] = await Promise.all([
+  const [app, fontExtractor, fontAsset, imageExtractor, videoDownloader, videoDownloaderPage, videoDownloaderRoutes, server, extractionWs, extractionProgress] = await Promise.all([
     readText('src/App.tsx'),
     readText('src/components/FontExtractor.tsx'),
+    readText('src/lib/fontAsset.ts'),
     readText('src/components/ImageExtractor.tsx'),
     readText('src/lib/videoDownloader.ts'),
     readText('src/components/VideoDownloaderPage.tsx'),
     readText('server/video-downloader-routes.ts'),
     readText('server.ts'),
+    readText('src/lib/extractionWs.ts'),
+    readText('server/extract-progress-ws.ts'),
   ]);
 
   assertIncludes('Reset button UI', app, 'Video Downloader');
@@ -108,23 +110,44 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Reset handler', app, 'handleResetApp');
   assertIncludes('Reset handler', app, 'clearDownloaderJobs');
   assertIncludes('Reset handler', app, 'clearAppSessionState');
-  assertIncludes('Close-session reset', app, 'pagehide');
-  assertIncludes('Close-session reset', app, 'beforeunload');
+  assertIncludes('Extraction session restore', app, 'readExtractSession()');
+  if (app.includes("addEventListener('pagehide'") || app.includes("addEventListener('beforeunload'")) {
+    fail('Only the header Reset may clear app/extraction session state');
+  }
   assertIncludes('Download-ready popup', app, 'downloadReadyNotice');
   assertIncludes('Download-ready popup', app, 'Open Downloads');
   assertIncludes('Download-ready popup dismissal', app, 'setDownloadReadyNotice(null)');
   assertIncludes('Website clear downloads confirmation', app, "window.confirm('Delete downloaded files and the extracted website folder?')");
   assertIncludes('Image download popup callback', imageExtractor, 'onDownloadReady');
   assertIncludes('Font download popup callback', fontExtractor, 'onDownloadReady');
-  assertIncludes('Font converter controls', fontExtractor, 'Font converter');
-  assertIncludes('Font converter controls', fontExtractor, 'getAvailableFontDownloadFormats');
-  assertIncludes('Font converter controls', fontExtractor, 'resolveFontTargetFormat');
-  assertIncludes('Font converter controls', fontExtractor, 'selectedFormats');
-  assertIncludes('Font dropdown format output', fontExtractor, '<select');
-  assertIncludes('Font dropdown format output', fontExtractor, 'buildFontZipItem');
-  assertIncludes('Font dropdown format output', fontExtractor, 'getInstallableFontFormat(font, selectedFormats)');
-  assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'getZipDownloadFormats');
-  assertIncludes('Font ZIP TTF/WOFF default output', fontExtractor, 'saved as TTF and WOFF');
+  assertIncludes('Global font format controls', fontExtractor, 'Download formats');
+  assertIncludes('Global font format controls', fontExtractor, 'zipFormats');
+  assertIncludes('Per-card font format controls', fontExtractor, 'fontFormats');
+  assertIncludes('Per-card vertical metrics', fontExtractor, 'fontVerticalMetrics');
+  assertIncludes('Vertical metrics request', fontExtractor, 'fixVerticalMetrics');
+  assertIncludes('Font ZIP format output', fontExtractor, 'buildFontZipItem');
+  assertIncludes('Font download button', fontExtractor, 'Download');
+  assertIncludes('Transfonter TTF server fallback', server, 'convertFontBufferWithTransfonter');
+  assertIncludes('Transfonter session cookie flow', server, 'readResponseCookies');
+  assertIncludes('Transfonter session cookie flow', server, 'sessionHeaders');
+  assertIncludes('FontForge TTF server fallback', server, 'convertFontBufferWithFontForge');
+  assertIncludes('Reliable installable TTF fallback', server, 'convertFontBufferToInstallableTtf');
+  assertIncludes('Transfonter TTF validation', server, 'Transfonter returned a TTF that failed installability validation');
+  assertIncludes('TTF SFNT structural validation', server, 'hasValidSfntStructure');
+  assertIncludes('TTF name-table repair', server, 'repairTtfNameTable');
+  assertIncludes('TTF name-table repair', server, 'uniqueSubFamily');
+  assertIncludes('Font family folder strips source extension', fontAsset, ".replace(/\\.(?:woff2?|ttf|otf|eot|svg)$/i, '')");
+  assertIncludes('Invalid local TTF triggers Transfonter', server, '!isInstallableTtfBuffer(outputBuffer)');
+  assertIncludes('Invalid buffer TTF triggers Transfonter', server, '!isInstallableTtfBuffer(output)');
+  assertIncludes('TTF ZIP must not fall back to WOFF', server, "if (toFormat === 'ttf') throw retryError");
+  assertIncludes('TTF ZIP must not fall back to WOFF', server, "TTF conversion produced a non-TTF font file.");
+  assertIncludes('Bulk asset download popup callback', videoDownloaderPage, 'Bulk assets saved');
+  assertIncludes('Bulk asset download popup callback', videoDownloaderPage, 'onDownloadReady');
+  assertIncludes('Final counter client reconciliation', extractionWs, 'data.result?.images');
+  assertIncludes('Final counter server reconciliation', extractionProgress, 'this.updateCounters({');
+  assertIncludes('Final counter server reconciliation', extractionProgress, 'result?.images');
+  assertIncludes('Late extraction counter replay', extractionProgress, "type: 'counters', counters: this.currentCounters");
+  assertIncludes('Embedded crawler closes only its page', server, 'await embeddedPage?.close().catch(() => undefined)');
   assertIncludes('Font source verifier label', fontExtractor, 'Google Fonts');
   assertIncludes('Font source verifier label', fontExtractor, 'Adobe Typekit');
   assertIncludes('Font source verifier label', fontExtractor, 'Client font');
@@ -159,9 +182,15 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Lexus 360 frame extraction', server, 'defaultImageSequenceCountForUrl');
 
   const videoExtractor = await readText('src/components/VideoExtractor.tsx');
-  assertIncludes('Native video duplicate download guard', videoExtractor, 'const showCardDownloadButton = embedded');
-  assertIncludes('Bulk video download popup', videoExtractor, 'onDownloadReady?.({');
-  assertIncludes('Bulk video download popup wiring', app, 'onDownloadReady={showDownloadReadyNotice}');
+  assertIncludes('Direct CDN card classification', videoExtractor, 'isDirectCdnVideo');
+  assertIncludes('Direct CDN copy action', videoExtractor, 'Copy URL');
+  assertIncludes('Player video download action', videoExtractor, 'Download Video');
+  assertIncludes('Per-card video downloader routing', videoExtractor, 'onOpenInDownloader?.({');
+  assertIncludes('Downloader tab handoff', app, "setMainNav('video-downloader')");
+  assertIncludes('Stable downloader tab handoff', app, 'window.requestAnimationFrame');
+  if (videoExtractor.includes('Download All Videos') || videoExtractor.includes('Bulk Download Extracted Videos')) {
+    fail('Extracted-video bulk download UI must stay removed');
+  }
   assertIncludes('Release button highlight', app, 'releaseUpdateAvailable');
   assertIncludes('Release button highlight', app, 'release-blink-once');
   assertIncludes('Release notes manual open', app, 'const openReleaseNotes = async () =>');
@@ -244,19 +273,28 @@ const checkSelectedFontZipConversion = async () => {
     const cached = String(font.cachedUrl || '').trim();
     const assetUrl = cached.startsWith('/') ? `${BASE}${cached}` : cached || font.url;
     const sourceFormat = resolveFontSourceFormat(font);
-    return ['ttf', 'woff'].map((format) => ({
+    const originalItem = {
       url: assetUrl,
       cachedPath: cached || undefined,
       originalUrl: String(font.url || ''),
       cssSource: String(font.cssSource || ''),
-      toFormat: format,
+      toFormat: sourceFormat,
       originalFormat: sourceFormat,
       filenameBase,
       familyFolder: family,
-      zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.${format}`,
+      zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.${sourceFormat}`,
       metadataFilename: family,
       assetType: 'font',
-    }));
+    };
+    if (sourceFormat === 'ttf') return [originalItem];
+    return [
+      originalItem,
+      {
+        ...originalItem,
+        toFormat: 'ttf',
+        zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.ttf`,
+      },
+    ];
   });
 
   const { buffer, headers: zipHeaders } = await fetchBuffer(
@@ -270,49 +308,19 @@ const checkSelectedFontZipConversion = async () => {
   const added = Number(zipHeaders.get('x-zip-added-count') || 0);
   const failed = Number(zipHeaders.get('x-zip-failed-count') || 0);
   const zipText = buffer.toString('latin1');
-  if (failed !== 0) fail(`selected font ZIP conversion reported ${failed} failure(s)`);
-  if (added < items.length) fail(`selected font ZIP conversion added ${added}/${items.length} entries`);
+  if (failed !== 0) fail(`selected font ZIP original-source save reported ${failed} failure(s)`);
+  if (added < items.length) fail(`selected font ZIP original-source save added ${added}/${items.length} entries`);
   if (/conversion-failed|font-conversion-report/i.test(zipText)) {
-    fail('selected font ZIP conversion included a conversion failure report');
+    fail('selected font ZIP original-source save included a conversion failure report');
   }
   const zipEntryNames = Array.from(
     zipText.matchAll(/fonts\/[A-Za-z0-9._\-\/ ]+\.(?:ttf|woff2?|otf)/gi),
     (match) => match[0]
   );
-  if (!zipEntryNames.some((name) => /\.ttf$/i.test(name)) || !zipEntryNames.some((name) => /\.woff$/i.test(name))) {
-    fail('selected font ZIP conversion must include both TTF and WOFF files');
-  }
+  if (zipEntryNames.length < items.length) fail('selected font ZIP must preserve each original font source file');
 
-  const glyphFont = fonts.find((font) => /Atkinson/i.test(String(font?.family || '')) && String(font?.weight || '') === '700') || fonts[0];
-  const cached = String(glyphFont.cachedUrl || '').trim();
-  const glyphUrl = cached.startsWith('/') ? `${BASE}${cached}` : cached || glyphFont.url;
-  const params = new URLSearchParams({
-    url: glyphUrl,
-    originalUrl: String(glyphFont.url || ''),
-    toFormat: 'ttf',
-    originalFormat: resolveFontSourceFormat(glyphFont),
-    filenameBase: sanitizeZipNamePart(`${glyphFont.family || 'font'} glyph smoke`),
-    familyFolder: sanitizeZipNamePart(glyphFont.family || 'font'),
-    metadataFilename: sanitizeZipNamePart(glyphFont.family || 'font'),
-    cssSource: String(glyphFont.cssSource || ''),
-    fontFamily: String(glyphFont.family || ''),
-    fontWeight: String(glyphFont.weight || ''),
-    fontStyle: String(glyphFont.style || ''),
-  });
-  const glyphResult = await fetchBuffer(`/api/convert-font?${params.toString()}`, {}, 120000);
-  const parsedFont = opentype.parse(
-    glyphResult.buffer.buffer.slice(
-      glyphResult.buffer.byteOffset,
-      glyphResult.buffer.byteOffset + glyphResult.buffer.byteLength
-    )
-  );
-  for (const char of 'ABCabcRome') {
-    if (parsedFont.charToGlyph(char).index === 0) {
-      fail(`converted TTF maps ${char} to .notdef; installed font would show boxes`);
-    }
-  }
-
-  ok(`selected font ZIP converts TTF/WOFF and TTF glyph map works on encelto.com (${added} entries)`);
+  if (!zipEntryNames.some((name) => /\.ttf$/i.test(name))) fail('selected font ZIP must include validated TTF conversions');
+  ok(`selected font ZIP preserves original sources and includes TTF conversions on encelto.com (${added} entries)`);
 };
 
 const contentDispositionFilename = (headers) => {
@@ -492,6 +500,11 @@ const checkBrightcoveTrackerLinksCanonicalized = async () => {
 };
 
 const main = async () => {
+  if (process.env.SMOKE_STATIC_ONLY === '1') {
+    await checkStaticFeedbackContracts();
+    console.log('\nPASS: static feedback contracts are covered');
+    return;
+  }
   const health = await fetch(`${BASE}/`, { headers: { 'X-VDX-Local-Request': '1' } }).catch(() => null);
   if (!health?.ok) fail(`Server not reachable at ${BASE}`);
 

@@ -11,7 +11,7 @@ export const getFontConversionOutputs = (sourceFormat: string): FontZipOutputFor
   if (source === 'woff') return ['woff', 'ttf'];
   if (source === 'ttf') return ['ttf', 'woff'];
   if (source === 'otf') return ['otf', 'ttf', 'woff'];
-  return ['ttf', 'woff'];
+  return [];
 };
 
 export const buildFontZipEntryName = (filenameBase: string, format: string, familyFolder = '') => {
@@ -133,9 +133,18 @@ export const scoreFontRecord = (font: {
   format?: string;
   weight?: string | number;
   style?: string;
+  unicodeRange?: string;
   status?: string;
 }) => {
   let score = 0;
+  const unicodeRange = String(font?.unicodeRange || '').toUpperCase();
+  // Google Fonts emits several files with identical family/weight/style but
+  // different script subsets. Prefer the Basic Latin file so an installed
+  // font does not appear as Cyrillic/Greek glyphs in Font Book.
+  if (/U\+0000-00FF|U\+0020-007E|U\+0000-024F/.test(unicodeRange)) score += 80;
+  else if (/U\+0100-02|LATIN/.test(unicodeRange)) score += 50;
+  if (/U\+0400|U\+0460|U\+1C80|CYRILLIC/.test(unicodeRange)) score -= 35;
+  if (/U\+0370|GREEK/.test(unicodeRange)) score -= 25;
   const format = resolveFontSourceFormat(font);
   if (format === 'woff2') score += 30;
   else if (format === 'woff') score += 20;
@@ -292,11 +301,24 @@ export const sanitizeFontFilenameBase = (value: string) =>
   String(value || '')
     .trim()
     .replace(/^["']+|["']+$/g, '')
+    .replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '')
     .replace(/[/\\]+/g, '-')
     .replace(/[^\w .-]+/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 120);
+
+export const prettifyFontFamilyLabel = (value: string) => {
+  const cleaned = sanitizeFontFilenameBase(value);
+  if (!cleaned) return '';
+  const compactSlug = /^[a-z0-9]+(?:[-_][a-z0-9]+)+$/;
+  if (!compactSlug.test(cleaned)) return cleaned;
+  return cleaned
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
 
 const FONT_WEIGHT_LABELS: Record<number, string> = {
   100: 'Thin',
@@ -312,7 +334,7 @@ const FONT_WEIGHT_LABELS: Record<number, string> = {
 
 export const normalizeFontWeightLabel = (weight: string | number | undefined) => {
   const raw = String(weight || '').trim().toLowerCase();
-  if (!raw || raw === 'normal' || raw === 'regular' || raw === '400') return '';
+  if (!raw || raw === 'normal' || raw === 'regular' || raw === '400') return 'Regular';
   if (/^\d+$/.test(raw)) {
     const num = Number(raw);
     return FONT_WEIGHT_LABELS[num] || '';
@@ -339,6 +361,7 @@ export const buildFontDisplayName = (font: {
     String(font?.filename || '').trim(),
   ]
     .map((value) => sanitizeFontFilenameBase(value.replace(/^["']+|["']+$/g, '')))
+    .map(prettifyFontFamilyLabel)
     .filter((value) => value && !isJunkFontLabel(value));
 
   const family = familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || '';
@@ -361,11 +384,20 @@ export const getFontFamilyFolderName = (font: {
   weight?: string | number;
   style?: string;
 }) => {
-  const explicitFamily = sanitizeFontFilenameBase(String(font?.family || '').replace(/^["']+|["']+$/g, ''));
-  if (explicitFamily && !isJunkFontLabel(explicitFamily)) return explicitFamily;
+  const explicitFamily = prettifyFontFamilyLabel(String(font?.family || '').replace(/^["']+|["']+$/g, ''));
+  const explicitVariant = explicitFamily.match(
+    /^(.+?)[-](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(?:Italic)?$/i
+  );
+  const explicitBaseFamily = sanitizeFontFilenameBase(explicitVariant?.[1] || '');
+  if (explicitBaseFamily && !isJunkFontLabel(explicitBaseFamily)) return explicitBaseFamily;
+
+  const identity = resolveFontIdentityFields(font);
+  const resolvedFamily = prettifyFontFamilyLabel(identity.family);
+  if (resolvedFamily && !isJunkFontLabel(resolvedFamily)) return resolvedFamily;
 
   const candidates = [font?.title, font?.name, font?.filename]
     .map((value) => sanitizeFontFilenameBase(String(value || '').replace(/^["']+|["']+$/g, '')))
+    .map(prettifyFontFamilyLabel)
     .filter((value) => value && !isJunkFontLabel(value));
   const family = candidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0];
   if (family) return family;
@@ -390,6 +422,7 @@ export const mergeFontRecords = (left: any, right: any) => {
   const family =
     familyCandidates
       .map((value) => sanitizeFontFilenameBase(String(value || '').replace(/^["']+|["']+$/g, '')))
+      .map(prettifyFontFamilyLabel)
       .filter((value) => value && !isJunkFontLabel(value))
       .sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || left.family || right.family || 'Font';
 
@@ -494,12 +527,8 @@ export const buildFontZipItem = (font: any, toFormat: FontZipOutputFormat, filen
   };
 };
 
-/** ZIP keeps the extracted source font by default. Bulk conversion can be slow on Typekit/Google fonts. */
+/** ZIP creates the user-facing converted formats only: WOFF + installable TTF. */
 export const buildFontZipItems = (font: any, filenameBase?: string) => {
   const base = filenameBase || getFontFilenameBase(font);
-  const source = resolveFontSourceFormat(font);
-  const target = FONT_ZIP_OUTPUT_FORMATS.includes(source as FontZipOutputFormat)
-    ? (source as FontZipOutputFormat)
-    : 'woff2';
-  return [buildFontZipItem(font, target, base)];
+  return (['woff', 'ttf'] as FontZipOutputFormat[]).map((format) => buildFontZipItem(font, format, base));
 };
