@@ -264,7 +264,7 @@ export function RecentRows({
           </button>
         ) : null}
       </div>
-      <div className="divide-y divide-zinc-100">
+      <div className="max-h-[16rem] divide-y divide-zinc-100 overflow-y-auto pr-1">
         {rows.map((item) => (
           <div key={item.id} className="group flex items-center gap-3 py-2">
             {item.faviconUrl ? <img src={item.faviconUrl} className="h-5 w-5 rounded" alt="" /> : <span className="h-5 w-5 rounded bg-zinc-100" />}
@@ -297,11 +297,10 @@ export function PinnedBookmarks({
 }) {
   const pins = (store?.bookmarks || [])
     .filter((bookmark) => bookmark.favorite && (!category || bookmark.category === category))
-    .sort((a, b) => a.sortIndex - b.sortIndex)
-    .slice(0, 12);
+    .sort((a, b) => a.sortIndex - b.sortIndex);
   if (!pins.length) return null;
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-2">
       {pins.map((bookmark) => (
         <button
           key={bookmark.id}
@@ -400,16 +399,16 @@ export function BookmarkManagerModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 px-5 py-4">
           <div>
             <h2 className="text-lg font-bold text-zinc-900">Bookmark Manager</h2>
             <p className="text-xs text-zinc-500">Local bookmarks, folders, recents, and Chrome-compatible import/export.</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><X className="h-5 w-5" /></button>
         </div>
-        <div className="grid max-h-[calc(90vh-4rem)] grid-cols-1 overflow-hidden md:grid-cols-[220px,1fr]">
-          <aside className="border-r border-zinc-200 bg-zinc-50 p-4">
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[220px,1fr]">
+          <aside className="overflow-y-auto border-r border-zinc-200 bg-zinc-50 p-4">
             <button
               type="button"
               onClick={async () => {
@@ -450,7 +449,7 @@ export function BookmarkManagerModal({
               </label>
             </div>
           </aside>
-          <section className="overflow-y-auto p-4">
+          <section className="min-h-0 overflow-y-auto p-4">
             <div className="mb-4 flex flex-col gap-2 sm:flex-row">
               <input
                 ref={inputRef}
