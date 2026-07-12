@@ -71,7 +71,7 @@ export function AppMenu({
   const items = [
     { label: 'Latest Release Notes', handler: onReleaseNotesAndUpdates, icon: FileText, highlight: releaseUpdateAvailable },
     { label: 'Feedback', handler: onFeedback, icon: MessageSquare },
-    { label: 'Your Bookmarks', handler: onBookmarks, icon: Star },
+    { label: 'My Bookmarks', handler: onBookmarks, icon: Star },
     { label: 'Keyboard Shortcuts', handler: onKeyboardShortcuts, icon: Keyboard },
   ];
 

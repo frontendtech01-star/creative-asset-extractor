@@ -83,15 +83,16 @@ export function LatestReleaseModal({
                 <div className="mt-4 space-y-2 rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
                   <p className="font-medium text-zinc-900">Beta Release</p>
                   <ul className="list-disc space-y-1 pl-5 text-zinc-700">
-                    <li>Extract images, fonts, colors and videos from websites.</li>
+                    <li>Website Extractor pulls images, SVG icons, fonts, videos and primary colors from the opened Chrome page.</li>
+                    <li>Image/Video Downloader keeps video downloads and bulk image/font ZIP downloads separate.</li>
                     <li>Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.</li>
-                    <li>Image/Video Downloader supports separate video downloads and bulk image/font asset ZIP downloads.</li>
-                    <li>Bulk downloader supports image links, font links, and Google/Typekit/Client Fonts CSS links.</li>
-                    <li>Save fast, Mac-compatible 1080p H.264 video files.</li>
-                    <li>Filters blank or encoded website player cards such as Apple placeholder players.</li>
-                    <li>Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.</li>
-                    <li>Speeds up repeated video checks with cached downloader inspection results.</li>
-                    <li>Cancel active downloads and clear downloaded platform folders.</li>
+                    <li>Saves fast, Mac-compatible 1080p H.264 video files by default.</li>
+                    <li>Bulk asset downloader accepts image links, font links and Google/Typekit/Client Fonts CSS links.</li>
+                    <li>Font downloads support WOFF and TTF output, with vertical metrics fixing enabled during conversion.</li>
+                    <li>Preserves SVG downloads as Illustrator-friendly editable SVG files, including inline SVG captures where available.</li>
+                    <li>Filters blank, tracker, segment and encoded website player cards.</li>
+                    <li>Bookmarks, recent searches and pinned quick access are stored locally and survive app restarts.</li>
+                    <li>Keyboard shortcuts are available for extraction, reset, bookmarking, navigation and output-folder access.</li>
                   </ul>
                   <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                     <button

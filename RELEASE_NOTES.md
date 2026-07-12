@@ -6,17 +6,17 @@
 
 ## Features and capabilities
 
-- Extract images, fonts, colors and videos from websites.
-- Download social videos from YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.
-- Supports Google/Typekit/Client Fonts CSS font downloads in the bulk download section.
-- Save fast, Mac-compatible 1080p H.264 videos.
+- Website Extractor pulls images, SVG icons, fonts, videos and primary colors from the opened Chrome page.
+- Image/Video Downloader keeps video downloads and bulk image/font ZIP downloads separate.
+- Video downloader supports YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, Wistia and iSpot.tv.
+- Saves fast, Mac-compatible 1080p H.264 video files by default.
+- Bulk asset downloader accepts image links, font links and Google/Typekit/Client Fonts CSS links.
+- Font downloads support WOFF and TTF output, with vertical metrics fixing enabled during conversion.
+- Preserves SVG downloads as Illustrator-friendly editable SVG files, including inline SVG captures where available.
 - Filters blank, tracker, segment and encoded website player cards.
-- Preserves SVG downloads as Illustrator-friendly editable SVG files.
-- Keeps extracted font ZIP downloads fast by saving the fetched webfont format directly.
 - Gives Chromium a short settle wait so loader-heavy pages can finish images, fonts and content before extraction.
-- Supports optional proxy-assisted website extraction when needed.
-- Keeps browser extraction focused on the website tab instead of leaving a blank Chrome tab open.
-- Cancel active downloads and clear downloaded files with their platform folders.
+- Bookmarks, recent searches and pinned quick access are stored locally and survive app restarts.
+- Keyboard shortcuts are available for extraction, reset, bookmarking, navigation and output-folder access.
 - Install the app from the Mac DMG.
 
 ## Open on macOS
