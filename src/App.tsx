@@ -949,7 +949,9 @@ export default function App() {
 
   const openFolder = async (target = 'downloads', sourcePageUrl?: string, folderPath?: string) => {
     try {
-      await apiFetch('/api/open-folder', {
+      const bridge = getDesktopBridge();
+      if (bridge && folderPath && await bridge.openFolderPath(folderPath)) return true;
+      const response = await apiFetch('/api/open-folder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -958,14 +960,24 @@ export default function App() {
           folderPath: folderPath || undefined,
         }),
       });
+      if (!response.ok) throw new Error('Folder could not be opened.');
+      return true;
     } catch {
       // Browsers do not expose download folders directly; keep this as a best-effort local shortcut.
+      return false;
     }
   };
 
   const openDownloadsFromNotice = async (notice: DownloadReadyNotice) => {
-    setDownloadReadyNotice(null);
-    await openFolder(notice.target, notice.sourcePageUrl || extractedUrl || url, notice.folderPath);
+    const opened = await openFolder(notice.target, notice.sourcePageUrl || extractedUrl || url, notice.folderPath);
+    if (opened) {
+      setDownloadReadyNotice(null);
+      return;
+    }
+    setDownloadReadyNotice({
+      ...notice,
+      detail: `${notice.detail ? `${notice.detail} ` : ''}Could not open Finder. The files are still saved in Downloads.`,
+    });
   };
 
   const showDownloadReadyNotice = (notice: DownloadReadyNotice) => {

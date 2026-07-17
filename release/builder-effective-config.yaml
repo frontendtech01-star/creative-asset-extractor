@@ -26,6 +26,65 @@ files:
       - node_modules/readdir-glob/**/*
       - node_modules/graceful-fs/**/*
       - node_modules/fonteditor-core/**/*
+      - node_modules/puppeteer/**/*
+      - node_modules/puppeteer-core/**/*
+      - node_modules/@puppeteer/**/*
+      - node_modules/chromium-bidi/**/*
+      - node_modules/cosmiconfig/**/*
+      - node_modules/devtools-protocol/**/*
+      - node_modules/typed-query-selector/**/*
+      - node_modules/webdriver-bidi-protocol/**/*
+      - node_modules/debug/**/*
+      - node_modules/ms/**/*
+      - node_modules/ws/**/*
+      - node_modules/extract-zip/**/*
+      - node_modules/progress/**/*
+      - node_modules/proxy-agent/**/*
+      - node_modules/tar-fs/**/*
+      - node_modules/yargs/**/*
+      - node_modules/semver/**/*
+      - node_modules/get-stream/**/*
+      - node_modules/yauzl/**/*
+      - node_modules/fd-slicer/**/*
+      - node_modules/pend/**/*
+      - node_modules/agent-base/**/*
+      - node_modules/http-proxy-agent/**/*
+      - node_modules/https-proxy-agent/**/*
+      - node_modules/socks-proxy-agent/**/*
+      - node_modules/pac-proxy-agent/**/*
+      - node_modules/pac-resolver/**/*
+      - node_modules/lru-cache/**/*
+      - node_modules/degenerator/**/*
+      - node_modules/netmask/**/*
+      - node_modules/ast-types/**/*
+      - node_modules/escodegen/**/*
+      - node_modules/esprima/**/*
+      - node_modules/estraverse/**/*
+      - node_modules/esutils/**/*
+      - node_modules/smart-buffer/**/*
+      - node_modules/socks/**/*
+      - node_modules/b4a/**/*
+      - node_modules/events-universal/**/*
+      - node_modules/fast-fifo/**/*
+      - node_modules/streamx/**/*
+      - node_modules/tar-stream/**/*
+      - node_modules/y18n/**/*
+      - node_modules/cliui/**/*
+      - node_modules/escalade/**/*
+      - node_modules/get-caller-file/**/*
+      - node_modules/require-directory/**/*
+      - node_modules/string-width/**/*
+      - node_modules/yargs-parser/**/*
+      - node_modules/wrap-ansi/**/*
+      - node_modules/emoji-regex/**/*
+      - node_modules/is-fullwidth-code-point/**/*
+      - node_modules/strip-ansi/**/*
+      - node_modules/ansi-regex/**/*
+      - node_modules/env-paths/**/*
+      - node_modules/import-fresh/**/*
+      - node_modules/js-yaml/**/*
+      - node_modules/parse-json/**/*
+      - node_modules/path-type/**/*
       - node_modules/sharp/**/*
       - node_modules/@img/**/*
 asarUnpack:

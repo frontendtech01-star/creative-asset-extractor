@@ -4102,8 +4102,17 @@ var buildChromeTabAssetCaptureScript = () => `
   Array.from(document.querySelectorAll('svg image')).forEach((el) => {
     addImage(el.getAttribute('href') || el.getAttribute('xlink:href'));
   });
+  Array.from(document.querySelectorAll('svg use')).forEach((el) => {
+    const href = el.getAttribute('href') || el.getAttribute('xlink:href');
+    if (href && !href.startsWith('#')) addImage(href, { source: 'external-svg-symbol' });
+  });
   Array.from(document.querySelectorAll('svg')).forEach((svg, index) => {
     try {
+      const externalUse = Array.from(svg.querySelectorAll('use')).some((use) => {
+        const href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
+        return href && !href.startsWith('#');
+      });
+      if (externalUse) return;
       const clone = svg.cloneNode(true);
       if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       const svgText = new XMLSerializer().serializeToString(clone);
@@ -5131,7 +5140,7 @@ app.get("/api/system-check", async (_req, res) => {
 var resolveUrl = (base, relative) => {
   try {
     const url = new URL2(relative, base);
-    url.hash = "";
+    if (!/\.svg$/i.test(url.pathname)) url.hash = "";
     return url.href;
   } catch (e) {
     return null;
@@ -6096,15 +6105,16 @@ var sanitizeExtractedImageUrl = (value) => {
   const cleaned = decodeCssUrlValue(value).trim();
   const extMatch = cleaned.match(/^([^"'()<>\s;]+(?:\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'()<>\s;?]+)*)?)(\?[^"'()\s;>]*)?/i);
   if (extMatch?.[1]) {
-    const base = extMatch[1];
+    const base = extMatch[1].split("#")[0];
     const query = extMatch[2] || "";
     if (!/\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[/?#])/i.test(base)) {
       return cleaned.replace(/[);,\s]+$/g, "");
     }
+    const svgFragment = /\.svg(?:$|[/?#])/i.test(base) ? cleaned.match(/(#[A-Za-z_][\w:.-]*)\s*$/)?.[1] || "" : "";
     if (query && PRESERVE_IMAGE_QUERY_KEYS.test(query)) {
-      return `${base}${query}`;
+      return `${base}${query}${svgFragment}`;
     }
-    return base;
+    return `${base}${svgFragment}`;
   }
   return cleaned.replace(/[);,\s]+$/g, "");
 };
@@ -6172,6 +6182,35 @@ ${svg}`;
   return Buffer.from(`${svg.trim()}
 `, "utf8");
 };
+var materializeSvgFragmentForIllustrator = (buffer, sourceUrl = "") => {
+  if (!buffer?.length || detectImageFormatFromBuffer(buffer) !== "svg") return buffer;
+  let fragment = "";
+  try {
+    fragment = decodeURIComponent(new URL2(String(sourceUrl || "")).hash.slice(1));
+  } catch {
+    fragment = String(sourceUrl || "").match(/#([^#?]+)$/)?.[1] || "";
+  }
+  if (!fragment) return normalizeSvgBufferForIllustrator(buffer);
+  try {
+    const $ = cheerio.load(buffer.toString("utf8"), { xmlMode: true });
+    const target = $("[id]").filter((_, el) => String($(el).attr("id") || "") === fragment).first();
+    if (!target.length) return normalizeSvgBufferForIllustrator(buffer);
+    const root = $("svg").first();
+    const viewBox = target.attr("viewBox") || root.attr("viewBox") || "";
+    const width = target.attr("width") || root.attr("width") || "";
+    const height = target.attr("height") || root.attr("height") || "";
+    const presentationAttrs = ["fill", "stroke", "color", "preserveAspectRatio"].map((name) => target.attr(name) ? ` ${name}="${escapeXmlAttribute(String(target.attr(name)))}"` : "").join("");
+    const shared = root.children("defs, style").map((_, el) => $.html(el)).get().join("");
+    const content = target.is("symbol") ? target.html() || "" : $.html(target);
+    const title = target.find("title").first().text().trim() || fragment.replace(/^sprite-/, "");
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve"${viewBox ? ` viewBox="${escapeXmlAttribute(viewBox)}"` : ""}${width ? ` width="${escapeXmlAttribute(width)}"` : ""}${height ? ` height="${escapeXmlAttribute(height)}"` : ""}${presentationAttrs}>${title && !/<title\b/i.test(content) ? `<title>${escapeXmlAttribute(title)}</title>` : ""}${shared}${content}</svg>
+`;
+    return normalizeSvgBufferForIllustrator(Buffer.from(svg.replace(/currentColor/gi, "#000000"), "utf8"));
+  } catch {
+    return normalizeSvgBufferForIllustrator(buffer);
+  }
+};
 var isLikelyImageAssetUrl = (url, contentType = "") => {
   const lowered = String(url || "").toLowerCase();
   if (!lowered || lowered.startsWith("blob:") || lowered.startsWith("javascript:")) return false;
@@ -6230,7 +6269,14 @@ var createImageAsset = (urlStr, baseUrl, meta = {}, options = {}) => {
   if (hasMalformedImageSequencePath(absoluteUrl)) return null;
   if (!isLikelyImageAssetUrl(absoluteUrl)) return null;
   const type = inferImageTypeFromUrl(absoluteUrl) || getAssetTypeFromUrl(absoluteUrl, "img");
-  const filename = filenameFromUrlPath2(absoluteUrl);
+  let filename = filenameFromUrlPath2(absoluteUrl);
+  if (type === "svg") {
+    try {
+      const fragment = decodeURIComponent(new URL2(absoluteUrl).hash.slice(1));
+      if (fragment) filename = `${sanitizeFilenameBase(fragment.replace(/^sprite-/, "")) || "svg-symbol"}.svg`;
+    } catch {
+    }
+  }
   return {
     url: absoluteUrl,
     type,
@@ -6381,6 +6427,10 @@ var LAZY_IMAGE_ATTRS = [
 var SRCSET_ATTRS = ["srcset", "data-srcset", "data-lazy-srcset"];
 var extractInlineSvgsFromDom = ($, images, options = {}) => {
   $("svg").each((index, el) => {
+    if ($(el).find("use").toArray().some((use) => {
+      const href = String($(use).attr("href") || $(use).attr("xlink:href") || "");
+      return href && !href.startsWith("#");
+    })) return;
     if (!$(el).attr("xmlns")) {
       $(el).attr("xmlns", "http://www.w3.org/2000/svg");
     }
@@ -8487,6 +8537,7 @@ var getCachedConvertedImage = async (url, requestedFormat, options) => {
     sourceFormat = bufferFormat;
   }
   const normalizedSource = normalizeRasterFormat(sourceFormat);
+  const preparedSourceBuffer = normalizedSource === "svg" ? materializeSvgFragmentForIllustrator(fetched.buffer, lookupUrl || normalizedUrl) : fetched.buffer;
   const defaultTarget = normalizedSource === "webp" ? "jpg" : normalizedSource === "avif" ? "png" : normalizedSource;
   const normalizedTarget = normalizeRasterFormat(requestedFormat || defaultTarget);
   filenameExtras.contentDisposition = fetched.contentDisposition || options?.prefetched?.contentDisposition;
@@ -8508,8 +8559,8 @@ var getCachedConvertedImage = async (url, requestedFormat, options) => {
       cached2 = null;
     }
     if (!cached2) {
-      await fsp3.writeFile(cachePath2, fetched.buffer);
-      cached2 = fetched.buffer;
+      await fsp3.writeFile(cachePath2, preparedSourceBuffer);
+      cached2 = preparedSourceBuffer;
     }
     const passthroughBuffer = cached2 || fetched.buffer;
     if (RASTER_CONVERTIBLE_FORMATS.has(normalizedSource)) {
@@ -8530,7 +8581,7 @@ var getCachedConvertedImage = async (url, requestedFormat, options) => {
   const cachePath = convertedImageCachePath(cacheKeyUrl, targetFormat);
   let cached = (await readValidatedConvertedImageCache(cacheKeyUrl, targetFormat))?.buffer || null;
   if (!cached) {
-    cached = await convertRasterImageBuffer(fetched.buffer, targetFormat);
+    cached = await convertRasterImageBuffer(preparedSourceBuffer, targetFormat);
     await fsp3.writeFile(cachePath, cached);
   }
   if (!isValidRasterOutputBuffer(cached, targetFormat)) {
@@ -8587,6 +8638,7 @@ var getCurlFetchedConvertedImage = async (url, requestedFormat, options) => {
   const sourceFormat = normalizeRasterFormat(
     detectRasterFormatFromBuffer(fetched.buffer) || detectImageFormatFromBuffer(fetched.buffer) || inferImageTypeFromContentType(fetched.contentType) || inferImageTypeFromUrl(lookupUrl || normalizedUrl, fetched.contentType) || getAssetTypeFromUrl(lookupUrl || normalizedUrl, "bin")
   );
+  const preparedSourceBuffer = sourceFormat === "svg" ? materializeSvgFragmentForIllustrator(fetched.buffer, lookupUrl || normalizedUrl) : fetched.buffer;
   const defaultTarget = sourceFormat === "webp" ? "jpg" : sourceFormat === "avif" ? "png" : sourceFormat;
   const normalizedTarget = normalizeRasterFormat(requestedFormat || defaultTarget);
   if (normalizedTarget === "svg" && sourceFormat !== "svg" && IMAGE_BINARY_FORMATS.has(sourceFormat)) {
@@ -8601,7 +8653,7 @@ var getCurlFetchedConvertedImage = async (url, requestedFormat, options) => {
   const wantsRasterConversion = ["png", "jpg"].includes(normalizedTarget) && RASTER_CONVERTIBLE_FORMATS.has(sourceFormat) && supportedRasterConversionTargets(sourceFormat).includes(normalizedTarget);
   if (wantsRasterConversion) {
     const targetFormat = normalizedTarget;
-    const converted = await convertRasterImageBuffer(fetched.buffer, targetFormat);
+    const converted = await convertRasterImageBuffer(preparedSourceBuffer, targetFormat);
     if (!isValidRasterOutputBuffer(converted, targetFormat)) return null;
     const cacheKeyUrl = lookupUrl || normalizedUrl;
     const cachePath = convertedImageCachePath(cacheKeyUrl, targetFormat);
@@ -8620,7 +8672,7 @@ var getCurlFetchedConvertedImage = async (url, requestedFormat, options) => {
   });
   const resolved = cachedUrl ? await resolveOriginalCachedAsset(lookupUrl || normalizedUrl, "image") : null;
   return {
-    buffer: fetched.buffer,
+    buffer: preparedSourceBuffer,
     format: sourceFormat || "bin",
     filename: buildDownloadFilename(filenameSourceUrl, sourceFormat || "bin", preferredBase, filenameExtras),
     cachedPath: resolved?.filePath || ""
@@ -8681,6 +8733,193 @@ var detectFontFormatFromBuffer = (buffer) => {
   if (buffer[0] === 0 && buffer[1] === 1 && buffer[2] === 0 && buffer[3] === 0) return "ttf";
   return "";
 };
+var normalizeTtfIdentity = (filenameBase) => {
+  const clean = String(filenameBase || "Font").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").replace(/[_]+/g, "-").replace(/\s+/g, " ").trim() || "Font";
+  const variantMatch = clean.match(/^(.*?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black)(?:[- ]?(Italic|Oblique))?$/i);
+  const family = (variantMatch?.[1] || clean).replace(/[- ]+$/g, "").trim() || "Font";
+  const weight = variantMatch?.[2] || "Regular";
+  const slant = variantMatch?.[3] || "";
+  const subfamily = [weight, slant].filter(Boolean).join(" ") || "Regular";
+  const fullName = subfamily === "Regular" ? family : `${family} ${subfamily}`;
+  const postScriptName = `${family}CAE-${subfamily}`.replace(/[^A-Za-z0-9-]+/g, "").replace(/-+/g, "-").slice(0, 63) || "Font-Regular";
+  return { family, subfamily, fullName, postScriptName };
+};
+var sfntChecksum = (buffer) => {
+  let sum = 0;
+  for (let offset = 0; offset < buffer.length; offset += 4) {
+    const word = Buffer.alloc(4);
+    buffer.copy(word, 0, offset, Math.min(offset + 4, buffer.length));
+    sum = sum + word.readUInt32BE(0) >>> 0;
+  }
+  return sum >>> 0;
+};
+var encodeSfntName = (value, platformId) => {
+  if (platformId === 0 || platformId === 3) {
+    const output = Buffer.alloc(value.length * 2);
+    for (let index = 0; index < value.length; index += 1) output.writeUInt16BE(value.charCodeAt(index), index * 2);
+    return output;
+  }
+  return Buffer.from(value.replace(/[^\x20-\x7e]/g, ""), "latin1");
+};
+var rewriteTtfNameRecords = (buffer, values) => {
+  const tableCount = buffer.readUInt16BE(4);
+  const sourceTables = Array.from({ length: tableCount }, (_, index) => {
+    const directoryOffset = 12 + index * 16;
+    const tag = buffer.toString("latin1", directoryOffset, directoryOffset + 4);
+    const offset = buffer.readUInt32BE(directoryOffset + 8);
+    const length = buffer.readUInt32BE(directoryOffset + 12);
+    return { tag, data: Buffer.from(buffer.subarray(offset, offset + length)) };
+  });
+  const nameTable = sourceTables.find((table) => table.tag === "name");
+  if (!nameTable || nameTable.data.length < 6) throw new Error("TTF name table is missing.");
+  const format = nameTable.data.readUInt16BE(0);
+  const recordCount = nameTable.data.readUInt16BE(2);
+  const stringOffset = nameTable.data.readUInt16BE(4);
+  if (format !== 0 || stringOffset < 6 + recordCount * 12 || stringOffset > nameTable.data.length) {
+    throw new Error("Unsupported TTF name-table layout.");
+  }
+  const records = [];
+  for (let index = 0; index < recordCount; index += 1) {
+    const offset = 6 + index * 12;
+    const platformId = nameTable.data.readUInt16BE(offset);
+    const encodingId = nameTable.data.readUInt16BE(offset + 2);
+    const languageId = nameTable.data.readUInt16BE(offset + 4);
+    const nameId = nameTable.data.readUInt16BE(offset + 6);
+    const length = nameTable.data.readUInt16BE(offset + 8);
+    const relativeOffset = nameTable.data.readUInt16BE(offset + 10);
+    const start = stringOffset + relativeOffset;
+    const original = start + length <= nameTable.data.length ? Buffer.from(nameTable.data.subarray(start, start + length)) : Buffer.alloc(0);
+    records.push({
+      platformId,
+      encodingId,
+      languageId,
+      nameId,
+      bytes: values[nameId] ? encodeSfntName(values[nameId], platformId) : original
+    });
+  }
+  const rebuiltName = Buffer.alloc(6 + recordCount * 12 + records.reduce((sum, record) => sum + record.bytes.length, 0));
+  rebuiltName.writeUInt16BE(0, 0);
+  rebuiltName.writeUInt16BE(recordCount, 2);
+  rebuiltName.writeUInt16BE(6 + recordCount * 12, 4);
+  let nameStorageOffset = 0;
+  records.forEach((record, index) => {
+    const offset = 6 + index * 12;
+    rebuiltName.writeUInt16BE(record.platformId, offset);
+    rebuiltName.writeUInt16BE(record.encodingId, offset + 2);
+    rebuiltName.writeUInt16BE(record.languageId, offset + 4);
+    rebuiltName.writeUInt16BE(record.nameId, offset + 6);
+    rebuiltName.writeUInt16BE(record.bytes.length, offset + 8);
+    rebuiltName.writeUInt16BE(nameStorageOffset, offset + 10);
+    record.bytes.copy(rebuiltName, 6 + recordCount * 12 + nameStorageOffset);
+    nameStorageOffset += record.bytes.length;
+  });
+  nameTable.data = rebuiltName;
+  const tables = sourceTables.sort((a, b) => Buffer.from(a.tag, "latin1").compare(Buffer.from(b.tag, "latin1")));
+  const maxPower = 2 ** Math.floor(Math.log2(tables.length));
+  const headerSize = 12 + tables.length * 16;
+  let dataOffset = headerSize + 3 & ~3;
+  const placements = tables.map((table) => {
+    const placement = { ...table, offset: dataOffset };
+    dataOffset += table.data.length + 3 & ~3;
+    return placement;
+  });
+  const output = Buffer.alloc(dataOffset);
+  buffer.copy(output, 0, 0, 4);
+  output.writeUInt16BE(tables.length, 4);
+  output.writeUInt16BE(maxPower * 16, 6);
+  output.writeUInt16BE(Math.log2(maxPower), 8);
+  output.writeUInt16BE(tables.length * 16 - maxPower * 16, 10);
+  placements.forEach((table, index) => {
+    const directoryOffset = 12 + index * 16;
+    output.write(table.tag, directoryOffset, 4, "latin1");
+    const checksumData = Buffer.from(table.data);
+    if (table.tag === "head" && checksumData.length >= 12) checksumData.writeUInt32BE(0, 8);
+    output.writeUInt32BE(sfntChecksum(checksumData), directoryOffset + 4);
+    output.writeUInt32BE(table.offset, directoryOffset + 8);
+    output.writeUInt32BE(table.data.length, directoryOffset + 12);
+    checksumData.copy(output, table.offset);
+  });
+  const head = placements.find((table) => table.tag === "head");
+  if (head && head.offset + 12 <= output.length) {
+    output.writeUInt32BE(2981146554 - sfntChecksum(output) >>> 0, head.offset + 8);
+  }
+  return output;
+};
+var fontWeightName = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    if (numeric <= 100) return "Thin";
+    if (numeric <= 200) return "ExtraLight";
+    if (numeric <= 300) return "Light";
+    if (numeric <= 400) return "Regular";
+    if (numeric <= 500) return "Medium";
+    if (numeric <= 600) return "SemiBold";
+    if (numeric <= 700) return "Bold";
+    if (numeric <= 800) return "ExtraBold";
+    return "Black";
+  }
+  const aliases = {
+    thin: "Thin",
+    hairline: "Thin",
+    extralight: "ExtraLight",
+    "extra light": "ExtraLight",
+    ultralight: "ExtraLight",
+    light: "Light",
+    normal: "Regular",
+    regular: "Regular",
+    book: "Book",
+    medium: "Medium",
+    semibold: "SemiBold",
+    "semi bold": "SemiBold",
+    demibold: "SemiBold",
+    bold: "Bold",
+    extrabold: "ExtraBold",
+    "extra bold": "ExtraBold",
+    ultrabold: "ExtraBold",
+    black: "Black",
+    heavy: "Black"
+  };
+  return aliases[normalized] || "";
+};
+var buildTtfIdentityBase = (preferredBase, extras) => {
+  const explicit = String(preferredBase || "").trim();
+  if (explicit && !/^font(?:[-_ ]?\d+)?$/i.test(explicit)) return explicit;
+  const family = String(extras.fontFamily || extras.metadataFilename || explicit || "Font").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").trim() || "Font";
+  const weight = fontWeightName(String(extras.fontWeight || "")) || "Regular";
+  const slant = /italic/i.test(String(extras.fontStyle || "")) ? "Italic" : /oblique/i.test(String(extras.fontStyle || "")) ? "Oblique" : "";
+  return [family, weight === "Regular" && !slant ? "" : weight, slant].filter(Boolean).join(" ");
+};
+var repairTtfNameTable = (buffer, filenameBase) => {
+  if (detectFontFormatFromBuffer(buffer) !== "ttf") return buffer;
+  const requestedIdentity = normalizeTtfIdentity(filenameBase);
+  const font = Font.create(buffer, { type: "ttf", hinting: true, kerning: true });
+  const data = font.get();
+  const isUsableIdentityName = (value) => {
+    const text = String(value || "").trim();
+    return Boolean(text) && !/not licensed|copyright|all rights reserved|webfont|web font|type foundry$/i.test(text);
+  };
+  const family = isUsableIdentityName(requestedIdentity.family) ? requestedIdentity.family : String(data.name?.preferredFamily || "Font").trim();
+  const subfamily = isUsableIdentityName(requestedIdentity.subfamily) ? requestedIdentity.subfamily : String(data.name?.preferredSubFamily || "Regular").trim();
+  const fullName = subfamily === "Regular" ? family : `${family} ${subfamily}`;
+  const postScriptName = requestedIdentity.postScriptName;
+  const repaired = rewriteTtfNameRecords(buffer, {
+    1: family,
+    2: subfamily,
+    3: `${fullName}; Creative Asset Extractor`,
+    4: fullName,
+    6: postScriptName,
+    16: family,
+    17: subfamily,
+    18: fullName,
+    21: family,
+    22: subfamily
+  });
+  if (detectFontFormatFromBuffer(repaired) !== "ttf") {
+    throw new Error("TTF name-table repair produced an invalid font file.");
+  }
+  return repaired;
+};
 var isInstallableTtfBuffer = (buffer) => {
   if (detectFontFormatFromBuffer(buffer) !== "ttf") return false;
   const hasValidSfntStructure = (() => {
@@ -8688,12 +8927,15 @@ var isInstallableTtfBuffer = (buffer) => {
     const tableCount = buffer.readUInt16BE(4);
     if (tableCount < 4 || tableCount > 256 || 12 + tableCount * 16 > buffer.length) return false;
     const tables = /* @__PURE__ */ new Set();
+    let previousTag = "";
     for (let index = 0; index < tableCount; index += 1) {
       const entryOffset = 12 + index * 16;
       const tag = buffer.toString("latin1", entryOffset, entryOffset + 4);
       const tableOffset = buffer.readUInt32BE(entryOffset + 8);
       const tableLength = buffer.readUInt32BE(entryOffset + 12);
       if (!tag.trim() || tableOffset > buffer.length || tableLength > buffer.length - tableOffset) return false;
+      if (previousTag && Buffer.from(previousTag, "latin1").compare(Buffer.from(tag, "latin1")) >= 0) return false;
+      previousTag = tag;
       tables.add(tag);
     }
     const hasCoreTables = ["cmap", "head", "maxp", "name"].every((tag) => tables.has(tag));
@@ -8704,6 +8946,7 @@ var isInstallableTtfBuffer = (buffer) => {
   try {
     const parsed = opentype.parse(bufferToExactArrayBuffer(buffer));
     const glyphCount = Number(parsed?.glyphs?.length || parsed?.numGlyphs || 0);
+    const hasBasicLatin = ["A", "a", "0"].every((character) => Number(parsed?.charToGlyphIndex?.(character) || 0) > 0);
     const names = parsed?.names || {};
     const hasReadableName = [
       names.preferredFamily,
@@ -8715,7 +8958,7 @@ var isInstallableTtfBuffer = (buffer) => {
       if (typeof group === "string") return Boolean(group.trim());
       return group && typeof group === "object" && Object.values(group).some((value) => typeof value === "string" && value.trim());
     });
-    return glyphCount > 0 && (hasReadableName || hasValidSfntStructure);
+    return glyphCount > 1 && hasBasicLatin && (hasReadableName || hasValidSfntStructure);
   } catch {
     return hasValidSfntStructure;
   }
@@ -9242,7 +9485,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   await fsp3.mkdir(cachedFontDir, { recursive: true });
   const normalizedTarget = ["ttf", "woff", "woff2", "eot", "otf", "svg"].includes(toFormat) ? toFormat : "ttf";
   const cacheSourceUrl = normalizeAssetRequestUrl(String(extras.originalUrl || "").trim()) || normalizeAssetRequestUrl(url) || url;
-  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v5-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
+  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v10-macos-family-linking-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
   const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
@@ -9389,6 +9632,9 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
       extras.fixVerticalMetrics !== false
     );
     conversionProvider = "transfonter";
+  }
+  if (normalizedTarget === "ttf") {
+    outputBuffer = repairTtfNameTable(outputBuffer, buildTtfIdentityBase(preferredBase, extras));
   }
   if (!isValidFontBuffer(outputBuffer, normalizedTarget)) {
     throw new Error(`Converted font is not valid ${normalizedTarget.toUpperCase()} binary`);
@@ -9679,6 +9925,9 @@ var canonicalImageDedupKey = (url) => {
     const parsed = new URL2(raw);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
     const leaf = filenameFromUrlPath2(raw).toLowerCase();
+    if (/\.svg$/i.test(parsed.pathname) && parsed.hash) {
+      return `${host}:${parsed.pathname}${parsed.search}${parsed.hash}`.toLowerCase();
+    }
     const contextParam = parsed.searchParams.get("context");
     if (contextParam) {
       return `${host}:${parsed.pathname}?context=${contextParam}`.toLowerCase();
@@ -10422,6 +10671,11 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     },
     addInlineSvg(svg, index) {
       try {
+        const externalUse = Array.from(svg.querySelectorAll("use")).some((use) => {
+          const href = use.getAttribute("href") || use.getAttribute("xlink:href") || "";
+          return href && !href.startsWith("#");
+        });
+        if (externalUse) return;
         const clone = svg.cloneNode(true);
         if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
         const svgText = new XMLSerializer().serializeToString(clone);
@@ -11246,7 +11500,13 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     })
   ]).catch(() => fallbackFonts);
   return {
-    images: resultImages,
+    // Keep icons in their dedicated collection for category-aware clients, but
+    // also include them in the primary image list. Packaged/background extract
+    // completion historically merged only `images`, which caused discovered SVG
+    // sprite symbols to disappear even though extraction had found them.
+    images: Array.from(
+      new Map([...resultImages, ...resultIcons].map((item) => [String(item?.url || ""), item])).values()
+    ).filter((item) => item?.url),
     icons: resultIcons,
     videos: resultVideos,
     fonts: resultFonts,
@@ -17546,7 +17806,8 @@ var buildImageThumbnail = async (originalUrl, sourcePageUrl = "") => {
   if (!sourceBuffer || !isValidImageBuffer(sourceBuffer, contentType)) {
     return { thumbUrl: "", lqip: "", width: 0, height: 0, bytes: 0 };
   }
-  const artifacts = await generateImageThumbArtifacts(sourceBuffer);
+  const thumbnailSource = detectImageFormatFromBuffer(sourceBuffer) === "svg" ? materializeSvgFragmentForIllustrator(sourceBuffer, normalized) : sourceBuffer;
+  const artifacts = await generateImageThumbArtifacts(thumbnailSource);
   await fsp3.writeFile(thumbPath, artifacts.thumbBuffer);
   await fsp3.writeFile(
     metaPath,
@@ -17663,7 +17924,7 @@ app.get("/api/image-preview", async (req, res) => {
     }
     const format = detectRasterFormatFromBuffer(fetched.buffer) || detectImageFormatFromBuffer(fetched.buffer) || inferImageTypeFromContentType(fetched.contentType) || getAssetTypeFromUrl(normalized, "bin");
     const contentType = format === "jpg" || format === "jpeg" ? "image/jpeg" : format === "png" ? "image/png" : format === "svg" ? "image/svg+xml" : format === "webp" ? "image/webp" : format === "avif" ? "image/avif" : format === "gif" ? "image/gif" : fetched.contentType || "application/octet-stream";
-    const previewBuffer = format === "svg" ? normalizeSvgBufferForIllustrator(fetched.buffer) : fetched.buffer;
+    const previewBuffer = format === "svg" ? materializeSvgFragmentForIllustrator(fetched.buffer, origin || normalized) : fetched.buffer;
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "private, max-age=86400");
     if (ensured.requestUrl?.startsWith("/cached-")) {
@@ -17708,6 +17969,11 @@ app.get("/api/download-image", async (req, res) => {
         metadataFilename: convertOptions.metadataFilename,
         contentDisposition: cached.contentDisposition
       });
+      if (sourceFormat2 === "svg" && new URL2(origin || normalized).hash) {
+        const standalone = materializeSvgFragmentForIllustrator(cached.buffer, origin || normalized);
+        const saved2 = await saveBufferToDownloads(standalone, filename2, "Image download", sourcePageUrl, "image");
+        return res.json(saved2);
+      }
       const saved = await saveCachedFileToDownloads(cachePath, filename2, "Image download", sourcePageUrl, "image");
       return res.json(saved);
     }
@@ -17723,13 +17989,14 @@ app.get("/api/download-image", async (req, res) => {
       contentDisposition: fetched.contentDisposition
     });
     const contentType = imageContentTypeForFormat(sourceFormat, fetched.contentType || "application/octet-stream");
+    const downloadBuffer = sourceFormat === "svg" ? materializeSvgFragmentForIllustrator(fetched.buffer, origin || normalized) : fetched.buffer;
     if (String(save || "").toLowerCase() === "1" || String(save || "").toLowerCase() === "true") {
-      const saved = await saveBufferToDownloads(fetched.buffer, filename, "Image download", sourcePageUrl, "image");
+      const saved = await saveBufferToDownloads(downloadBuffer, filename, "Image download", sourcePageUrl, "image");
       return res.json(saved);
     }
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Type", contentType);
-    return res.send(fetched.buffer);
+    return res.send(downloadBuffer);
   } catch (error) {
     console.error("Image download error:", error.message || error);
     const message = String(error?.message || "Unknown error");

@@ -10,6 +10,7 @@ export type VdxDesktopBridge = {
   onClipboardUrl: (callback: (payload: ClipboardUrlPayload) => void) => () => void;
   getAppVersion: () => Promise<string>;
   openExternalUrl: (url: string) => Promise<boolean>;
+  openFolderPath: (folderPath: string) => Promise<boolean>;
 };
 
 export const getDesktopBridge = (): VdxDesktopBridge | null => {

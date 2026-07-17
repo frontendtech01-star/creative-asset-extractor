@@ -139,6 +139,14 @@ ipcMain.handle('vdx:open-external', async (_event, url) => {
   await shell.openExternal(target);
   return true;
 });
+ipcMain.handle('vdx:open-folder', async (_event, folderPath) => {
+  const downloadsRoot = path.resolve(app.getPath('downloads'));
+  const target = path.resolve(String(folderPath || '').trim());
+  const relative = path.relative(downloadsRoot, target);
+  if (!target || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+  const error = await shell.openPath(target);
+  return !error;
+});
 
 app.whenReady().then(() => {
   createWindow();

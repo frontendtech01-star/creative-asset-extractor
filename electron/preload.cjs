@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('vdxDesktop', {
   writeClipboardText: (value) => ipcRenderer.invoke('vdx:clipboard-write-text', value),
   getAppVersion: () => ipcRenderer.invoke('vdx:get-app-version'),
   openExternalUrl: (url) => ipcRenderer.invoke('vdx:open-external', url),
+  openFolderPath: (folderPath) => ipcRenderer.invoke('vdx:open-folder', folderPath),
   onClipboardUrl: (callback) => {
     if (typeof callback !== 'function') return () => undefined;
     const handler = (_event, payload) => {
