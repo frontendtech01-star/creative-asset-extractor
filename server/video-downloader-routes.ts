@@ -1555,8 +1555,11 @@ const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob
     aria2c_path: resolveTool(options, 'aria2c'),
   });
   try {
-    if (job.platform === 'ispot' && options.specialDownload) {
-      updateJob(job, { progress: 12, message: 'Resolving iSpot.tv stream...' });
+    if ((job.platform === 'ispot' || job.platform === 'brightcove') && options.specialDownload) {
+      updateJob(job, {
+        progress: 12,
+        message: job.platform === 'brightcove' ? 'Resolving Brightcove stream...' : 'Resolving iSpot.tv stream...',
+      });
       const special = await options.specialDownload({
         url: job.url,
         quality: job.quality,
@@ -1692,7 +1695,7 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     if (!rawUrl) return res.status(400).json({ error: 'URL is required.' });
     try {
       const validated = validateDownloaderUrl(rawUrl, options.validateUrl);
-      if (validated.platform === 'ispot' && options.specialInspect) {
+      if ((validated.platform === 'ispot' || validated.platform === 'brightcove') && options.specialInspect) {
         const payload = await options.specialInspect(validated.url);
         const videos = specialPayloadToCards(payload, validated.url, validated.platform);
         return res.json({ ok: true, platform: validated.platform, videos, count: videos.length });

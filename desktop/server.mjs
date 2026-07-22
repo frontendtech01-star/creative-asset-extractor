@@ -1412,8 +1412,11 @@ var processJob = async (options, job) => {
     aria2c_path: resolveTool(options, "aria2c")
   });
   try {
-    if (job.platform === "ispot" && options.specialDownload) {
-      updateJob(job, { progress: 12, message: "Resolving iSpot.tv stream..." });
+    if ((job.platform === "ispot" || job.platform === "brightcove") && options.specialDownload) {
+      updateJob(job, {
+        progress: 12,
+        message: job.platform === "brightcove" ? "Resolving Brightcove stream..." : "Resolving iSpot.tv stream..."
+      });
       const special = await options.specialDownload({
         url: job.url,
         quality: job.quality,
@@ -1523,7 +1526,7 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     if (!rawUrl) return res.status(400).json({ error: "URL is required." });
     try {
       const validated = validateDownloaderUrl(rawUrl, options.validateUrl);
-      if (validated.platform === "ispot" && options.specialInspect) {
+      if ((validated.platform === "ispot" || validated.platform === "brightcove") && options.specialInspect) {
         const payload2 = await options.specialInspect(validated.url);
         const videos2 = specialPayloadToCards(payload2, validated.url, validated.platform);
         return res.json({ ok: true, platform: validated.platform, videos: videos2, count: videos2.length });
@@ -12959,7 +12962,31 @@ var getBrightcovePolicyKey = async (accountId, playerId) => {
   const cacheKey = `${accountId}:${normalizedPlayer}`;
   const cached = brightcovePolicyCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.policyKey;
-  const playerJsUrl = `https://players.brightcove.net/${accountId}/${normalizedPlayer}/index.min.js`;
+  const playerBaseUrl = `https://players.brightcove.net/${accountId}/${normalizedPlayer}`;
+  try {
+    const configResponse = await axios.get(`${playerBaseUrl}/config.json`, {
+      timeout: 1e4,
+      httpsAgent: relaxedHttpsAgent,
+      responseType: "json",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json,*/*"
+      }
+    });
+    const configPolicyKey = String(
+      configResponse.data?.video_cloud?.policy_key || configResponse.data?.videoCloud?.policyKey || configResponse.data?.policy_key || configResponse.data?.policyKey || ""
+    ).trim();
+    if (configPolicyKey) {
+      brightcovePolicyCache.set(cacheKey, {
+        expiresAt: Date.now() + brightcoveMetadataTtlMs,
+        policyKey: configPolicyKey
+      });
+      return configPolicyKey;
+    }
+  } catch (error) {
+    console.warn(`Brightcove player config fetch failed for ${cacheKey}:`, error?.message || error);
+  }
+  const playerJsUrl = `${playerBaseUrl}/index.min.js`;
   const response = await axios.get(playerJsUrl, {
     timeout: 1e4,
     httpsAgent: relaxedHttpsAgent,
@@ -12993,6 +13020,12 @@ var getBrightcoveMetadata = async (playerUrl) => {
     }
   });
   const info = response.data || {};
+  const playbackError = Array.isArray(info) ? info[0] : null;
+  if (playbackError?.error_code || playbackError?.message) {
+    const code = String(playbackError.error_code || "PLAYBACK_ERROR");
+    const message = String(playbackError.message || "Brightcove could not load this video.");
+    throw new Error(`Brightcove ${code}: ${message}`);
+  }
   brightcoveMetadataCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, info });
   return info;
 };
@@ -15323,7 +15356,10 @@ var extractBrightcoveVideos = async (playerUrl) => {
   const info = await getBrightcoveMetadata(playerUrl);
   const durationRaw = Number(info.duration || 0);
   const duration = durationRaw > 1e4 ? Math.round(durationRaw / 1e3) : durationRaw || void 0;
-  const thumbnail = sanitizeStreamUrl(info.poster || info.thumbnail || info.thumbnail_sources?.[0]?.src || "", playerUrl) || info.poster || info.thumbnail || "";
+  const thumbnail = sanitizeStreamUrl(
+    info.poster || info.thumbnail || info.poster_sources?.[0]?.src || info.thumbnail_sources?.[0]?.src || "",
+    playerUrl
+  ) || info.poster || info.thumbnail || "";
   const sources = Array.isArray(info.sources) ? info.sources : [];
   const directMp4Sources = sources.map((source) => {
     const src = sanitizeStreamUrl(String(source?.src || ""), playerUrl);
@@ -17526,6 +17562,7 @@ registerVideoExtractorRoute("/api/video-extract/instagram", instagramVideoExtrac
 registerVideoExtractorRoute("/api/video-extract/facebook", facebookVideoExtractor);
 registerVideoExtractorRoute("/api/video-extract/x", xVideoExtractor);
 registerVideoExtractorRoute("/api/video-extract/ispot", ispotVideoExtractor);
+registerVideoExtractorRoute("/api/video-extract/brightcove", buildDirectVideoExtractResponse);
 app.post("/api/video-extract/bulk", async (req, res) => {
   const rawUrls = Array.isArray(req.body?.urls) ? req.body.urls : [];
   const urls = rawUrls.map((value) => String(value || "").trim()).filter(Boolean);
@@ -17550,8 +17587,44 @@ registerVideoDownloaderRoutes(app, {
   appRoot: getAppRoot(),
   resourcesPath: getResourcesPath(),
   validateUrl: assertPublicAssetUrl,
-  specialInspect: async (url) => ispotVideoExtractor(url),
+  specialInspect: async (url) => {
+    if (isBrightcoveUrl(url)) {
+      return buildDirectVideoExtractResponse(url);
+    }
+    return ispotVideoExtractor(url);
+  },
   specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
+    if (isBrightcoveUrl(url)) {
+      const assets = await extractBrightcoveVideos(url);
+      const videos = Array.isArray(assets.videos) ? assets.videos : [];
+      const requestedHeight = getVimeoTargetHeight(quality === "audio" ? "fhd" : quality);
+      const directCandidates = videos.filter((video) => video?.isDirect && isLikelyDirectVideoStreamUrl(String(video?.url || ""))).sort((a, b) => {
+        const aHeight = parseCandidateHeight(a) || 0;
+        const bHeight = parseCandidateHeight(b) || 0;
+        const aPenalty = aHeight > requestedHeight ? 1e4 + aHeight - requestedHeight : requestedHeight - aHeight;
+        const bPenalty = bHeight > requestedHeight ? 1e4 + bHeight - requestedHeight : requestedHeight - bHeight;
+        return aPenalty - bPenalty;
+      });
+      const selected = directCandidates[0];
+      const fallback = videos.find((video) => video?.brightcoveManifestUrl);
+      const streamUrl = String(selected?.url || fallback?.brightcoveManifestUrl || "").trim();
+      if (!streamUrl) throw new Error("Brightcove did not provide a downloadable video stream.");
+      const resolvedTitle = String(title || selected?.title || fallback?.title || "Brightcove video");
+      const thumbnail = String(selected?.thumbnail || fallback?.thumbnail || assets.images?.[0]?.url || "");
+      const result = quality !== "audio" && selected?.url ? await downloadDirectStreamVideoToFile(streamUrl, {
+        titleHint: resolvedTitle,
+        sourcePageUrl: sourcePageUrl || url,
+        quality,
+        saveToWebsiteAssets
+      }) : await downloadPlatformVideoToFile(streamUrl, quality === "audio" ? "fhd" : quality, {
+        titleHint: resolvedTitle,
+        sourcePageUrl: sourcePageUrl || url,
+        saveToWebsiteAssets,
+        mode: quality === "audio" ? "audio" : "video",
+        maxDurationSeconds: quality === "audio" ? 120 : void 0
+      });
+      return { ...result, title: resolvedTitle, thumbnail, platform: "brightcove" };
+    }
     const payload = await ispotVideoExtractor(url);
     const card = Array.isArray(payload?.videos) ? payload.videos[0] : null;
     const refreshedUrl = String(card?.sourceStreamUrl || card?.url || url);
@@ -19253,6 +19326,12 @@ app.get("/api/resolve-video", async (req, res) => {
         );
         return res.json({ video: mergedVideo });
       } catch (brightcoveError) {
+        const brightcoveMessage = String(brightcoveError?.message || brightcoveError || "");
+        if (/\bVIDEO_NOT_FOUND\b/i.test(brightcoveMessage)) {
+          return res.status(404).json({
+            error: "Brightcove reports that this video does not exist or is no longer available. Check the videoId with the publisher."
+          });
+        }
         console.warn("Brightcove resolve failed, trying universal yt-dlp route:", brightcoveError?.message || brightcoveError);
       }
     }
