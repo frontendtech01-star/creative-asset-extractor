@@ -12386,6 +12386,23 @@ var generateVideoFrameThumbnail = async (streamUrl, sourcePageUrl, req) => {
   return toAbsoluteAppUrl(req, `/generated-thumbnails/${hash}.jpg`);
 };
 var getVideoPreviewMetadata = async (targetUrl) => {
+  if (isBrightcoveUrl(targetUrl)) {
+    try {
+      const info = await getBrightcoveMetadata(targetUrl);
+      const thumbnail = sanitizeStreamUrl(
+        info.poster || info.thumbnail || info.poster_sources?.[0]?.src || info.thumbnail_sources?.[0]?.src || "",
+        targetUrl
+      ) || "";
+      return {
+        sourceUrl: targetUrl,
+        thumbnail,
+        title: String(info.name || info.title || "Brightcove video"),
+        provider: "brightcove"
+      };
+    } catch {
+      return null;
+    }
+  }
   try {
     const info = await withTimeout(
       youtubedl(targetUrl, {
@@ -13014,6 +13031,7 @@ var getBrightcoveMetadata = async (playerUrl) => {
   const response = await axios.get(playbackUrl, {
     timeout: 12e3,
     httpsAgent: relaxedHttpsAgent,
+    validateStatus: (status) => status >= 200 && status < 500,
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Accept": `application/json;pk=${policyKey}`
@@ -13025,6 +13043,9 @@ var getBrightcoveMetadata = async (playerUrl) => {
     const code = String(playbackError.error_code || "PLAYBACK_ERROR");
     const message = String(playbackError.message || "Brightcove could not load this video.");
     throw new Error(`Brightcove ${code}: ${message}`);
+  }
+  if (response.status >= 400) {
+    throw new Error(`Brightcove playback request failed with status ${response.status}.`);
   }
   brightcoveMetadataCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, info });
   return info;
@@ -15442,6 +15463,37 @@ var extractBrightcoveVideos = async (playerUrl) => {
     }))
   };
 };
+var downloadBrightcoveVideoToFile = async (url, quality, options = {}) => {
+  const assets = await extractBrightcoveVideos(url);
+  const videos = Array.isArray(assets.videos) ? assets.videos : [];
+  const requestedHeight = getVimeoTargetHeight(quality === "audio" ? "fhd" : quality);
+  const directCandidates = videos.filter((video) => video?.isDirect && isLikelyDirectVideoStreamUrl(String(video?.url || ""))).sort((a, b) => {
+    const aHeight = parseCandidateHeight(a) || 0;
+    const bHeight = parseCandidateHeight(b) || 0;
+    const aPenalty = aHeight > requestedHeight ? 1e4 + aHeight - requestedHeight : requestedHeight - aHeight;
+    const bPenalty = bHeight > requestedHeight ? 1e4 + bHeight - requestedHeight : requestedHeight - bHeight;
+    return aPenalty - bPenalty;
+  });
+  const selected = directCandidates[0];
+  const fallback = videos.find((video) => video?.brightcoveManifestUrl);
+  const streamUrl = String(selected?.url || fallback?.brightcoveManifestUrl || "").trim();
+  if (!streamUrl) throw new Error("Brightcove did not provide a downloadable video stream.");
+  const resolvedTitle = String(options.title || selected?.title || fallback?.title || "Brightcove video");
+  const thumbnail = String(selected?.thumbnail || fallback?.thumbnail || assets.images?.[0]?.url || "");
+  const result = options.mode !== "audio" && selected?.url ? await downloadDirectStreamVideoToFile(streamUrl, {
+    titleHint: resolvedTitle,
+    sourcePageUrl: options.sourcePageUrl || url,
+    quality,
+    saveToWebsiteAssets: options.saveToWebsiteAssets
+  }) : await downloadPlatformVideoToFile(streamUrl, quality === "audio" ? "fhd" : quality, {
+    titleHint: resolvedTitle,
+    sourcePageUrl: options.sourcePageUrl || url,
+    saveToWebsiteAssets: options.saveToWebsiteAssets,
+    mode: options.mode === "audio" ? "audio" : "video",
+    maxDurationSeconds: options.mode === "audio" ? 120 : void 0
+  });
+  return { ...result, title: resolvedTitle, thumbnail, platform: "brightcove" };
+};
 var normalizePlaylistEntryUrl = (entry, sourceUrl) => {
   const raw = String(entry?.webpage_url || entry?.webpage_url_basename || entry?.original_url || entry?.url || "").trim();
   if (!raw) return "";
@@ -17595,35 +17647,12 @@ registerVideoDownloaderRoutes(app, {
   },
   specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
     if (isBrightcoveUrl(url)) {
-      const assets = await extractBrightcoveVideos(url);
-      const videos = Array.isArray(assets.videos) ? assets.videos : [];
-      const requestedHeight = getVimeoTargetHeight(quality === "audio" ? "fhd" : quality);
-      const directCandidates = videos.filter((video) => video?.isDirect && isLikelyDirectVideoStreamUrl(String(video?.url || ""))).sort((a, b) => {
-        const aHeight = parseCandidateHeight(a) || 0;
-        const bHeight = parseCandidateHeight(b) || 0;
-        const aPenalty = aHeight > requestedHeight ? 1e4 + aHeight - requestedHeight : requestedHeight - aHeight;
-        const bPenalty = bHeight > requestedHeight ? 1e4 + bHeight - requestedHeight : requestedHeight - bHeight;
-        return aPenalty - bPenalty;
-      });
-      const selected = directCandidates[0];
-      const fallback = videos.find((video) => video?.brightcoveManifestUrl);
-      const streamUrl = String(selected?.url || fallback?.brightcoveManifestUrl || "").trim();
-      if (!streamUrl) throw new Error("Brightcove did not provide a downloadable video stream.");
-      const resolvedTitle = String(title || selected?.title || fallback?.title || "Brightcove video");
-      const thumbnail = String(selected?.thumbnail || fallback?.thumbnail || assets.images?.[0]?.url || "");
-      const result = quality !== "audio" && selected?.url ? await downloadDirectStreamVideoToFile(streamUrl, {
-        titleHint: resolvedTitle,
-        sourcePageUrl: sourcePageUrl || url,
-        quality,
-        saveToWebsiteAssets
-      }) : await downloadPlatformVideoToFile(streamUrl, quality === "audio" ? "fhd" : quality, {
-        titleHint: resolvedTitle,
-        sourcePageUrl: sourcePageUrl || url,
+      return downloadBrightcoveVideoToFile(url, quality, {
+        title,
+        sourcePageUrl,
         saveToWebsiteAssets,
-        mode: quality === "audio" ? "audio" : "video",
-        maxDurationSeconds: quality === "audio" ? 120 : void 0
+        mode: quality === "audio" ? "audio" : "video"
       });
-      return { ...result, title: resolvedTitle, thumbnail, platform: "brightcove" };
     }
     const payload = await ispotVideoExtractor(url);
     const card = Array.isArray(payload?.videos) ? payload.videos[0] : null;
@@ -17662,7 +17691,12 @@ app.post("/api/platform-video-download", async (req, res) => {
     assertPublicAssetUrl(rawUrl);
     lastExtractedSourceUrl = sourcePageUrl || rawUrl;
     lastExtractionSectionMode = false;
-    const result = await downloadPlatformVideoToFile(rawUrl, quality, {
+    const result = isBrightcoveUrl(rawUrl) ? await downloadBrightcoveVideoToFile(rawUrl, quality, {
+      title: titleHint,
+      sourcePageUrl,
+      mode,
+      saveToWebsiteAssets
+    }) : await downloadPlatformVideoToFile(rawUrl, quality, {
       titleHint,
       sourcePageUrl,
       mode,
@@ -17672,7 +17706,14 @@ app.post("/api/platform-video-download", async (req, res) => {
     return res.json(result);
   } catch (error) {
     console.error("Platform video download error:", error?.message || error);
-    return res.status(500).json({ ok: false, error: error?.message || "Video download failed." });
+    const message = String(error?.message || "Video download failed.");
+    if (/\bVIDEO_NOT_FOUND\b/i.test(message)) {
+      return res.status(404).json({
+        ok: false,
+        error: "Brightcove reports that this video does not exist or is no longer available."
+      });
+    }
+    return res.status(500).json({ ok: false, error: message });
   }
 });
 app.post("/api/direct-video-download", async (req, res) => {

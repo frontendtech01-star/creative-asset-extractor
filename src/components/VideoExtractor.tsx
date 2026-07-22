@@ -262,12 +262,53 @@ export default function VideoExtractor({
   const [copiedEmbeddedLink, setCopiedEmbeddedLink] = useState<string | null>(null);
   const [manualUrl, setManualUrl] = useState(seedUrl || DEFAULT_VIDEO_URLS[0].url);
   const [activeManualUrl, setActiveManualUrl] = useState('');
+  const [brightcovePreviews, setBrightcovePreviews] = useState<Record<string, { thumbnail?: string; title?: string }>>({});
   const visibleVideos = dedupeVisibleVideoCards(
     videos
       .map((video) => normalizeExtractedVideoCard(video, seedUrl))
       .filter((video) => !isTechnicalVideoItem(video) && isUsableExtractedVideo(video, seedUrl)),
     seedUrl
   );
+  const missingBrightcovePreviewKey = visibleVideos
+    .filter((video) => canonicalBrightcovePlayerUrlFromItem(video, seedUrl) && !String(video?.thumbnail || video?.poster || '').trim())
+    .map((video) => canonicalBrightcovePlayerUrlFromItem(video, seedUrl))
+    .filter(Boolean)
+    .sort()
+    .join('|');
+
+  useEffect(() => {
+    if (!missingBrightcovePreviewKey) return;
+    const controller = new AbortController();
+    const urls = missingBrightcovePreviewKey.split('|').filter(Boolean);
+    void Promise.all(
+      urls.map(async (url) => {
+        try {
+          const response = await fetch(`/api/video-preview?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+          const payload = await response.json();
+          return [url, payload?.preview || {}] as const;
+        } catch {
+          return [url, {}] as const;
+        }
+      })
+    ).then((entries) => {
+      if (controller.signal.aborted) return;
+      setBrightcovePreviews((current) => ({ ...current, ...Object.fromEntries(entries) }));
+    });
+    return () => controller.abort();
+  }, [missingBrightcovePreviewKey]);
+
+  const displayVideos = visibleVideos.map((video) => {
+    const url = canonicalBrightcovePlayerUrlFromItem(video, seedUrl);
+    const preview = url ? brightcovePreviews[url] : null;
+    if (!preview?.thumbnail && !preview?.title) return video;
+    return {
+      ...video,
+      thumbnail: video?.thumbnail || video?.poster || preview.thumbnail || '',
+      title: /^Brightcove video(?:\s+\d+)?$/i.test(String(video?.title || ''))
+        ? preview.title || video.title
+        : video.title,
+    };
+  });
 
   useEffect(() => {
     if (!seedUrl && manualUrl && !activeManualUrl) {
@@ -416,7 +457,7 @@ export default function VideoExtractor({
         )}
       </div> : null}
 
-      {visibleVideos.length === 0 ? (
+      {displayVideos.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-zinc-500 bg-white border border-zinc-200 rounded-2xl border-dashed">
           <VideoIcon className="w-12 h-12 mb-4 text-zinc-300" />
           <p className="text-lg font-medium text-zinc-900">No videos extracted from page</p>
@@ -425,11 +466,11 @@ export default function VideoExtractor({
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {visibleVideos.map((video, idx) => {
+            {displayVideos.map((video, idx) => {
             const isYouTubeDirect = video.isYouTubeDirect;
             const displayTitle = isYouTubeDirect
               ? `YouTube Video Stream (${video.resolution || 'Unknown'})`
-              : videoCardTitle(video, idx, visibleVideos);
+              : videoCardTitle(video, idx, displayVideos);
             const embedded = isEmbeddedVideo(video);
             const embeddedLink = resolveEmbeddedVideoLink(video);
             const embedPreviewUrl = embedded ? resolveEmbedPreviewUrl(video) : '';

@@ -169,6 +169,17 @@ try {
           fail(`Brightcove inspection failed: ${inspection?.error || inspectRes.status}`);
         }
 
+        const previewRes = await fetch(`${serverUrl}/api/video-preview?url=${encodeURIComponent(brightcoveUrl)}`, {
+          headers: { 'X-VDX-Local-Request': '1' },
+          signal: AbortSignal.timeout(60000),
+        });
+        const previewPayload = await previewRes.json().catch(() => ({}));
+        if (previewRes.ok && previewPayload?.preview?.thumbnail) {
+          pass('Website card Brightcove thumbnail OK');
+        } else {
+          fail(`Website card Brightcove thumbnail failed: ${previewPayload?.error || previewRes.status}`);
+        }
+
         const downloadRes = await fetch(`${serverUrl}/api/downloader/download`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
@@ -194,6 +205,26 @@ try {
           pass(`Brightcove download OK (${downloadedSize}b)`);
         } else {
           fail(`Brightcove download failed: ${completedJob?.error || completedJob?.status || 'timed out'}`);
+        }
+
+        const platformDownloadRes = await fetch(`${serverUrl}/api/platform-video-download`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
+          body: JSON.stringify({
+            url: brightcoveUrl,
+            quality: 'hd',
+            title: 'brightcove-website-card-qc',
+            sourcePageUrl: 'https://www.bathandbodyworks.com/',
+          }),
+          signal: AbortSignal.timeout(120000),
+        });
+        const platformDownload = await platformDownloadRes.json().catch(() => ({}));
+        const platformPath = String(platformDownload?.filePath || '');
+        const platformSize = platformPath && fs.existsSync(platformPath) ? fs.statSync(platformPath).size : 0;
+        if (platformDownloadRes.ok && platformSize > 1024 && platformDownload?.thumbnail) {
+          pass(`Website card Brightcove download OK (${platformSize}b)`);
+        } else {
+          fail(`Website card Brightcove download failed: ${platformDownload?.error || platformDownloadRes.status}`);
         }
       }
 
