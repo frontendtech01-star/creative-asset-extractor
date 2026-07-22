@@ -265,6 +265,7 @@ export default function VideoExtractor({
   const [brightcovePreviews, setBrightcovePreviews] = useState<Record<string, { thumbnail?: string; title?: string }>>({});
   const visibleVideos = dedupeVisibleVideoCards(
     videos
+      .filter((video) => isUsableExtractedVideo(video, seedUrl))
       .map((video) => normalizeExtractedVideoCard(video, seedUrl))
       .filter((video) => !isTechnicalVideoItem(video) && isUsableExtractedVideo(video, seedUrl)),
     seedUrl

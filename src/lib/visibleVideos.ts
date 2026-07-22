@@ -122,19 +122,29 @@ export const canonicalBrightcovePlayerUrl = (rawUrl: string) => {
 };
 
 export const canonicalBrightcovePlayerUrlFromItem = (item: any, seedUrl = '') => {
-  const candidates = [
+  const primaryCandidates = [
     item?.embedUrl,
     item?.url,
     item?.sourceStreamUrl,
     item?.downloadUrl,
     item?.originalUrl,
-    item?.sourceUrl,
-    item?.pageUrl,
-    seedUrl,
   ]
     .map((candidate) => String(candidate || '').trim())
     .filter(Boolean);
-  for (const candidate of candidates) {
+  for (const candidate of primaryCandidates) {
+    const canonical = canonicalBrightcovePlayerUrl(candidate);
+    if (canonical) return canonical;
+  }
+
+  const explicitlyBrightcove =
+    /brightcove/i.test(String(item?.provider || item?.platform || item?.type || '')) ||
+    Boolean(item?.brightcoveAccountId && item?.brightcoveVideoId);
+  if (!explicitlyBrightcove) return '';
+
+  const contextCandidates = [item?.sourceUrl, item?.pageUrl, seedUrl]
+    .map((candidate) => String(candidate || '').trim())
+    .filter(Boolean);
+  for (const candidate of contextCandidates) {
     const canonical = canonicalBrightcovePlayerUrl(candidate);
     if (canonical) return canonical;
   }
@@ -471,6 +481,17 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
     String(item?.pageUrl || '').trim(),
     String(seedUrl || '').trim(),
   ].filter(Boolean);
+  const itemType = String(item?.mimeType || item?.contentType || item?.type || '').toLowerCase();
+  const titleLooksLikeImage = /\.(?:svg|png|jpe?g|gif|webp|avif)(?:\s+\d+)?$/i.test(
+    String(item?.title || item?.name || item?.label || '').trim()
+  );
+  const hasImageAssetCandidate = candidates.some((candidate) =>
+    /\.(?:svg|png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.test(candidate)
+  );
+  const hasActualVideoCandidate = candidates.some(isDirectVideoAssetUrl) || candidates.some(isPlatformHostedUrl);
+  if ((itemType.startsWith('image/') || hasImageAssetCandidate || titleLooksLikeImage) && !hasActualVideoCandidate) {
+    return false;
+  }
   if (contextCandidates.some(isWistiaHelperResourceUrl)) return false;
   if (isBareWistiaDeliveryResource(item)) return false;
   if (isBareWistiaManifestResource(item)) return false;

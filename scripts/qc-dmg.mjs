@@ -36,13 +36,34 @@ const fail = (msg) => {
   console.log(`  ✗ ${msg}`);
 };
 
-const appPath = process.env.QC_APP_PATH || findPackagedApp();
+const appPath = path.resolve(process.env.QC_APP_PATH || findPackagedApp());
 const resourcesPath = path.join(appPath, 'Contents', 'Resources');
 const asarPath = path.join(resourcesPath, 'app.asar');
 const serverBundle = path.join(appPath, 'Contents', 'Resources', 'app.asar', 'desktop', 'server.mjs');
 const appExecutable = path.join(appPath, 'Contents', 'MacOS', 'Creative Asset Extractor');
+const packagedFfprobe = path.join(resourcesPath, 'bin', 'ffprobe');
 
-console.log(`\nDMG QC → ${appPath}\n`);
+const probeVideoTracks = (filePath) => {
+  try {
+    const output = execFileSync(packagedFfprobe, [
+      '-v', 'error',
+      '-show_entries', 'stream=codec_type,codec_name,width,height',
+      '-of', 'json',
+      filePath,
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const streams = JSON.parse(output)?.streams || [];
+    return {
+      hasVideo: streams.some((stream) => stream.codec_type === 'video'),
+      hasAudio: streams.some((stream) => stream.codec_type === 'audio'),
+    };
+  } catch {
+    return { hasVideo: false, hasAudio: false };
+  }
+};
+
+const skipDmgArtifact = process.env.QC_SKIP_DMG_ARTIFACT === '1';
+const qcLabel = skipDmgArtifact ? 'Packaged app QC' : 'DMG QC';
+console.log(`\n${qcLabel} → ${appPath}\n`);
 
 if (!fs.existsSync(asarPath)) {
   fail(`Missing app.asar at ${asarPath}`);
@@ -201,10 +222,11 @@ try {
         }
         const downloadedPath = String(completedJob?.result?.filePath || '');
         const downloadedSize = downloadedPath && fs.existsSync(downloadedPath) ? fs.statSync(downloadedPath).size : 0;
-        if (completedJob?.status === 'completed' && downloadedSize > 1024) {
-          pass(`Brightcove download OK (${downloadedSize}b)`);
+        const downloadedTracks = downloadedPath ? probeVideoTracks(downloadedPath) : { hasVideo: false, hasAudio: false };
+        if (completedJob?.status === 'completed' && downloadedSize > 1024 && downloadedTracks.hasVideo && downloadedTracks.hasAudio) {
+          pass(`Brightcove HLS→MP4 download OK with video + audio (${downloadedSize}b)`);
         } else {
-          fail(`Brightcove download failed: ${completedJob?.error || completedJob?.status || 'timed out'}`);
+          fail(`Brightcove download failed or is missing a media track: ${completedJob?.error || completedJob?.status || 'timed out'}`);
         }
 
         const platformDownloadRes = await fetch(`${serverUrl}/api/platform-video-download`, {
@@ -221,24 +243,84 @@ try {
         const platformDownload = await platformDownloadRes.json().catch(() => ({}));
         const platformPath = String(platformDownload?.filePath || '');
         const platformSize = platformPath && fs.existsSync(platformPath) ? fs.statSync(platformPath).size : 0;
-        if (platformDownloadRes.ok && platformSize > 1024 && platformDownload?.thumbnail) {
-          pass(`Website card Brightcove download OK (${platformSize}b)`);
+        const platformTracks = platformPath ? probeVideoTracks(platformPath) : { hasVideo: false, hasAudio: false };
+        if (platformDownloadRes.ok && platformSize > 1024 && platformDownload?.thumbnail && platformTracks.hasVideo && platformTracks.hasAudio) {
+          pass(`Website card Brightcove HLS→MP4 download OK with video + audio (${platformSize}b)`);
         } else {
-          fail(`Website card Brightcove download failed: ${platformDownload?.error || platformDownloadRes.status}`);
+          fail(`Website card Brightcove download failed or is missing a media track: ${platformDownload?.error || platformDownloadRes.status}`);
         }
       }
 
+      const invalidBrightcoveUrls = String(process.env.QC_INVALID_BRIGHTCOVE_URLS || '')
+        .split('|')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      for (const invalidUrl of invalidBrightcoveUrls) {
+        const beforeJobsRes = await fetch(`${serverUrl}/api/downloader/jobs`, {
+          headers: { 'X-VDX-Local-Request': '1' },
+          signal: AbortSignal.timeout(10000),
+        });
+        const beforeJobs = await beforeJobsRes.json().catch(() => ({}));
+        const rejectedRes = await fetch(`${serverUrl}/api/downloader/download`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
+          body: JSON.stringify({ url: invalidUrl, quality: 'hd' }),
+          signal: AbortSignal.timeout(60000),
+        });
+        const rejected = await rejectedRes.json().catch(() => ({}));
+        const afterJobsRes = await fetch(`${serverUrl}/api/downloader/jobs`, {
+          headers: { 'X-VDX-Local-Request': '1' },
+          signal: AbortSignal.timeout(10000),
+        });
+        const afterJobs = await afterJobsRes.json().catch(() => ({}));
+        if (
+          rejectedRes.status === 400 &&
+          /Brightcove video was not found/i.test(String(rejected?.error || '')) &&
+          Number(afterJobs?.count || 0) === Number(beforeJobs?.count || 0)
+        ) {
+          pass(`invalid Brightcove rejected before queue (${new URL(invalidUrl).searchParams.get('videoId') || 'unknown id'})`);
+        } else {
+          fail(`invalid Brightcove was not rejected cleanly: ${rejected?.error || rejectedRes.status}`);
+        }
+      }
+
+      const extractTargetUrl = String(process.env.QC_EXTRACT_URL || 'https://www.posluma.com/').trim();
+      const extractMode = String(process.env.QC_EXTRACT_MODE || 'static').trim().toLowerCase();
       const extractRes = await fetch(`${serverUrl}/api/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
-        body: JSON.stringify({ url: 'https://www.posluma.com/', mode: 'static' }),
-        signal: AbortSignal.timeout(120000),
+        body: JSON.stringify({ url: extractTargetUrl, ...(extractMode === 'full' ? {} : { mode: extractMode }) }),
+        signal: AbortSignal.timeout(extractMode === 'full' ? 240000 : 120000),
       });
       const extract = await extractRes.json().catch(() => ({}));
       if (extractRes.ok && extract.images?.length > 0) {
         pass(`extract OK (${extract.images.length} images)`);
       } else {
         fail(`extract failed: ${extract?.error || extractRes.status}`);
+      }
+
+      if (process.env.QC_REQUIRE_VIDEO_CARDS === '1' || process.env.QC_REQUIRE_CLEAN_VIDEO_CARDS === '1') {
+        const videoCards = Array.isArray(extract?.videos) ? extract.videos : [];
+        const junkCards = videoCards.filter((video) =>
+          /\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#]|$)/i.test(String(video?.url || video?.src || video?.title || ''))
+        );
+        const missingThumbs = videoCards.filter((video) => !String(video?.thumbnail || video?.poster || '').trim());
+        const requiresAtLeastOne = process.env.QC_REQUIRE_VIDEO_CARDS === '1';
+        if ((!requiresAtLeastOne || videoCards.length > 0) && junkCards.length === 0 && missingThumbs.length === 0) {
+          pass(`website video cards + thumbnails OK (${videoCards.length})`);
+        } else {
+          fail(`website video card QC failed: ${videoCards.length} cards, ${junkCards.length} image-like, ${missingThumbs.length} missing thumbnails`);
+          console.log('  video card diagnostics:', JSON.stringify(videoCards.map((video) => ({
+            url: video?.url,
+            sourceStreamUrl: video?.sourceStreamUrl,
+            sourceUrl: video?.sourceUrl,
+            pageUrl: video?.pageUrl,
+            provider: video?.provider,
+            type: video?.type,
+            title: video?.title,
+            thumbnail: video?.thumbnail,
+          })), null, 2));
+        }
       }
 
       const img = extract.images?.find((i) => /\.(?:png|jpe?g|webp)/i.test(String(i.url || ''))) || extract.images?.[0];
@@ -274,16 +356,20 @@ try {
   }
 }
 
-const dmgCandidates = fs.readdirSync(releaseDir).filter((name) => name.endsWith('-universal.dmg') || name.endsWith('.dmg'));
-const latestDmg = dmgCandidates
-  .map((name) => ({ name, mtime: fs.statSync(path.join(releaseDir, name)).mtimeMs }))
-  .sort((a, b) => b.mtime - a.mtime)[0];
-if (latestDmg) {
-  const sizeMb = (fs.statSync(path.join(releaseDir, latestDmg.name)).size / (1024 * 1024)).toFixed(0);
-  pass(`DMG artifact: ${latestDmg.name} (${sizeMb} MB)`);
+if (!skipDmgArtifact) {
+  const dmgCandidates = fs.readdirSync(releaseDir).filter((name) => name.endsWith('-universal.dmg') || name.endsWith('.dmg'));
+  const latestDmg = dmgCandidates
+    .map((name) => ({ name, mtime: fs.statSync(path.join(releaseDir, name)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)[0];
+  if (latestDmg) {
+    const sizeMb = (fs.statSync(path.join(releaseDir, latestDmg.name)).size / (1024 * 1024)).toFixed(0);
+    pass(`DMG artifact: ${latestDmg.name} (${sizeMb} MB)`);
+  } else {
+    fail('DMG artifact is missing');
+  }
 }
 
-console.log(`\n=== DMG QC ${issues.length === 0 ? 'PASS' : 'FAIL'} (${issues.length} issues) ===\n`);
+console.log(`\n=== ${qcLabel} ${issues.length === 0 ? 'PASS' : 'FAIL'} (${issues.length} issues) ===\n`);
 if (issues.length) {
   issues.forEach((issue) => console.log(`  - ${issue}`));
   process.exit(1);

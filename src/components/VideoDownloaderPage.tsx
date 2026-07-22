@@ -17,6 +17,7 @@ import {
   revealDownloaderFile,
   cancelDownloaderJob,
   pauseDownloaderJob,
+  resolveBrowserBlobVideo,
   resumeDownloaderJob,
   startBulkDownloaderJobs,
   startDownloaderJob,
@@ -53,6 +54,8 @@ const isHttpUrl = (value: string) => {
     return false;
   }
 };
+
+const isBlobVideoUrl = (value: string) => /^blob:https?:\/\//i.test(String(value || '').trim());
 
 const parseInputUrls = (value: string) =>
   Array.from(new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)));
@@ -497,11 +500,15 @@ export default function VideoDownloaderPage({
 
   const validateUrls = (urls: string[]) => {
     const errors: Array<{ url: string; error: string }> = [];
+    if (urls.length > 1 && urls.some(isBlobVideoUrl)) {
+      return [{ url: '', error: 'Download one browser blob video at a time.' }];
+    }
     urls.forEach((url) => {
-      if (!isHttpUrl(url)) {
+      if (!isHttpUrl(url) && !isBlobVideoUrl(url)) {
         errors.push({ url, error: 'Paste a valid public video URL.' });
         return;
       }
+      if (isBlobVideoUrl(url)) return;
       if (isPlaceholderVideoPlatformUrl(url)) {
         errors.push({ url, error: 'That is a sample placeholder URL, not a real public video.' });
         return;
@@ -719,17 +726,23 @@ export default function VideoDownloaderPage({
     void Promise.all(urls.map((item) => recordBookmarkHistory(item, 'video', titleFromUrl(item)))).catch(() => undefined);
 
     try {
+      const resolvedSingle =
+        urls.length === 1 && isBlobVideoUrl(urls[0])
+          ? await resolveBrowserBlobVideo(urls[0])
+          : null;
+      const resolvedUrl = resolvedSingle?.url || urls[0];
       const started =
         urls.length === 1
           ? {
               jobs: [
                 await startDownloaderJob({
-                  url: urls[0],
+                  url: resolvedUrl,
                   quality,
+                  title: resolvedSingle?.title,
                   startTime: requestedStartTime,
                   endTime: requestedEndTime,
                   cookiesFilePath: requestedCookiesFilePath,
-                  sourcePageUrl: trimOverride?.sourcePageUrl,
+                  sourcePageUrl: trimOverride?.sourcePageUrl || resolvedSingle?.sourcePageUrl,
                   saveToWebsiteAssets: trimOverride?.saveToWebsiteAssets,
                 }),
               ],
@@ -844,7 +857,7 @@ export default function VideoDownloaderPage({
                   }
                 }}
                 rows={5}
-                placeholder="Paste one or more public video URLs, one per line"
+                placeholder="Paste video, m3u8, or browser blob URL (one per line)"
                 className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 title="Download Video (Enter)"
               />
@@ -880,7 +893,11 @@ export default function VideoDownloaderPage({
               />
 
               <div className="flex flex-wrap items-center gap-2">
-                {detectedPlatform ? (
+                {inputUrls.length === 1 && isBlobVideoUrl(inputUrls[0]) ? (
+                  <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-sm text-violet-900">
+                    Browser blob detected · keep its Chrome tab open and playing
+                  </p>
+                ) : detectedPlatform ? (
                   <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
                     Detected: <span className="font-semibold">{platformLabel(detectedPlatform)}</span>
                   </p>

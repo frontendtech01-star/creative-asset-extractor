@@ -101,6 +101,23 @@ export const inspectDownloaderUrl = async (url: string) => {
   return data as { ok: true; platform: string; videos: DownloaderVideo[]; count: number };
 };
 
+export const resolveBrowserBlobVideo = async (url: string) => {
+  const response = await apiFetch('/api/browser-tabs/chrome/resolve-blob-video', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || 'Could not resolve the browser blob video.');
+  return data as {
+    ok: true;
+    url: string;
+    sourcePageUrl: string;
+    title?: string;
+    type?: 'm3u8' | 'mpd' | 'video';
+  };
+};
+
 export const startDownloaderJob = async (input: {
   url: string;
   quality: DownloaderQuality;

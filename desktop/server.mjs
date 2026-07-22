@@ -540,6 +540,9 @@ var isYouTubeUnavailableError = (message) => /(?:\[youtube\].*)?(?:this video is
   message
 );
 var friendlyDownloaderError = (platform, message) => {
+  if (platform === "brightcove" && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
+    return "Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.";
+  }
   if (/X\.com extraction needs updated engine|Instagram could not refresh|Facebook could not access|No downloadable video stream|Video extraction failed/i.test(
     message
   )) {
@@ -1521,6 +1524,13 @@ var trimJobs = () => {
   for (const job of sorted.slice(100)) jobs.delete(job.id);
 };
 var registerVideoDownloaderRoutes = (app2, options) => {
+  const assertSpecialVideoAvailable = async (rawUrl) => {
+    const validated = validateDownloaderUrl(rawUrl, options.validateUrl);
+    if (validated.platform !== "brightcove" || !options.specialInspect) return;
+    const payload = await options.specialInspect(validated.url);
+    const videos = specialPayloadToCards(payload, validated.url, validated.platform);
+    if (videos.length === 0) throw new Error("No downloadable video was found for this URL.");
+  };
   app2.post("/api/downloader/inspect", async (req, res) => {
     const rawUrl = String(req.body?.url || "").trim();
     if (!rawUrl) return res.status(400).json({ error: "URL is required." });
@@ -1551,10 +1561,12 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       return res.status(400).json({ error: friendlyDownloaderError(platform, errorText(error)) });
     }
   });
-  app2.post("/api/downloader/download", (req, res) => {
+  app2.post("/api/downloader/download", async (req, res) => {
     try {
+      const rawUrl = String(req.body?.url || "").trim();
+      await assertSpecialVideoAvailable(rawUrl);
       const job = createJob(options, {
-        url: String(req.body?.url || "").trim(),
+        url: rawUrl,
         quality: String(req.body?.quality || "fhd").toLowerCase(),
         title: String(req.body?.title || "").trim(),
         sourcePageUrl: String(req.body?.sourcePageUrl || "").trim(),
@@ -1566,10 +1578,12 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
     } catch (error) {
-      return res.status(400).json({ error: error?.message || "Could not start download." });
+      const rawUrl = String(req.body?.url || "").trim();
+      const platform = detectDownloaderPlatform(rawUrl);
+      return res.status(400).json({ error: friendlyDownloaderError(platform, errorText(error)) });
     }
   });
-  app2.post("/api/downloader/bulk", (req, res) => {
+  app2.post("/api/downloader/bulk", async (req, res) => {
     const rawUrls = Array.isArray(req.body?.urls) ? req.body.urls : [];
     const urls = Array.from(
       new Set(rawUrls.map((value) => String(value || "").trim()).filter(Boolean))
@@ -1582,9 +1596,13 @@ var registerVideoDownloaderRoutes = (app2, options) => {
     const errors = [];
     for (const url of urls) {
       try {
+        await assertSpecialVideoAvailable(url);
         created.push(createJob(options, { url, quality, ...trimRange, cookiesFilePath }));
       } catch (error) {
-        errors.push({ url, error: error?.message || "Invalid URL" });
+        errors.push({
+          url,
+          error: friendlyDownloaderError(detectDownloaderPlatform(url), errorText(error))
+        });
       }
     }
     trimJobs();
@@ -3611,7 +3629,7 @@ var isLocalAppUrl = (value) => {
     return false;
   }
 };
-var readChromeClientTab = async () => {
+var readChromeClientTab = async (preferredUrl = "") => {
   if (process.platform !== "darwin") {
     throw new Error("Chrome tab detection is currently available on macOS only.");
   }
@@ -3658,7 +3676,21 @@ var readChromeClientTab = async () => {
     if (activeDistance !== 0) return activeDistance;
     return a.index - b.index;
   });
-  const selected = frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0];
+  const preferredOrigin = (() => {
+    try {
+      return preferredUrl ? new URL2(preferredUrl).origin : "";
+    } catch {
+      return "";
+    }
+  })();
+  const preferredTab = preferredOrigin ? candidates.find((tab) => {
+    try {
+      return new URL2(tab.url).origin === preferredOrigin;
+    } catch {
+      return false;
+    }
+  }) : void 0;
+  const selected = preferredTab || (frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0]);
   if (!selected?.url) {
     throw new Error("Only local app tabs were found in Chrome. Open the client website in Chrome beside the localhost app tab.");
   }
@@ -4282,9 +4314,7 @@ var executeJavascriptInChromeTab = async (tab, scriptSource) => {
     "set jsSource to item 1 of argv",
     'tell application "Google Chrome"',
     'if it is not running then error "Google Chrome is not running."',
-    `set targetWindow to window ${Math.max(1, Number(tab.windowIndex || 1))}`,
-    `set targetTab to tab ${Math.max(1, Number(tab.tabIndex || 1))} of targetWindow`,
-    "return execute javascript jsSource in targetTab",
+    `return execute tab ${Math.max(1, Number(tab.tabIndex || 1))} of window ${Math.max(1, Number(tab.windowIndex || 1))} javascript jsSource`,
     "end tell",
     "end run"
   ];
@@ -4295,6 +4325,31 @@ var executeJavascriptInChromeTab = async (tab, scriptSource) => {
   );
   return String(stdout || "").trim();
 };
+var buildChromeTabVideoCaptureScript = () => `
+(() => {
+  const urls = new Set();
+  const add = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw || raw.startsWith('blob:')) return;
+    try {
+      const absolute = new URL(raw, location.href).href;
+      if (/\\.(?:m3u8|mpd|mp4|webm|mov)(?:[?#]|$)|brightcove|vimeo|wistia/i.test(absolute)) urls.add(absolute);
+    } catch {}
+  };
+  document.querySelectorAll('video, video source, iframe[src], embed[src], object[data]').forEach((node) => {
+    add(node.currentSrc);
+    add(node.src);
+    add(node.getAttribute && (node.getAttribute('src') || node.getAttribute('data')));
+  });
+  Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => add(entry.name));
+  return JSON.stringify({
+    ok: true,
+    url: location.href,
+    title: document.title || location.href,
+    videos: Array.from(urls).map((url) => ({ url })),
+  });
+})()
+`;
 var fetchBrowserSessionFontFaces = async (rawFonts, targetUrl) => {
   const cssUrls = Array.from(
     new Set(
@@ -4495,6 +4550,51 @@ app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
     return res.status(400).json({
       ok: false,
       error: error?.message || "Unable to read Chrome active tab."
+    });
+  }
+});
+app.post("/api/browser-tabs/chrome/resolve-blob-video", async (req, res) => {
+  const blobUrl = String(req.body?.url || "").trim();
+  if (!/^blob:https?:\/\//i.test(blobUrl)) {
+    return res.status(400).json({ ok: false, error: "Paste a valid browser blob video URL." });
+  }
+  try {
+    const blobPageUrl = blobUrl.slice(5);
+    const blobOrigin = new URL2(blobPageUrl).origin;
+    const tab = await readChromeClientTab(blobPageUrl);
+    const tabUrl = String(tab.url || "").trim();
+    if (!tabUrl || new URL2(tabUrl).origin !== blobOrigin) {
+      throw new Error("Open the page that created this blob video in the active Chrome tab, play the video, then try again.");
+    }
+    const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabVideoCaptureScript());
+    const raw = JSON.parse(rawText || "{}");
+    const pageUrl = String(raw?.url || tabUrl).trim();
+    const candidates = Array.from(
+      new Set(
+        (Array.isArray(raw?.videos) ? raw.videos : []).map((video) => String(video?.url || "").trim()).filter((url) => /^https?:\/\//i.test(url)).filter((url) => /\.m3u8(?:[?#]|$)|\.mpd(?:[?#]|$)|\.(?:mp4|webm|mov)(?:[?#]|$)/i.test(url))
+      )
+    ).sort((left, right) => {
+      const score = (url) => (/\.m3u8(?:[?#]|$)/i.test(url) ? 100 : 0) + (/master|playlist|index/i.test(url) ? 30 : 0) + (/\.mpd(?:[?#]|$)/i.test(url) ? 10 : 0);
+      return score(right) - score(left);
+    });
+    for (const candidate of candidates.slice(0, 16)) {
+      const validation = await validateStreamUrl(candidate, pageUrl).catch(() => null);
+      if (!validation?.ok) continue;
+      return res.json({
+        ok: true,
+        url: validation.url || candidate,
+        sourcePageUrl: pageUrl,
+        title: String(raw?.title || "Captured browser video").trim(),
+        type: /\.m3u8(?:[?#]|$)/i.test(candidate) ? "m3u8" : /\.mpd(?:[?#]|$)/i.test(candidate) ? "mpd" : "video"
+      });
+    }
+    throw new Error("No downloadable HLS stream was captured. Keep the Chrome tab open, press play, wait a few seconds, and try again.");
+  } catch (error) {
+    const rawMessage = String(error?.message || error || "");
+    const friendlyMessage = /Application isn.t running|Google Chrome got an error.*isn.t running|\(-600\)/i.test(rawMessage) ? "Open the source page in Google Chrome, start video playback, then try the blob URL again." : /Executing JavaScript through AppleScript is turned off/i.test(rawMessage) ? "In Chrome, enable View > Developer > Allow JavaScript from Apple Events, keep the source video playing, then try again." : rawMessage;
+    return res.status(400).json({
+      ok: false,
+      error: friendlyMessage || "Could not resolve the browser blob video."
     });
   }
 });
@@ -6712,7 +6812,7 @@ var isUnsupportedVideoResourceUrl = (rawUrl) => {
   const value = String(rawUrl || "").trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith("data:") || value.startsWith("blob:")) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico)(?:[?#@]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
   if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL2(value);
@@ -10544,15 +10644,24 @@ var resolveBrightcoveCandidateVideos = async (videos, label) => {
   const playerUrls = collectBrightcovePlayerUrls(videos);
   if (playerUrls.length === 0) return videos;
   const resolved = [];
+  const unavailablePlayerUrls = /* @__PURE__ */ new Set();
   for (const playerUrl of playerUrls.slice(0, 8)) {
     try {
       const assets = await withTimeout(extractBrightcoveVideos(playerUrl), 2e4, `${label} for ${playerUrl}`);
       if (assets?.videos?.length) resolved.push(...assets.videos);
     } catch (error) {
+      if (/\bVIDEO_NOT_FOUND\b/i.test(String(error?.message || error || ""))) {
+        unavailablePlayerUrls.add(playerUrl);
+      }
       console.warn(`${label} failed for ${playerUrl}:`, error?.message || error);
     }
   }
-  if (!resolved.length) return videos;
+  if (!resolved.length) {
+    return videos.filter((video) => {
+      const url = String(video?.url || video?.embedUrl || "").trim();
+      return !unavailablePlayerUrls.has(url) && !/players\.brightcove\.net/i.test(url);
+    });
+  }
   const withoutPlaceholders = videos.filter((video) => {
     const url = String(video?.url || "");
     return !/players\.brightcove\.net/i.test(url);
@@ -11393,6 +11502,15 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     attachYouTubeWatchUrlToVideos(Array.from(videoByKey.values())),
     targetUrl
   );
+  const videosWithThumbnailFallback = uniqueVideos.map((video) => {
+    if (String(video?.thumbnail || video?.poster || "").trim()) return video;
+    const streamUrl = String(
+      video?.sourceStreamUrl || video?.brightcoveManifestUrl || video?.url || ""
+    ).trim();
+    if (!/^https?:\/\//i.test(streamUrl) || !isLikelyHttpMediaUrl(streamUrl)) return video;
+    const thumbnail = `/api/video-frame-thumbnail?url=${encodeURIComponent(streamUrl)}&sourcePageUrl=${encodeURIComponent(targetUrl)}`;
+    return { ...video, thumbnail, thumbnailGenerated: true };
+  });
   const metadataFonts = await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast });
   let uniqueFonts = dedupeFontsByLogicalKey(
     Array.from(new Set(metadataFonts.map((font) => font.url))).map((url) => pickBestFontForUrl(metadataFonts, url)).filter(Boolean).filter(isSupportedFontAsset)
@@ -11406,7 +11524,7 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
   if (options.videosOnly) {
     return {
       images: [],
-      videos: uniqueVideos,
+      videos: videosWithThumbnailFallback,
       fonts: [],
       colors: [],
       ...options.sectionMode ? {
@@ -11496,7 +11614,7 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     options.fast ? new Promise((resolve) => setTimeout(() => resolve(fallbackIcons), 1e3)) : new Promise(() => {
     })
   ]).catch(() => fallbackIcons)).sort((a, b) => String(a?.url || "").localeCompare(String(b?.url || "")));
-  const resultVideos = uniqueVideos.map((video) => withAssetStatus(video));
+  const resultVideos = videosWithThumbnailFallback.map((video) => withAssetStatus(video));
   const resultFonts = await Promise.race([
     Promise.all(uniqueFonts.map((font) => attachCachedUrl(font, "font"))),
     options.fast ? new Promise((resolve) => setTimeout(() => resolve(fallbackFonts), 1e3)) : new Promise(() => {
@@ -11786,10 +11904,18 @@ var extractStaticAssets = async (targetUrl, preloadedHtml = "", options = {}) =>
     const canSkipCssFetch = options.videosOnly || stylesheetLinks === 0;
     const embedsResolved = options.videosOnly ? !staticExtractHasUnresolvedEmbeds(html, { videos }, options) : true;
     if (canSkipCssFetch && embedsResolved) {
-      return dedupeExtractedAssets(images, videos, fonts, colors, targetUrl, resolvedPagePrimaryThumb, {
-        fast: true,
-        videosOnly: options.videosOnly
-      });
+      return dedupeExtractedAssets(
+        images,
+        await resolveBrightcoveCandidateVideos(videos, `Fast static Brightcove extraction for ${targetUrl}`),
+        fonts,
+        colors,
+        targetUrl,
+        resolvedPagePrimaryThumb,
+        {
+          fast: true,
+          videosOnly: options.videosOnly
+        }
+      );
     }
   }
   if (options.videosOnly) {
@@ -12385,6 +12511,18 @@ var generateVideoFrameThumbnail = async (streamUrl, sourcePageUrl, req) => {
   }
   return toAbsoluteAppUrl(req, `/generated-thumbnails/${hash}.jpg`);
 };
+app.get("/api/video-frame-thumbnail", async (req, res) => {
+  const streamUrl = String(req.query?.url || "").trim();
+  const sourcePageUrl = String(req.query?.sourcePageUrl || "").trim();
+  if (!streamUrl) return res.status(400).json({ error: "Video URL is required." });
+  try {
+    const thumbnailUrl = await generateVideoFrameThumbnail(streamUrl, sourcePageUrl || void 0, req);
+    if (!thumbnailUrl) return res.status(404).json({ error: "Video thumbnail is unavailable." });
+    return res.redirect(302, thumbnailUrl);
+  } catch (error) {
+    return res.status(404).json({ error: error?.message || "Video thumbnail generation failed." });
+  }
+});
 var getVideoPreviewMetadata = async (targetUrl) => {
   if (isBrightcoveUrl(targetUrl)) {
     try {
@@ -12945,7 +13083,15 @@ var resolveVimeoQualityStreams = async (vimeoUrl, sourcePageUrl, ytDlpInfo = nul
 };
 var brightcovePolicyCache = /* @__PURE__ */ new Map();
 var brightcoveMetadataCache = /* @__PURE__ */ new Map();
+var brightcovePolicyInFlight = /* @__PURE__ */ new Map();
+var brightcoveMetadataInFlight = /* @__PURE__ */ new Map();
 var brightcoveMetadataTtlMs = 3 * 60 * 1e3;
+var bundledBrightcovePolicyKeys = /* @__PURE__ */ new Map([
+  [
+    "6311996242001:default_default",
+    "BCpkADawqM3eHsnivA0thG9l75psz8Bx4AyMKF8SdZSzD7GGt4gh7XK7yO6gQNN93TpRuY3okeOSZKG6Vq6iB4WB5vGwV-e5unw4zt3oF6_oQxOcXMc20I0iR2-xWpHF7eABbc6xkAB-7qDo"
+  ]
+]);
 var getVimeoMetadata = async (vimeoUrl, sourcePageUrl = "") => {
   const cacheKey = `${vimeoUrl}|${String(sourcePageUrl || "")}`;
   const cached = vimeoMetadataCache.get(cacheKey);
@@ -12974,50 +13120,70 @@ var getVimeoMetadata = async (vimeoUrl, sourcePageUrl = "") => {
   vimeoMetadataCache.set(cacheKey, { expiresAt: Date.now() + vimeoMetadataTtlMs, info });
   return info;
 };
-var getBrightcovePolicyKey = async (accountId, playerId) => {
+var getBrightcovePolicyKey = async (accountId, playerId, forceRefresh = false) => {
   const normalizedPlayer = playerId.endsWith("_default") ? playerId : `${playerId}_default`;
   const cacheKey = `${accountId}:${normalizedPlayer}`;
-  const cached = brightcovePolicyCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.policyKey;
-  const playerBaseUrl = `https://players.brightcove.net/${accountId}/${normalizedPlayer}`;
-  try {
-    const configResponse = await axios.get(`${playerBaseUrl}/config.json`, {
-      timeout: 1e4,
-      httpsAgent: relaxedHttpsAgent,
-      responseType: "json",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json,*/*"
-      }
-    });
-    const configPolicyKey = String(
-      configResponse.data?.video_cloud?.policy_key || configResponse.data?.videoCloud?.policyKey || configResponse.data?.policy_key || configResponse.data?.policyKey || ""
-    ).trim();
-    if (configPolicyKey) {
+  if (!forceRefresh) {
+    const cached = brightcovePolicyCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.policyKey;
+    const bundledPolicyKey = bundledBrightcovePolicyKeys.get(cacheKey);
+    if (bundledPolicyKey) {
       brightcovePolicyCache.set(cacheKey, {
         expiresAt: Date.now() + brightcoveMetadataTtlMs,
-        policyKey: configPolicyKey
+        policyKey: bundledPolicyKey
       });
-      return configPolicyKey;
+      return bundledPolicyKey;
     }
-  } catch (error) {
-    console.warn(`Brightcove player config fetch failed for ${cacheKey}:`, error?.message || error);
+    const existingRequest = brightcovePolicyInFlight.get(cacheKey);
+    if (existingRequest) return existingRequest;
   }
-  const playerJsUrl = `${playerBaseUrl}/index.min.js`;
-  const response = await axios.get(playerJsUrl, {
-    timeout: 1e4,
-    httpsAgent: relaxedHttpsAgent,
-    responseType: "text",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept": "*/*"
+  const request = (async () => {
+    const playerBaseUrl = `https://players.brightcove.net/${accountId}/${normalizedPlayer}`;
+    try {
+      const configResponse = await axios.get(`${playerBaseUrl}/config.json`, {
+        timeout: 3e4,
+        httpsAgent: relaxedHttpsAgent,
+        responseType: "json",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json,*/*"
+        }
+      });
+      const configPolicyKey = String(
+        configResponse.data?.video_cloud?.policy_key || configResponse.data?.videoCloud?.policyKey || configResponse.data?.policy_key || configResponse.data?.policyKey || ""
+      ).trim();
+      if (configPolicyKey) {
+        brightcovePolicyCache.set(cacheKey, {
+          expiresAt: Date.now() + brightcoveMetadataTtlMs,
+          policyKey: configPolicyKey
+        });
+        return configPolicyKey;
+      }
+    } catch (error) {
+      console.warn(`Brightcove player config fetch failed for ${cacheKey}:`, error?.message || error);
     }
-  });
-  const js = String(response.data || "");
-  const policyKey = js.match(/policyKey["']?\s*[:=]\s*["']([^"']+)["']/i)?.[1] || js.match(/"policyKey"\s*:\s*"([^"]+)"/i)?.[1] || js.match(/BCpk[A-Za-z0-9._~-]+/)?.[0] || "";
-  if (!policyKey) throw new Error("Brightcove policy key was not found for this player.");
-  brightcovePolicyCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, policyKey });
-  return policyKey;
+    const playerJsUrl = `${playerBaseUrl}/index.min.js`;
+    const response = await axios.get(playerJsUrl, {
+      timeout: 3e4,
+      httpsAgent: relaxedHttpsAgent,
+      responseType: "text",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+      }
+    });
+    const js = String(response.data || "");
+    const policyKey = js.match(/policyKey["']?\s*[:=]\s*["']([^"']+)["']/i)?.[1] || js.match(/"policyKey"\s*:\s*"([^"]+)"/i)?.[1] || js.match(/BCpk[A-Za-z0-9._~-]+/)?.[0] || "";
+    if (!policyKey) throw new Error("Brightcove policy key was not found for this player.");
+    brightcovePolicyCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, policyKey });
+    return policyKey;
+  })();
+  brightcovePolicyInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    if (brightcovePolicyInFlight.get(cacheKey) === request) brightcovePolicyInFlight.delete(cacheKey);
+  }
 };
 var getBrightcoveMetadata = async (playerUrl) => {
   const parsed = parseBrightcovePlayerUrl(playerUrl);
@@ -13026,29 +13192,52 @@ var getBrightcoveMetadata = async (playerUrl) => {
   const cacheKey = `${parsed.accountId}:${normalizedPlayer}:${parsed.videoId}`;
   const cached = brightcoveMetadataCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.info;
-  const policyKey = await getBrightcovePolicyKey(parsed.accountId, parsed.playerId);
-  const playbackUrl = `https://edge.api.brightcove.com/playback/v1/accounts/${parsed.accountId}/videos/${parsed.videoId}`;
-  const response = await axios.get(playbackUrl, {
-    timeout: 12e3,
-    httpsAgent: relaxedHttpsAgent,
-    validateStatus: (status) => status >= 200 && status < 500,
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept": `application/json;pk=${policyKey}`
+  const existingRequest = brightcoveMetadataInFlight.get(cacheKey);
+  if (existingRequest) return existingRequest;
+  const request = (async () => {
+    let policyKey = await getBrightcovePolicyKey(parsed.accountId, parsed.playerId);
+    const playbackUrl = `https://edge.api.brightcove.com/playback/v1/accounts/${parsed.accountId}/videos/${parsed.videoId}`;
+    let response;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        response = await axios.get(playbackUrl, {
+          timeout: 3e4,
+          httpsAgent: relaxedHttpsAgent,
+          validateStatus: (status) => status >= 200 && status < 500,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": `application/json;pk=${policyKey}`
+          }
+        });
+        if ((response.status === 401 || response.status === 403) && attempt === 0) {
+          brightcovePolicyCache.delete(`${parsed.accountId}:${normalizedPlayer}`);
+          policyKey = await getBrightcovePolicyKey(parsed.accountId, parsed.playerId, true);
+          continue;
+        }
+        break;
+      } catch (error) {
+        if (attempt > 0) throw error;
+      }
     }
-  });
-  const info = response.data || {};
-  const playbackError = Array.isArray(info) ? info[0] : null;
-  if (playbackError?.error_code || playbackError?.message) {
-    const code = String(playbackError.error_code || "PLAYBACK_ERROR");
-    const message = String(playbackError.message || "Brightcove could not load this video.");
-    throw new Error(`Brightcove ${code}: ${message}`);
+    const info = response?.data || {};
+    const playbackError = Array.isArray(info) ? info[0] : null;
+    if (playbackError?.error_code || playbackError?.message) {
+      const code = String(playbackError.error_code || "PLAYBACK_ERROR");
+      const message = String(playbackError.message || "Brightcove could not load this video.");
+      throw new Error(`Brightcove ${code}: ${message}`);
+    }
+    if (!response || response.status >= 400) {
+      throw new Error(`Brightcove playback request failed with status ${response?.status || "unknown"}.`);
+    }
+    brightcoveMetadataCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, info });
+    return info;
+  })();
+  brightcoveMetadataInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    if (brightcoveMetadataInFlight.get(cacheKey) === request) brightcoveMetadataInFlight.delete(cacheKey);
   }
-  if (response.status >= 400) {
-    throw new Error(`Brightcove playback request failed with status ${response.status}.`);
-  }
-  brightcoveMetadataCache.set(cacheKey, { expiresAt: Date.now() + brightcoveMetadataTtlMs, info });
-  return info;
 };
 var getYouTubeVideoId = (rawUrl) => {
   try {
@@ -15361,16 +15550,6 @@ var extractHlsVariants = async (manifestUrl, sourcePageUrl) => {
   }
   return variants;
 };
-var selectHlsVariantUrl = async (manifestUrl, targetHeight, sourcePageUrl) => {
-  const variants = await extractHlsVariants(manifestUrl, sourcePageUrl);
-  const selected = variants.map((variant) => ({
-    variant,
-    distance: variant.height ? Math.abs(variant.height - targetHeight) : 9999,
-    abovePenalty: variant.height && variant.height > targetHeight ? 500 : 0,
-    bitrate: Number(variant.bandwidth || 0)
-  })).sort((a, b) => a.distance + a.abovePenalty - (b.distance + b.abovePenalty) || b.bitrate - a.bitrate)[0]?.variant;
-  return selected?.url || manifestUrl;
-};
 var extractBrightcoveVideos = async (playerUrl) => {
   const parsed = parseBrightcovePlayerUrl(playerUrl);
   if (!parsed) return { videos: [], images: [] };
@@ -15382,6 +15561,13 @@ var extractBrightcoveVideos = async (playerUrl) => {
     playerUrl
   ) || info.poster || info.thumbnail || "";
   const sources = Array.isArray(info.sources) ? info.sources : [];
+  const hlsSource = sources.find((source) => {
+    const src = String(source?.src || "");
+    const type = String(source?.type || "").toLowerCase();
+    return src && (src.includes(".m3u8") || type.includes("mpegurl"));
+  });
+  const hlsUrl = sanitizeStreamUrl(String(hlsSource?.src || ""), playerUrl) || "";
+  const hlsVariants = hlsUrl ? await extractHlsVariants(hlsUrl, playerUrl).catch(() => []) : [];
   const directMp4Sources = sources.map((source) => {
     const src = sanitizeStreamUrl(String(source?.src || ""), playerUrl);
     return src ? { ...source, src } : null;
@@ -15420,6 +15606,7 @@ var extractBrightcoveVideos = async (playerUrl) => {
       audioAvailable: true,
       isDirect: true,
       qualityExact: Boolean(height && (height === 720 || height === 1080)),
+      brightcoveManifestUrl: hlsUrl,
       brightcoveAccountId: parsed.accountId,
       brightcovePlayerId: parsed.playerId,
       brightcoveVideoId: parsed.videoId
@@ -15427,13 +15614,6 @@ var extractBrightcoveVideos = async (playerUrl) => {
   });
   const images = thumbnail ? [{ url: thumbnail, type: getAssetTypeFromUrl(thumbnail, "jpg") }] : [];
   if (videos.length > 0) return { videos, images };
-  const hlsSource = sources.find((source) => {
-    const src = String(source?.src || "");
-    const type = String(source?.type || "").toLowerCase();
-    return src && (src.includes(".m3u8") || type.includes("mpegurl"));
-  });
-  const hlsUrl = sanitizeStreamUrl(String(hlsSource?.src || ""), playerUrl) || "";
-  const hlsVariants = hlsUrl ? await extractHlsVariants(hlsUrl, playerUrl).catch(() => []) : [];
   const mergeHeights = Array.from(new Set(
     (hlsVariants.length > 0 ? hlsVariants.map((variant) => variant.height || 0) : [1080, 720]).filter((height) => height === 1080 || height === 720).sort((a, b) => b - a)
   ));
@@ -15476,11 +15656,13 @@ var downloadBrightcoveVideoToFile = async (url, quality, options = {}) => {
   });
   const selected = directCandidates[0];
   const fallback = videos.find((video) => video?.brightcoveManifestUrl);
-  const streamUrl = String(selected?.url || fallback?.brightcoveManifestUrl || "").trim();
+  const manifestUrl = String(fallback?.brightcoveManifestUrl || selected?.brightcoveManifestUrl || "").trim();
+  const selectedHlsUrl = manifestUrl;
+  const streamUrl = String(selectedHlsUrl || selected?.url || "").trim();
   if (!streamUrl) throw new Error("Brightcove did not provide a downloadable video stream.");
   const resolvedTitle = String(options.title || selected?.title || fallback?.title || "Brightcove video");
   const thumbnail = String(selected?.thumbnail || fallback?.thumbnail || assets.images?.[0]?.url || "");
-  const result = options.mode !== "audio" && selected?.url ? await downloadDirectStreamVideoToFile(streamUrl, {
+  const result = options.mode !== "audio" && !selectedHlsUrl && selected?.url ? await downloadDirectStreamVideoToFile(streamUrl, {
     titleHint: resolvedTitle,
     sourcePageUrl: options.sourcePageUrl || url,
     quality,
@@ -19329,7 +19511,8 @@ app.get("/api/resolve-video", async (req, res) => {
     if (isBrightcoveUrl(url)) {
       try {
         const brightcoveAssets = await extractBrightcoveVideos(url);
-        const directCandidates = (brightcoveAssets.videos || []).filter((video2) => video2?.isDirect && isLikelyDirectVideoStreamUrl(String(video2.sourceStreamUrl || video2.url || "")));
+        const mergeCandidate = (brightcoveAssets.videos || []).find((video2) => video2?.brightcoveManifestUrl);
+        const directCandidates = (mergeCandidate ? [] : brightcoveAssets.videos || []).filter((video2) => video2?.isDirect && isLikelyDirectVideoStreamUrl(String(video2.sourceStreamUrl || video2.url || "")));
         const exactCandidates = directCandidates.filter((video2) => matchesStrictQuality(parseCandidateHeight(video2), requestedQuality));
         const selected2 = await firstValidStreamCandidate(
           sortCandidatesForQuality(exactCandidates.length > 0 ? exactCandidates : directCandidates, requestedQuality),
@@ -19356,8 +19539,7 @@ app.get("/api/resolve-video", async (req, res) => {
             })
           });
         }
-        const mergeCandidate = (brightcoveAssets.videos || []).find((video2) => video2?.brightcoveManifestUrl);
-        const hlsInputUrl = mergeCandidate?.brightcoveManifestUrl ? await selectHlsVariantUrl(mergeCandidate.brightcoveManifestUrl, getVimeoTargetHeight(requestedQuality), url).catch(() => mergeCandidate.brightcoveManifestUrl) : "";
+        const hlsInputUrl = String(mergeCandidate?.brightcoveManifestUrl || "");
         const mergedVideo = await materializeMergedMp4FromPlatform(
           url,
           requestedQuality,

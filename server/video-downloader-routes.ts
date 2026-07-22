@@ -488,6 +488,9 @@ const isYouTubeUnavailableError = (message: string) =>
   );
 
 const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) => {
+  if (platform === 'brightcove' && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
+    return 'Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.';
+  }
   if (
     /X\.com extraction needs updated engine|Instagram could not refresh|Facebook could not access|No downloadable video stream|Video extraction failed/i.test(
       message
@@ -1690,6 +1693,14 @@ const trimJobs = () => {
 };
 
 export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownloaderRouteOptions) => {
+  const assertSpecialVideoAvailable = async (rawUrl: string) => {
+    const validated = validateDownloaderUrl(rawUrl, options.validateUrl);
+    if (validated.platform !== 'brightcove' || !options.specialInspect) return;
+    const payload = await options.specialInspect(validated.url);
+    const videos = specialPayloadToCards(payload, validated.url, validated.platform);
+    if (videos.length === 0) throw new Error('No downloadable video was found for this URL.');
+  };
+
   app.post('/api/downloader/inspect', async (req, res) => {
     const rawUrl = String(req.body?.url || '').trim();
     if (!rawUrl) return res.status(400).json({ error: 'URL is required.' });
@@ -1723,10 +1734,12 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     }
   });
 
-  app.post('/api/downloader/download', (req, res) => {
+  app.post('/api/downloader/download', async (req, res) => {
     try {
+      const rawUrl = String(req.body?.url || '').trim();
+      await assertSpecialVideoAvailable(rawUrl);
       const job = createJob(options, {
-        url: String(req.body?.url || '').trim(),
+        url: rawUrl,
         quality: String(req.body?.quality || 'fhd').toLowerCase(),
         title: String(req.body?.title || '').trim(),
         sourcePageUrl: String(req.body?.sourcePageUrl || '').trim(),
@@ -1738,11 +1751,13 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
       trimJobs();
       return res.status(202).json({ ok: true, job: publicJob(job) });
     } catch (error: any) {
-      return res.status(400).json({ error: error?.message || 'Could not start download.' });
+      const rawUrl = String(req.body?.url || '').trim();
+      const platform = detectDownloaderPlatform(rawUrl);
+      return res.status(400).json({ error: friendlyDownloaderError(platform, errorText(error)) });
     }
   });
 
-  app.post('/api/downloader/bulk', (req, res) => {
+  app.post('/api/downloader/bulk', async (req, res) => {
     const rawUrls = Array.isArray(req.body?.urls) ? req.body.urls : [];
     const urls: string[] = Array.from(
       new Set<string>(rawUrls.map((value: unknown) => String(value || '').trim()).filter(Boolean))
@@ -1755,9 +1770,13 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
     const errors: Array<{ url: string; error: string }> = [];
     for (const url of urls) {
       try {
+	        await assertSpecialVideoAvailable(url);
 	        created.push(createJob(options, { url, quality, ...trimRange, cookiesFilePath }));
       } catch (error: any) {
-        errors.push({ url, error: error?.message || 'Invalid URL' });
+        errors.push({
+          url,
+          error: friendlyDownloaderError(detectDownloaderPlatform(url), errorText(error)),
+        });
       }
     }
     trimJobs();
