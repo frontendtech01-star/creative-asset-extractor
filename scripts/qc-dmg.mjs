@@ -138,6 +138,8 @@ try {
     process.env.VDX_SKIP_AUTOSTART = '1';
     process.env.VDX_APP_ROOT = extractDir;
     process.env.VDX_RESOURCES_PATH = resourcesPath;
+    const qcDownloadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cae-dmg-qc-downloads-'));
+    process.env.CAE_DOWNLOADS_DIR = qcDownloadsDir;
     process.chdir(extractDir);
 
     let serverHandle = null;
@@ -150,6 +152,50 @@ try {
       const health = await fetch(`${serverUrl}/`, { headers: { 'X-VDX-Local-Request': '1' } });
       if (health.ok) pass('server serves frontend');
       else fail(`frontend HTTP ${health.status}`);
+
+      const brightcoveUrl = String(process.env.QC_BRIGHTCOVE_URL || '').trim();
+      if (brightcoveUrl) {
+        const inspectRes = await fetch(`${serverUrl}/api/downloader/inspect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
+          body: JSON.stringify({ url: brightcoveUrl }),
+          signal: AbortSignal.timeout(60000),
+        });
+        const inspection = await inspectRes.json().catch(() => ({}));
+        const brightcoveCard = inspection?.videos?.[0];
+        if (inspectRes.ok && brightcoveCard?.thumbnail && brightcoveCard?.maxHeight > 0) {
+          pass(`Brightcove thumbnail + metadata OK (${brightcoveCard.maxHeight}p)`);
+        } else {
+          fail(`Brightcove inspection failed: ${inspection?.error || inspectRes.status}`);
+        }
+
+        const downloadRes = await fetch(`${serverUrl}/api/downloader/download`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
+          body: JSON.stringify({ url: brightcoveUrl, quality: 'hd', title: 'brightcove-qc' }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const queued = await downloadRes.json().catch(() => ({}));
+        const jobId = queued?.job?.id;
+        let completedJob = queued?.job;
+        for (let attempt = 0; jobId && attempt < 90; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const jobRes = await fetch(`${serverUrl}/api/downloader/jobs/${jobId}`, {
+            headers: { 'X-VDX-Local-Request': '1' },
+            signal: AbortSignal.timeout(10000),
+          });
+          const jobPayload = await jobRes.json().catch(() => ({}));
+          completedJob = jobPayload?.job;
+          if (['completed', 'error', 'cancelled'].includes(completedJob?.status)) break;
+        }
+        const downloadedPath = String(completedJob?.result?.filePath || '');
+        const downloadedSize = downloadedPath && fs.existsSync(downloadedPath) ? fs.statSync(downloadedPath).size : 0;
+        if (completedJob?.status === 'completed' && downloadedSize > 1024) {
+          pass(`Brightcove download OK (${downloadedSize}b)`);
+        } else {
+          fail(`Brightcove download failed: ${completedJob?.error || completedJob?.status || 'timed out'}`);
+        }
+      }
 
       const extractRes = await fetch(`${serverUrl}/api/extract`, {
         method: 'POST',
@@ -184,6 +230,7 @@ try {
       if (serverHandle?.server?.close) {
         await new Promise((resolve) => serverHandle.server.close(resolve));
       }
+      fs.rmSync(qcDownloadsDir, { recursive: true, force: true });
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
   }
