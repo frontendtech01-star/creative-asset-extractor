@@ -1,13 +1,13 @@
 {
   "platform": "darwin",
   "arch": "arm64",
-  "updatedAt": "2026-07-06T09:00:52.765Z",
+  "updatedAt": "2026-07-26T15:54:30.381Z",
   "binaries": {
-    "ffmpeg": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/ffmpeg",
-    "ffprobe": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/ffprobe",
-    "ytdlp": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/yt-dlp",
-    "aria2": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/aria2c",
-    "deno": "/Users/rohitashkumar/Downloads/creative-asset-extractor/vendor/bin-pack/deno"
+    "ffmpeg": "/Users/rohitashkumar/Downloads/Rnd/creative extracter/vendor/bin-pack/ffmpeg",
+    "ffprobe": "/Users/rohitashkumar/Downloads/Rnd/creative extracter/vendor/bin-pack/ffprobe",
+    "ytdlp": "/Users/rohitashkumar/Downloads/Rnd/creative extracter/vendor/bin-pack/yt-dlp",
+    "aria2": "/Users/rohitashkumar/Downloads/Rnd/creative extracter/vendor/bin-pack/aria2c",
+    "deno": "/Users/rohitashkumar/Downloads/Rnd/creative extracter/vendor/bin-pack/deno"
   },
   "standaloneYtDlp": true
 }

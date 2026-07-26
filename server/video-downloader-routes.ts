@@ -226,6 +226,25 @@ const normalizeDownloaderUrl = (rawUrl: string, platform = detectDownloaderPlatf
   return parsed.href;
 };
 
+const downloaderUrlCandidates = (url: string, platform: DownloaderPlatform) => {
+  if (platform === 'x') {
+    return Array.from(new Set([url, url.replace('twitter.com', 'x.com')]));
+  }
+  if (platform !== 'vimeo') return [url];
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'player.vimeo.com') return [url];
+    const match = parsed.pathname.match(/\/(\d+)(?:\/([a-z0-9]+))?(?:\/|$)/i);
+    if (!match?.[1]) return [url];
+    const playerUrl = new URL(`https://player.vimeo.com/video/${match[1]}`);
+    if (match[2]) playerUrl.searchParams.set('h', match[2]);
+    return Array.from(new Set([url, playerUrl.href]));
+  } catch {
+    return [url];
+  }
+};
+
 const validateDownloaderUrl = (rawUrl: string, validateUrl?: (url: string) => unknown) => {
   const parsed = new URL(rawUrl);
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Paste a valid public video URL.');
@@ -599,9 +618,7 @@ const inspectWithFallbacks = async (
 ) => {
   const url = normalizeDownloaderUrl(rawUrl, platform);
   let lastError: any;
-  const urls = platform === 'x'
-    ? Array.from(new Set([url, url.replace('twitter.com', 'x.com')]))
-    : [url];
+  const urls = downloaderUrlCandidates(url, platform);
 
   for (const candidate of urls) {
     try {
@@ -802,7 +819,13 @@ const formatSelector = (platform: DownloaderPlatform, quality: DownloadQuality, 
     return `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
   }
   if (platform === 'vimeo' || platform === 'brightcove') {
-    return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
+    return [
+      `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=mp4]`,
+      `bestvideo[height<=${height}]+bestaudio`,
+      `best[height<=${height}][ext=mp4]`,
+      `best[height<=${height}]`,
+      'best',
+    ].join('/');
   }
   if (platform === 'instagram' || platform === 'facebook' || platform === 'x' || platform === 'tiktok') {
     return 'best[ext=mp4]/best';
@@ -1128,9 +1151,7 @@ const runDownloadAttempt = async (
 const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, job: DownloadJob) => {
   throwIfJobCancelled(job);
   const normalizedUrl = normalizeDownloaderUrl(job.url, job.platform);
-  const urls = job.platform === 'x'
-    ? Array.from(new Set([normalizedUrl, normalizedUrl.replace('twitter.com', 'x.com')]))
-    : [normalizedUrl];
+  const urls = downloaderUrlCandidates(normalizedUrl, job.platform);
   let lastError: any;
   const aria2 = aria2cAvailable(options);
 

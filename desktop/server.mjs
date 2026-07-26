@@ -340,6 +340,23 @@ var normalizeDownloaderUrl = (rawUrl, platform = detectDownloaderPlatform(rawUrl
   if (!["direct", "youtube", "facebook", "brightcove"].includes(platform)) parsed.search = "";
   return parsed.href;
 };
+var downloaderUrlCandidates = (url, platform) => {
+  if (platform === "x") {
+    return Array.from(/* @__PURE__ */ new Set([url, url.replace("twitter.com", "x.com")]));
+  }
+  if (platform !== "vimeo") return [url];
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "player.vimeo.com") return [url];
+    const match = parsed.pathname.match(/\/(\d+)(?:\/([a-z0-9]+))?(?:\/|$)/i);
+    if (!match?.[1]) return [url];
+    const playerUrl = new URL(`https://player.vimeo.com/video/${match[1]}`);
+    if (match[2]) playerUrl.searchParams.set("h", match[2]);
+    return Array.from(/* @__PURE__ */ new Set([url, playerUrl.href]));
+  } catch {
+    return [url];
+  }
+};
 var validateDownloaderUrl = (rawUrl, validateUrl) => {
   const parsed = new URL(rawUrl);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Paste a valid public video URL.");
@@ -635,7 +652,7 @@ var extractViaVxTwitter = async (url) => {
 var inspectWithFallbacks = async (options, rawUrl, platform) => {
   const url = normalizeDownloaderUrl(rawUrl, platform);
   let lastError;
-  const urls = platform === "x" ? Array.from(/* @__PURE__ */ new Set([url, url.replace("twitter.com", "x.com")])) : [url];
+  const urls = downloaderUrlCandidates(url, platform);
   for (const candidate of urls) {
     try {
       return await runYtDlpJson(options, candidate, platform);
@@ -807,7 +824,13 @@ var formatSelector = (platform, quality, fallback = false) => {
     return `best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
   }
   if (platform === "vimeo" || platform === "brightcove") {
-    return `best[height<=${height}][ext=mp4]/best[height<=${height}]/best`;
+    return [
+      `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=mp4]`,
+      `bestvideo[height<=${height}]+bestaudio`,
+      `best[height<=${height}][ext=mp4]`,
+      `best[height<=${height}]`,
+      "best"
+    ].join("/");
   }
   if (platform === "instagram" || platform === "facebook" || platform === "x" || platform === "tiktok") {
     return "best[ext=mp4]/best";
@@ -1087,7 +1110,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
 var runDownloadWithFallbacks = async (options, job) => {
   throwIfJobCancelled(job);
   const normalizedUrl = normalizeDownloaderUrl(job.url, job.platform);
-  const urls = job.platform === "x" ? Array.from(/* @__PURE__ */ new Set([normalizedUrl, normalizedUrl.replace("twitter.com", "x.com")])) : [normalizedUrl];
+  const urls = downloaderUrlCandidates(normalizedUrl, job.platform);
   let lastError;
   const aria2 = aria2cAvailable(options);
   if (aria2) {
