@@ -8144,6 +8144,16 @@ var fetchRemoteImageBuffer = async (url, refererPageUrl = "", options = {}) => {
 var ensureImageCachedForDownload = async (requestUrl, originalUrl, refererPageUrl = "") => {
   let cached = await readAssetBufferFromCache(requestUrl, "image") || (originalUrl && originalUrl !== requestUrl ? await readAssetBufferFromCache(originalUrl, "image") : null);
   if (cached) {
+    const declaredFormat = inferImageTypeFromUrl(originalUrl || requestUrl, cached.contentType);
+    const cachedFormat = detectImageFormatFromBuffer(cached.buffer);
+    if (declaredFormat === "svg" && cachedFormat !== "svg") {
+      const refreshed = await fetchRemoteImageBuffer(originalUrl || requestUrl, refererPageUrl, {
+        skipBrowser: true
+      }).catch(() => null);
+      if (refreshed && detectImageFormatFromBuffer(refreshed.buffer) === "svg") {
+        return { cached: refreshed, requestUrl: originalUrl || requestUrl };
+      }
+    }
     return { cached, requestUrl };
   }
   const warmTarget = String(originalUrl || requestUrl || "").trim();

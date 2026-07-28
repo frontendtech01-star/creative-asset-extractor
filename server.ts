@@ -6902,6 +6902,19 @@ const ensureImageCachedForDownload = async (
     (await readAssetBufferFromCache(requestUrl, 'image')) ||
     (originalUrl && originalUrl !== requestUrl ? await readAssetBufferFromCache(originalUrl, 'image') : null);
   if (cached) {
+    const declaredFormat = inferImageTypeFromUrl(originalUrl || requestUrl, cached.contentType);
+    const cachedFormat = detectImageFormatFromBuffer(cached.buffer);
+    // Older thumbnail flows could poison an original SVG cache entry with a
+    // rasterized PNG/WebP preview. Heal that cache before the download path
+    // reconciles the filename to `.png`.
+    if (declaredFormat === 'svg' && cachedFormat !== 'svg') {
+      const refreshed = await fetchRemoteImageBuffer(originalUrl || requestUrl, refererPageUrl, {
+        skipBrowser: true,
+      }).catch(() => null);
+      if (refreshed && detectImageFormatFromBuffer(refreshed.buffer) === 'svg') {
+        return { cached: refreshed, requestUrl: originalUrl || requestUrl };
+      }
+    }
     return { cached, requestUrl };
   }
 
