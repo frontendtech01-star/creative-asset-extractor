@@ -9621,7 +9621,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   await fsp3.mkdir(cachedFontDir, { recursive: true });
   const normalizedTarget = ["ttf", "woff", "woff2", "eot", "otf", "svg"].includes(toFormat) ? toFormat : "ttf";
   const cacheSourceUrl = normalizeAssetRequestUrl(String(extras.originalUrl || "").trim()) || normalizeAssetRequestUrl(url) || url;
-  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v10-macos-family-linking-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
+  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v11-local-first-macos-family-linking-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
   const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
@@ -9697,13 +9697,39 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   const detected = detectFontFormatFromBuffer(fetched.buffer);
   let fromFormat = detected || normalizeFontFormat(originalFormat || getFontFormatFromUrlOrType(url, fetched.contentType), fetched.contentType);
   if (normalizedTarget === "ttf" && fromFormat !== "ttf" && !cacheOnly) {
-    outputBuffer = await convertFontBufferToInstallableTtf(
-      fetched.buffer,
-      preferredBase || extras.fontFamily || "font",
-      fromFormat,
-      extras.fixVerticalMetrics !== false
-    );
-    conversionProvider = "transfonter";
+    if (extras.preferInlineConversion) {
+      try {
+        const inlineTtf = await convertFontBuffer(
+          url,
+          fetched.buffer,
+          fromFormat,
+          "ttf",
+          fetched.contentType,
+          true
+        );
+        if (!isInstallableTtfBuffer(inlineTtf)) {
+          throw new Error("Local TTF output failed installability validation.");
+        }
+        outputBuffer = inlineTtf;
+        conversionProvider = "local-inline";
+      } catch {
+        outputBuffer = await convertFontBufferToInstallableTtf(
+          fetched.buffer,
+          preferredBase || extras.fontFamily || "font",
+          fromFormat,
+          extras.fixVerticalMetrics !== false
+        );
+        conversionProvider = "transfonter";
+      }
+    } else {
+      outputBuffer = await convertFontBufferToInstallableTtf(
+        fetched.buffer,
+        preferredBase || extras.fontFamily || "font",
+        fromFormat,
+        extras.fixVerticalMetrics !== false
+      );
+      conversionProvider = "transfonter";
+    }
   } else if (normalizedTarget === "woff" && fromFormat !== "woff" && !cacheOnly) {
     outputBuffer = await convertFontBufferWithTransfonter(
       fetched.buffer,
@@ -20334,7 +20360,7 @@ app.post("/api/download-zip", async (req, res) => {
     });
     const zipCacheOnly = { cacheOnly: true };
     const zipPageUrl = readSourcePageUrl(req);
-    const zipFontConvertTimeoutMs = 3e4;
+    const zipFontConvertTimeoutMs = 12e4;
     const zipConvertTimeoutMs = 15e3;
     const zipImageConvertTimeoutMs = 45e3;
     const zipSkipBrowser = true;
