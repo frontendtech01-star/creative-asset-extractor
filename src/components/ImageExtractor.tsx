@@ -261,7 +261,7 @@ export default function ImageExtractor({
     setDownloadResult(null);
     try {
       const cachedDataUrl = String(img?.cachedUrl || '').trim();
-      if (key.startsWith('data:') || cachedDataUrl.startsWith('data:image/')) {
+      if (key.startsWith('data:') || (!key && cachedDataUrl.startsWith('data:image/'))) {
         const saved = await saveDataImage(key.startsWith('data:') ? key : cachedDataUrl, filename);
         const savedName = saved?.filename || filename;
         setDownloadResult({ ok: true, message: `${savedName} saved to Downloads.`, url: key });

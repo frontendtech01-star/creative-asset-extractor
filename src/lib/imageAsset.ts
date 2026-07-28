@@ -25,9 +25,12 @@ export const resolveImageConvertRequestUrl = (img: { url?: string; cachedUrl?: s
   const remote = String(img?.url || '').trim();
   if (remote.startsWith('data:')) return remote;
   const cached = String(img?.cachedUrl || '').trim();
-  if (cached.startsWith('data:image/')) return cached;
   if (cached.startsWith('/cached-images-original/')) return cached;
-  return remote;
+  // Browser extraction may rasterize an SVG into a data:image/png preview.
+  // Never substitute that preview when the original remote asset is available.
+  if (remote) return remote;
+  if (cached.startsWith('data:image/')) return cached;
+  return cached;
 };
 
 export const resolveImageDownloadUrl = resolveImageConvertRequestUrl;
