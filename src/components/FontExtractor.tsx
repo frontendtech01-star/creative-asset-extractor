@@ -150,10 +150,12 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
 export default function FontExtractor({
   fonts,
   sourcePageUrl = '',
+  onValidCountChange,
   onDownloadReady,
 }: {
   fonts: any[];
   sourcePageUrl?: string;
+  onValidCountChange?: (count: number) => void;
   onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
 }) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -224,6 +226,10 @@ export default function FontExtractor({
     });
     return Array.from(seen.values());
   }, [fonts]);
+
+  useEffect(() => {
+    onValidCountChange?.(displayFonts.length);
+  }, [displayFonts.length, onValidCountChange]);
 
   useEffect(() => {
     // Font cards start unselected. Users explicitly tick the fonts they want

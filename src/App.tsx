@@ -551,6 +551,7 @@ export default function App() {
     extractionMeta?: { mode?: string; sectionLabel?: string; sectionSelector?: string };
   } | null>(null);
   const [validImageCount, setValidImageCount] = useState(0);
+  const [validFontCount, setValidFontCount] = useState(0);
   const [insightsData, setInsightsData] = useState<any | null>(null);
   const [insightsUrl, setInsightsUrl] = useState('');
   const [responsibleUseOpen, setResponsibleUseOpen] = useState(false);
@@ -1028,6 +1029,7 @@ export default function App() {
     handleNewExtraction();
     setActiveTab('images');
     setValidImageCount(0);
+    setValidFontCount(0);
     setDownloadReadyNotice(null);
     clearAppSessionState();
     clearExtractSession();
@@ -1841,14 +1843,14 @@ export default function App() {
                 onClick={() => setActiveTab('images')}
                 icon={<ImageIcon className="w-4 h-4" />}
                 label="Images"
-                count={validImageCount || assets.images.length}
+                count={validImageCount}
               />
               <TabButton
                 active={activeTab === 'fonts'}
                 onClick={() => setActiveTab('fonts')}
                 icon={<Type className="w-4 h-4" />}
                 label="Fonts"
-                count={assets.fonts.length}
+                count={validFontCount}
               />
               <TabButton
                 active={activeTab === 'videos'}
@@ -1895,8 +1897,9 @@ export default function App() {
                 <div className={activeTab === 'fonts' ? '' : 'hidden'}>
                   <FontExtractor
                     key={`fonts-${assetStateVersion}`}
-                    fonts={assets.fonts}
-                    sourcePageUrl={extractedUrl}
+                  fonts={assets.fonts}
+                  sourcePageUrl={extractedUrl}
+                  onValidCountChange={setValidFontCount}
                     onDownloadReady={showDownloadReadyNotice}
                   />
                 </div>

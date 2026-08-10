@@ -30,12 +30,17 @@ export const resolveFontAssetUrl = (font: { url?: string; cachedUrl?: string }) 
   const remote = String(font?.url || '').trim();
   const cached = String(font?.cachedUrl || '').trim();
   if (cached.startsWith('/cached-fonts-original/')) return apiUrl(cached);
+  if (remote.startsWith('data:')) return remote;
   if (remote.startsWith('http://') || remote.startsWith('https://')) return remote;
   if (cached) return cached.startsWith('http') ? cached : apiUrl(cached);
   return '';
 };
 
-export const getFontSelectionKey = (font: { url?: string }) => String(font?.url || '').trim();
+export const getFontSelectionKey = (font: { url?: string; family?: string; weight?: string | number; style?: string }) => {
+  const url = String(font?.url || '').trim();
+  if (!url.startsWith('data:')) return url;
+  return `inline-font:${String(font?.family || '').trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url.length}`;
+};
 
 export const normalizeFontStyleKey = (style: string | undefined) => {
   const raw = String(style || '').trim().toLowerCase();
@@ -225,7 +230,7 @@ const preferSingleFontFormatPerFileStem = (fonts: any[]) => {
 export const dedupeFontsByLogicalKey = (fonts: any[]) => {
   const groups = new Map<string, any[]>();
   for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
-    if (!font?.url || String(font.url).startsWith('data:')) continue;
+    if (!font?.url) continue;
     const key = getFontLogicalKey(font);
     if (!key) continue;
     const bucket = groups.get(key) || [];

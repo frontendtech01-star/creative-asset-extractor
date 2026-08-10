@@ -211,9 +211,6 @@ export default function ImageExtractor({
   onValidCountChange?: (count: number) => void;
   onDownloadReady?: (notice: { title: string; detail?: string; target: string; sourcePageUrl?: string; folderPath?: string }) => void;
 }) {
-  React.useEffect(() => {
-    onValidCountChange?.(images.length);
-  }, [images.length, onValidCountChange]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -389,6 +386,10 @@ export default function ImageExtractor({
   const sequenceDisplayGroups = groupSequenceDisplayImages(sequenceDisplayImages);
   const sequenceKeys = new Set(sequenceDisplayImages.map(getImageAssetKey));
   const regularDisplayImages = displayImages.filter((img) => !sequenceKeys.has(getImageAssetKey(img)));
+
+  React.useEffect(() => {
+    onValidCountChange?.(displayImages.length);
+  }, [displayImages.length, onValidCountChange]);
 
   const uniqueTypes = Array.from(new Set(images.map(img => img.type.toLowerCase()))).filter(Boolean);
   const selectedCount = displayImages.filter((img) => selected.has(getImageAssetKey(img))).length;

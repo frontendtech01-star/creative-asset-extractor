@@ -2331,7 +2331,7 @@ var preferSingleFontFormatPerFileStem = (fonts) => {
 var dedupeFontsByLogicalKey = (fonts) => {
   const groups = /* @__PURE__ */ new Map();
   for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
-    if (!font?.url || String(font.url).startsWith("data:")) continue;
+    if (!font?.url) continue;
     const key = getFontLogicalKey(font);
     if (!key) continue;
     const bucket = groups.get(key) || [];
@@ -5837,7 +5837,7 @@ var extractFontsFromCss = (cssText, baseUrl) => {
           const urlStr = srcPart[1];
           const formatHint = srcPart[2] || "";
           const absoluteUrl = resolveUrl(baseUrl, urlStr);
-          if (!absoluteUrl || absoluteUrl.startsWith("data:")) continue;
+          if (!absoluteUrl) continue;
           const format = inferFontFormatFromCssSrc(absoluteUrl, formatHint);
           if (!isSupportedFontFormat(format)) continue;
           candidates.push({
@@ -5921,7 +5921,10 @@ var scoreFontCssCandidate = (candidate) => {
 };
 var isSupportedFontFormat = (format) => SUPPORTED_FONT_FORMATS.has(String(format || "").toLowerCase());
 var isSupportedFontAsset = (font) => {
-  if (!font?.url || String(font.url).startsWith("data:")) return false;
+  if (!font?.url) return false;
+  if (String(font.url).startsWith("data:")) {
+    return /^data:(?:application|font)\/(?:x-)?(?:font-)?(?:woff2?|ttf|truetype|otf|opentype)(?:;|,)/i.test(String(font.url));
+  }
   const format = getFontFormatFromUrlOrType(String(font.url), String(font.format || ""));
   return isSupportedFontFormat(format);
 };
@@ -7856,6 +7859,15 @@ var fetchAssetBuffer = async (url, fallbackUrl = "", options = {}) => {
     return "";
   })();
   const attempt = async (target) => {
+    const inlineFont = String(target || "").match(/^data:([^;,]+)(?:;charset=[^;,]+)?;base64,([a-z0-9+/=\s]+)$/i);
+    if (inlineFont) {
+      const buffer = Buffer.from(inlineFont[2].replace(/\s+/g, ""), "base64");
+      if (!buffer.length || buffer.length > 8 * 1024 * 1024) throw new Error("Invalid embedded font data");
+      const contentType = inlineFont[1].toLowerCase();
+      const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType("", contentType);
+      if (!isSupportedFontFormat(format) || !isValidFontBuffer(buffer, format)) throw new Error("Invalid embedded font data");
+      return { buffer, contentType };
+    }
     const cached = await readAssetBufferFromCache(target);
     if (cached) return cached;
     if (options.cacheOnly) {
@@ -20440,7 +20452,7 @@ app.post("/api/download-zip", async (req, res) => {
       const isImageConversion = typeof item === "object" && item.assetType === "image";
       const isVideoAsset = typeof item === "object" && item.assetType === "video";
       try {
-        if (rawUrl.startsWith("data:")) {
+        if (rawUrl.startsWith("data:") && !isFontConversion) {
           const matches = rawUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
           if (matches && matches.length === 3) {
             let buffer = Buffer.from(matches[2], "base64");
@@ -20463,8 +20475,8 @@ app.post("/api/download-zip", async (req, res) => {
         if (isFontConversion) {
           const requestedCachePath = typeof item.cachedPath === "string" ? item.cachedPath.trim() : "";
           const requestUrl = requestedCachePath || rawUrl;
-          const url2 = assertAssetUrlAllowed(requestUrl);
-          const cacheProbe = await readAssetBufferFromCache(url2, "font") || (manifestUrl && manifestUrl !== requestUrl ? await readAssetBufferFromCache(manifestUrl, "font") : null);
+          const url2 = requestUrl.startsWith("data:") ? requestUrl : assertAssetUrlAllowed(requestUrl);
+          const cacheProbe = (!url2.startsWith("data:") ? await readAssetBufferFromCache(url2, "font") : null) || (manifestUrl && manifestUrl !== requestUrl ? await readAssetBufferFromCache(manifestUrl, "font") : null);
           const fontExtras = {
             originalUrl: manifestUrl,
             metadataFilename: typeof item.metadataFilename === "string" ? item.metadataFilename : void 0,
