@@ -3348,15 +3348,29 @@ const PAGE_FETCH_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ];
 
-const BOT_WALL_HTML_PATTERN =
-  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|datadome|akamai(?:.*(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
+const BOT_WALL_MARKUP_PATTERN =
+  /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|akamai(?:[^\n]{0,160}(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
+
+const BOT_WALL_VISIBLE_TEXT_PATTERN =
+  /just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|complete (?:the )?captcha|enable javascript and cookies to continue/i;
 
 const htmlLooksLikeBotWall = (html: string) => {
   const sample = String(html || '').slice(0, 160000);
   if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(sample)) {
     return false;
   }
-  return BOT_WALL_HTML_PATTERN.test(sample);
+  if (BOT_WALL_MARKUP_PATTERN.test(sample)) return true;
+  // Vendors such as DataDome are often present as harmless preconnect/script
+  // references on a normal storefront. Only treat human-readable page content
+  // as a block when it contains an actual verification message.
+  const body = sample.match(/<body\b[^>]*>([\s\S]*)/i)?.[1] || sample;
+  const visibleText = body
+    .replace(/<(?:script|style|noscript|svg)\b[\s\S]*?<\/(?:script|style|noscript|svg)>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&(?:nbsp|amp|quot|#39);/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return BOT_WALL_VISIBLE_TEXT_PATTERN.test(visibleText);
 };
 
 const scoreSiteHtml = (html: string, status: number) => {
@@ -18420,11 +18434,7 @@ app.post('/api/extract', async (req, res) => {
     }
 
     let initialHtml = await page.content().catch(() => '');
-    const shouldWaitForChallengeOrLoader =
-      pageHtmlLooksBlocked(initialHtml) ||
-      /captcha|verify you are human|checking (?:your browser|the site connection)|just a moment|loading|loader|challenge/i.test(
-        initialHtml.slice(0, 160000)
-      );
+    const shouldWaitForChallengeOrLoader = pageHtmlLooksBlocked(initialHtml);
     if (shouldWaitForChallengeOrLoader) {
       activeExtractProgress?.setTask('Waiting for website loader or captcha gate');
       await waitForChallengeOrLoaderSettle(page, {
