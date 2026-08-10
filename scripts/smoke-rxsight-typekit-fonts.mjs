@@ -38,6 +38,9 @@ const weightName = (value) => ({
   100: 'Thin', 200: 'ExtraLight', 300: 'Light', 400: 'Regular', 500: 'Medium',
   600: 'SemiBold', 700: 'Bold', 800: 'ExtraBold', 900: 'Black',
 })[Number(value)] || 'Regular';
+const canonicalFamily = (value) => String(value || '')
+  .replace(/[- ](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black)$/i, '')
+  .trim();
 
 const sfntTables = (buffer) => {
   if (buffer.length < 12 || buffer.readUInt32BE(0) !== 0x00010000) throw new Error('Not a TrueType SFNT');
@@ -197,7 +200,7 @@ const verifyZipPath = async (label, fonts, bulkPath) => {
       const item = items[index];
       const file = path.join(output, ...item.zipEntryName.split('/'));
       const buffer = await fs.readFile(file);
-      const identity = assertIdentity(`${label}:${item.zipEntryName}`, buffer, fonts[index].family, fonts[index].weight, fonts[index].style);
+      const identity = assertIdentity(`${label}:${item.zipEntryName}`, buffer, canonicalFamily(fonts[index].family), fonts[index].weight, fonts[index].style);
       const psKey = identity.postScriptName.toLowerCase();
       if (postScriptNames.has(psKey)) throw new Error(`${label}: duplicate PostScript name ${identity.postScriptName}`);
       postScriptNames.add(psKey);

@@ -2220,7 +2220,7 @@ var resolveFontIdentityFields = (font) => {
   let weight = font?.weight;
   let style = font?.style;
   const hyphenated = family.match(
-    /^(.+?)[-](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
+    /^(.+?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
   );
   if (hyphenated) {
     family = sanitizeFontFilenameBase(hyphenated[1].replace(/([a-z0-9])([A-Z])/g, "$1 $2"));
@@ -2425,16 +2425,17 @@ var normalizeFontWeightLabel = (weight) => {
   return sanitizeFontFilenameBase(raw);
 };
 var buildFontDisplayName = (font) => {
+  const identity = resolveFontIdentityFields(font);
+  const resolvedFamily = prettifyFontFamilyLabel(sanitizeFontFilenameBase(String(identity.family || "").trim()));
   const familyCandidates = [
-    String(font?.family || "").trim(),
     String(font?.title || "").trim(),
     String(font?.name || "").trim(),
     String(font?.filename || "").trim()
   ].map((value) => sanitizeFontFilenameBase(value.replace(/^["']+|["']+$/g, ""))).map(prettifyFontFamilyLabel).filter((value) => value && !isJunkFontLabel(value));
-  const family = familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || "";
+  const family = resolvedFamily && !isJunkFontLabel(resolvedFamily) ? resolvedFamily : familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || "";
   if (!family) return "";
-  const weight = normalizeFontWeightLabel(font?.weight);
-  const style = String(font?.style || "").trim().toLowerCase();
+  const weight = normalizeFontWeightLabel(identity.weight);
+  const style = String(identity.style || "").trim().toLowerCase();
   const italic = style === "italic" || style === "oblique";
   const suffixes = [weight, italic ? "Italic" : ""].filter(Boolean);
   return suffixes.length ? `${family} ${suffixes.join(" ")}`.trim() : family;
@@ -9028,8 +9029,11 @@ var normalizeFontIdentityCompare = (value) => String(value || "").toLowerCase().
 var buildTtfIdentityBase = (preferredBase, extras) => {
   const explicit = String(preferredBase || "").trim();
   const familySource = [extras.fontFamily, extras.metadataFilename, explicit].map((value) => String(value || "").trim()).find((value) => value && !isGenericFontFamilyIdentity(value)) || "Font";
-  const family = familySource.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").trim() || "Font";
-  const weight = fontWeightName(String(extras.fontWeight || "")) || "Regular";
+  let family = familySource.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").trim() || "Font";
+  const familyVariant = family.match(/^(.*?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black)$/i);
+  const explicitWeight = fontWeightName(String(extras.fontWeight || ""));
+  if (familyVariant?.[1]) family = familyVariant[1].replace(/[- ]+$/g, "").trim() || family;
+  const weight = explicitWeight || fontWeightName(String(familyVariant?.[2] || "")) || "Regular";
   const slant = /italic/i.test(String(extras.fontStyle || "")) ? "Italic" : /oblique/i.test(String(extras.fontStyle || "")) ? "Oblique" : "";
   return [family, weight === "Regular" && !slant ? "" : weight, slant].filter(Boolean).join(" ");
 };
@@ -9681,7 +9685,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
     }
   }
   const ttfIdentity = buildTtfIdentityBase(preferredBase, extras);
-  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v15-resolved-family-identity-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
+  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v16-canonical-family-weight-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
   const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {

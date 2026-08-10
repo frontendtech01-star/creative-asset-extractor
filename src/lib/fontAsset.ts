@@ -84,7 +84,7 @@ export const resolveFontIdentityFields = (font: {
   let style = font?.style;
 
   const hyphenated = family.match(
-    /^(.+?)[-](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
+    /^(.+?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
   );
   if (hyphenated) {
     family = sanitizeFontFilenameBase(hyphenated[1].replace(/([a-z0-9])([A-Z])/g, '$1 $2'));
@@ -354,8 +354,9 @@ export const buildFontDisplayName = (font: {
   weight?: string | number;
   style?: string;
 }) => {
+  const identity = resolveFontIdentityFields(font);
+  const resolvedFamily = prettifyFontFamilyLabel(sanitizeFontFilenameBase(String(identity.family || '').trim()));
   const familyCandidates = [
-    String(font?.family || '').trim(),
     String(font?.title || '').trim(),
     String(font?.name || '').trim(),
     String(font?.filename || '').trim(),
@@ -364,11 +365,13 @@ export const buildFontDisplayName = (font: {
     .map(prettifyFontFamilyLabel)
     .filter((value) => value && !isJunkFontLabel(value));
 
-  const family = familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || '';
+  const family = resolvedFamily && !isJunkFontLabel(resolvedFamily)
+    ? resolvedFamily
+    : familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || '';
   if (!family) return '';
 
-  const weight = normalizeFontWeightLabel(font?.weight);
-  const style = String(font?.style || '').trim().toLowerCase();
+  const weight = normalizeFontWeightLabel(identity.weight);
+  const style = String(identity.style || '').trim().toLowerCase();
   const italic = style === 'italic' || style === 'oblique';
   const suffixes = [weight, italic ? 'Italic' : ''].filter(Boolean);
   return suffixes.length ? `${family} ${suffixes.join(' ')}`.trim() : family;
@@ -386,7 +389,7 @@ export const getFontFamilyFolderName = (font: {
 }) => {
   const explicitFamily = prettifyFontFamilyLabel(String(font?.family || '').replace(/^["']+|["']+$/g, ''));
   const explicitVariant = explicitFamily.match(
-    /^(.+?)[-](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(?:Italic)?$/i
+    /^(.+?)[- ](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(?:Italic)?$/i
   );
   const explicitBaseFamily = sanitizeFontFilenameBase(explicitVariant?.[1] || '');
   if (explicitBaseFamily && !isJunkFontLabel(explicitBaseFamily)) return explicitBaseFamily;

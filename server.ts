@@ -8279,10 +8279,17 @@ const buildTtfIdentityBase = (preferredBase: string | undefined, extras: Convert
   const familySource = [extras.fontFamily, extras.metadataFilename, explicit]
     .map((value) => String(value || '').trim())
     .find((value) => value && !isGenericFontFamilyIdentity(value)) || 'Font';
-  const family = familySource
+  let family = familySource
     .replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '')
     .trim() || 'Font';
-  const weight = fontWeightName(String(extras.fontWeight || '')) || 'Regular';
+  const familyVariant = family.match(/^(.*?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black)$/i);
+  const explicitWeight = fontWeightName(String(extras.fontWeight || ''));
+  // Typekit can publish a weight in both places, for example the family
+  // `bookmania-black` with CSS weights 600 and 700. Treat the terminal family
+  // token as a variant, not as part of the family, so names do not become
+  // "Bookmania Black SemiBold" or "Bookmania Black Bold".
+  if (familyVariant?.[1]) family = familyVariant[1].replace(/[- ]+$/g, '').trim() || family;
+  const weight = explicitWeight || fontWeightName(String(familyVariant?.[2] || '')) || 'Regular';
   const slant = /italic/i.test(String(extras.fontStyle || ''))
     ? 'Italic'
     : /oblique/i.test(String(extras.fontStyle || '')) ? 'Oblique' : '';
@@ -9107,7 +9114,7 @@ const getCachedConvertedFont = async (
   // Version the TTF cache whenever conversion/installability handling changes,
   // so previously broken generated files are never served again.
   const cacheIdentity = normalizedTarget === 'ttf'
-    ? `${cacheSourceUrl}#installable-ttf-v15-resolved-family-identity-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
+    ? `${cacheSourceUrl}#installable-ttf-v16-canonical-family-weight-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
     : cacheSourceUrl;
   const cachePath = path.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
