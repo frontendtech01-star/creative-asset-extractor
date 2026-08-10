@@ -9018,10 +9018,17 @@ var fontWeightName = (value) => {
   };
   return aliases[normalized] || "";
 };
+var isGenericFontFamilyIdentity = (value) => {
+  const tokens = String(value || "").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const generic = /* @__PURE__ */ new Set(["font", "typeface", "regular", "normal", "bold", "italic", "oblique", "medium", "book", "webfont", "website"]);
+  return tokens.every((token) => generic.has(token) || /^\d+$/.test(token));
+};
+var normalizeFontIdentityCompare = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 var buildTtfIdentityBase = (preferredBase, extras) => {
   const explicit = String(preferredBase || "").trim();
-  if (explicit && !/^font(?:[-_ ]?\d+)?$/i.test(explicit)) return explicit;
-  const family = String(extras.fontFamily || extras.metadataFilename || explicit || "Font").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").trim() || "Font";
+  const familySource = [extras.fontFamily, extras.metadataFilename, explicit].map((value) => String(value || "").trim()).find((value) => value && !isGenericFontFamilyIdentity(value)) || "Font";
+  const family = familySource.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").trim() || "Font";
   const weight = fontWeightName(String(extras.fontWeight || "")) || "Regular";
   const slant = /italic/i.test(String(extras.fontStyle || "")) ? "Italic" : /oblique/i.test(String(extras.fontStyle || "")) ? "Oblique" : "";
   return [family, weight === "Regular" && !slant ? "" : weight, slant].filter(Boolean).join(" ");
@@ -9035,10 +9042,15 @@ var repairTtfNameTable = (buffer, filenameBase) => {
     const text = String(value || "").trim();
     return Boolean(text) && !/not licensed|copyright|all rights reserved|webfont|web font|type foundry$/i.test(text);
   };
-  const family = isUsableIdentityName(requestedIdentity.family) ? requestedIdentity.family : String(data.name?.preferredFamily || "Font").trim();
+  const embeddedFamily = [
+    data.name?.preferredFamily,
+    data.name?.fontFamily,
+    data.name?.fullName
+  ].map((value) => String(value || "").trim()).find((value) => isUsableIdentityName(value) && !isGenericFontFamilyIdentity(value)) || "";
+  const family = isUsableIdentityName(requestedIdentity.family) && !isGenericFontFamilyIdentity(requestedIdentity.family) ? requestedIdentity.family : embeddedFamily || "Font";
   const subfamily = isUsableIdentityName(requestedIdentity.subfamily) ? requestedIdentity.subfamily : String(data.name?.preferredSubFamily || "Regular").trim();
   const fullName = subfamily === "Regular" ? family : `${family} ${subfamily}`;
-  const postScriptName = requestedIdentity.postScriptName;
+  const postScriptName = `${family}CAE-${subfamily}`.replace(/[^A-Za-z0-9-]+/g, "").replace(/-+/g, "-").slice(0, 63) || requestedIdentity.postScriptName;
   const repaired = rewriteTtfNameRecords(buffer, {
     1: family,
     2: subfamily,
@@ -9535,6 +9547,39 @@ var convertFontBuffer = async (url, buffer, fromFormat, toFormat, contentType = 
   }
 };
 var GOOGLE_INSTALLABLE_FONT_CACHE = /* @__PURE__ */ new Map();
+var FONT_CSS_IDENTITY_CACHE = /* @__PURE__ */ new Map();
+var resolveFontIdentityFromCssSource = async (cssSource, fontUrl) => {
+  const cssUrl = String(cssSource || "").trim();
+  const requestedUrl = normalizeAssetRequestUrl(String(fontUrl || "").trim());
+  if (!cssUrl || !requestedUrl || !/^https?:\/\//i.test(cssUrl)) return null;
+  let pending = FONT_CSS_IDENTITY_CACHE.get(cssUrl);
+  if (!pending) {
+    pending = (async () => {
+      assertPublicAssetUrl(cssUrl);
+      const response = await axios.get(cssUrl, {
+        timeout: 1e4,
+        responseType: "text",
+        maxContentLength: 4 * 1024 * 1024,
+        httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
+        validateStatus: (status) => status === 200,
+        headers: {
+          "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+          Accept: "text/css,*/*;q=0.1"
+        }
+      });
+      return extractFontsFromCss(String(response.data || ""), cssUrl);
+    })();
+    FONT_CSS_IDENTITY_CACHE.set(cssUrl, pending);
+  }
+  try {
+    const fonts = await pending;
+    return fonts.find((font) => normalizeAssetRequestUrl(String(font?.url || "")) === requestedUrl) || null;
+  } catch {
+    FONT_CSS_IDENTITY_CACHE.delete(cssUrl);
+    return null;
+  }
+};
 var normalizeFontFamilyCompare = (value) => String(value || "").replace(/^["']+|["']+$/g, "").replace(/\+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 var resolveGoogleInstallableFontSource = async (extras = {}) => {
   const cssSource = String(extras.cssSource || "").trim();
@@ -9621,7 +9666,22 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   await fsp3.mkdir(cachedFontDir, { recursive: true });
   const normalizedTarget = ["ttf", "woff", "woff2", "eot", "otf", "svg"].includes(toFormat) ? toFormat : "ttf";
   const cacheSourceUrl = normalizeAssetRequestUrl(String(extras.originalUrl || "").trim()) || normalizeAssetRequestUrl(url) || url;
-  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v11-local-first-macos-family-linking-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
+  if (normalizedTarget === "ttf" && String(extras.cssSource || "").trim()) {
+    const cssIdentity = await resolveFontIdentityFromCssSource(String(extras.cssSource), cacheSourceUrl);
+    if (cssIdentity?.family && !isGenericFontFamilyIdentity(cssIdentity.family)) {
+      const extractedFamily = String(extras.fontFamily || "").trim();
+      const cssFamily = String(cssIdentity.family).trim();
+      const resolvedFamily = extractedFamily && !isGenericFontFamilyIdentity(extractedFamily) && normalizeFontIdentityCompare(extractedFamily) === normalizeFontIdentityCompare(cssFamily) ? extractedFamily : cssFamily;
+      extras = {
+        ...extras,
+        fontFamily: resolvedFamily,
+        fontWeight: String(cssIdentity.weight || extras.fontWeight || ""),
+        fontStyle: String(cssIdentity.style || extras.fontStyle || "")
+      };
+    }
+  }
+  const ttfIdentity = buildTtfIdentityBase(preferredBase, extras);
+  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v15-resolved-family-identity-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
   const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
@@ -9796,7 +9856,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
     conversionProvider = "transfonter";
   }
   if (normalizedTarget === "ttf") {
-    outputBuffer = repairTtfNameTable(outputBuffer, buildTtfIdentityBase(preferredBase, extras));
+    outputBuffer = repairTtfNameTable(outputBuffer, ttfIdentity);
   }
   if (!isValidFontBuffer(outputBuffer, normalizedTarget)) {
     throw new Error(`Converted font is not valid ${normalizedTarget.toUpperCase()} binary`);

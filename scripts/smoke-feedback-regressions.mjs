@@ -138,7 +138,8 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Transfonter TTF validation', server, 'Transfonter returned a TTF that failed installability validation');
   assertIncludes('TTF SFNT structural validation', server, 'hasValidSfntStructure');
   assertIncludes('TTF name-table repair', server, 'repairTtfNameTable');
-  assertIncludes('TTF name-table repair', server, 'uniqueSubFamily');
+  assertIncludes('TTF generic family protection', server, 'isGenericFontFamilyIdentity');
+  assertIncludes('Typekit CSS family recovery', server, 'resolveFontIdentityFromCssSource');
   assertIncludes('Font family folder strips source extension', fontAsset, ".replace(/\\.(?:woff2?|ttf|otf|eot|svg)$/i, '')");
   assertIncludes('Invalid local TTF triggers Transfonter', server, '!isInstallableTtfBuffer(outputBuffer)');
   assertIncludes('Invalid buffer TTF triggers Transfonter', server, '!isInstallableTtfBuffer(output)');

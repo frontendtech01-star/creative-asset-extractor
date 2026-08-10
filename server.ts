@@ -8257,10 +8257,29 @@ const fontWeightName = (value: string) => {
   return aliases[normalized] || '';
 };
 
+const isGenericFontFamilyIdentity = (value: unknown) => {
+  const tokens = String(value || '')
+    .replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return true;
+  const generic = new Set(['font', 'typeface', 'regular', 'normal', 'bold', 'italic', 'oblique', 'medium', 'book', 'webfont', 'website']);
+  return tokens.every((token) => generic.has(token) || /^\d+$/.test(token));
+};
+
+const normalizeFontIdentityCompare = (value: unknown) =>
+  String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 const buildTtfIdentityBase = (preferredBase: string | undefined, extras: ConvertFontExtras) => {
   const explicit = String(preferredBase || '').trim();
-  if (explicit && !/^font(?:[-_ ]?\d+)?$/i.test(explicit)) return explicit;
-  const family = String(extras.fontFamily || extras.metadataFilename || explicit || 'Font')
+  // Prefer the first meaningful identity. This prevents generic transport
+  // labels such as "Regular.ttf" from masking a usable filename or embedded
+  // family when a caller omitted fontFamily.
+  const familySource = [extras.fontFamily, extras.metadataFilename, explicit]
+    .map((value) => String(value || '').trim())
+    .find((value) => value && !isGenericFontFamilyIdentity(value)) || 'Font';
+  const family = familySource
     .replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, '')
     .trim() || 'Font';
   const weight = fontWeightName(String(extras.fontWeight || '')) || 'Regular';
@@ -8284,9 +8303,14 @@ const repairTtfNameTable = (buffer: Buffer, filenameBase: string) => {
   // "Tiempos Headline") which causes macOS to hide Medium in a separate family
   // while Regular appears under "Tiempos". The requested identity has already
   // been sanitized and includes the extracted weight/style.
-  const family = isUsableIdentityName(requestedIdentity.family)
+  const embeddedFamily = [
+    data.name?.preferredFamily,
+    data.name?.fontFamily,
+    data.name?.fullName,
+  ].map((value) => String(value || '').trim()).find((value) => isUsableIdentityName(value) && !isGenericFontFamilyIdentity(value)) || '';
+  const family = isUsableIdentityName(requestedIdentity.family) && !isGenericFontFamilyIdentity(requestedIdentity.family)
     ? requestedIdentity.family
-    : String(data.name?.preferredFamily || 'Font').trim();
+    : embeddedFamily || 'Font';
   const subfamily = isUsableIdentityName(requestedIdentity.subfamily)
     ? requestedIdentity.subfamily
     : String(data.name?.preferredSubFamily || 'Regular').trim();
@@ -8295,7 +8319,10 @@ const repairTtfNameTable = (buffer: Buffer, filenameBase: string) => {
   // and legacy name records by this value, so reusing the webfont's original
   // identity can surface its old "Not Licensed for Desktop Use" subfamily even
   // after every visible name record has been repaired.
-  const postScriptName = requestedIdentity.postScriptName;
+  const postScriptName = `${family}CAE-${subfamily}`
+    .replace(/[^A-Za-z0-9-]+/g, '')
+    .replace(/-+/g, '-')
+    .slice(0, 63) || requestedIdentity.postScriptName;
   const repaired = rewriteTtfNameRecords(buffer, {
     1: family,
     2: subfamily,
@@ -8898,6 +8925,40 @@ type ConvertFontExtras = {
 };
 
 const GOOGLE_INSTALLABLE_FONT_CACHE = new Map<string, any | null>();
+const FONT_CSS_IDENTITY_CACHE = new Map<string, Promise<any[]>>();
+
+const resolveFontIdentityFromCssSource = async (cssSource: string, fontUrl: string) => {
+  const cssUrl = String(cssSource || '').trim();
+  const requestedUrl = normalizeAssetRequestUrl(String(fontUrl || '').trim());
+  if (!cssUrl || !requestedUrl || !/^https?:\/\//i.test(cssUrl)) return null;
+  let pending = FONT_CSS_IDENTITY_CACHE.get(cssUrl);
+  if (!pending) {
+    pending = (async () => {
+      assertPublicAssetUrl(cssUrl);
+      const response = await axios.get(cssUrl, {
+        timeout: 10000,
+        responseType: 'text',
+        maxContentLength: 4 * 1024 * 1024,
+        httpsAgent: relaxedHttpsAgent,
+        ...axiosProxyOptions(),
+        validateStatus: (status) => status === 200,
+        headers: {
+          'User-Agent': PAGE_FETCH_USER_AGENTS[0],
+          Accept: 'text/css,*/*;q=0.1',
+        },
+      });
+      return extractFontsFromCss(String(response.data || ''), cssUrl);
+    })();
+    FONT_CSS_IDENTITY_CACHE.set(cssUrl, pending);
+  }
+  try {
+    const fonts = await pending;
+    return fonts.find((font) => normalizeAssetRequestUrl(String(font?.url || '')) === requestedUrl) || null;
+  } catch {
+    FONT_CSS_IDENTITY_CACHE.delete(cssUrl);
+    return null;
+  }
+};
 
 const normalizeFontFamilyCompare = (value: string) =>
   String(value || '')
@@ -9017,10 +9078,36 @@ const getCachedConvertedFont = async (
     normalizeAssetRequestUrl(String(extras.originalUrl || '').trim()) ||
     normalizeAssetRequestUrl(url) ||
     url;
+  if (
+    normalizedTarget === 'ttf' &&
+    String(extras.cssSource || '').trim()
+  ) {
+    const cssIdentity = await resolveFontIdentityFromCssSource(String(extras.cssSource), cacheSourceUrl);
+    if (cssIdentity?.family && !isGenericFontFamilyIdentity(cssIdentity.family)) {
+      const extractedFamily = String(extras.fontFamily || '').trim();
+      const cssFamily = String(cssIdentity.family).trim();
+      // Keep a readable extracted/embedded spelling such as "Open Sans" when
+      // it is logically the same family as CSS `open-sans`. Use CSS to replace
+      // genuinely missing, generic, or conflicting identity data.
+      const resolvedFamily =
+        extractedFamily &&
+        !isGenericFontFamilyIdentity(extractedFamily) &&
+        normalizeFontIdentityCompare(extractedFamily) === normalizeFontIdentityCompare(cssFamily)
+          ? extractedFamily
+          : cssFamily;
+      extras = {
+        ...extras,
+        fontFamily: resolvedFamily,
+        fontWeight: String(cssIdentity.weight || extras.fontWeight || ''),
+        fontStyle: String(cssIdentity.style || extras.fontStyle || ''),
+      };
+    }
+  }
+  const ttfIdentity = buildTtfIdentityBase(preferredBase, extras);
   // Version the TTF cache whenever conversion/installability handling changes,
   // so previously broken generated files are never served again.
   const cacheIdentity = normalizedTarget === 'ttf'
-    ? `${cacheSourceUrl}#installable-ttf-v11-local-first-macos-family-linking-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
+    ? `${cacheSourceUrl}#installable-ttf-v15-resolved-family-identity-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
     : cacheSourceUrl;
   const cachePath = path.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
@@ -9229,7 +9316,7 @@ const getCachedConvertedFont = async (
     // style name. Rebuild only the identity records from the extracted CSS
     // family/weight/style; copyright, trademark, license and embedding tables
     // remain untouched.
-    outputBuffer = repairTtfNameTable(outputBuffer, buildTtfIdentityBase(preferredBase, extras));
+    outputBuffer = repairTtfNameTable(outputBuffer, ttfIdentity);
   }
 
   if (!isValidFontBuffer(outputBuffer, normalizedTarget)) {

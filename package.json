@@ -23,6 +23,7 @@
     "smoke:webp": "node scripts/smoke-webp-conversion.mjs",
     "smoke:teneo-svg": "node scripts/smoke-teneo-svg.mjs",
     "smoke:teneo-fonts": "node scripts/smoke-teneo-fonts.mjs",
+    "smoke:rxsight-typekit": "node scripts/smoke-rxsight-typekit-fonts.mjs",
     "smoke:video-downloader": "node scripts/smoke-video-downloader.mjs",
     "smoke:feedback": "tsx scripts/smoke-feedback-regressions.mjs",
     "dist:linux": "npm run build && npm run build:desktop:server && electron-builder --linux AppImage",
