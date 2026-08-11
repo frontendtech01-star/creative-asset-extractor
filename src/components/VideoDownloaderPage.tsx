@@ -57,6 +57,15 @@ const isHttpUrl = (value: string) => {
 
 const isBlobVideoUrl = (value: string) => /^blob:https?:\/\//i.test(String(value || '').trim());
 
+const SUPPORTED_VIDEO_PLATFORMS = new Set(['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'brightcove', 'ispot']);
+const SUPPORTED_VIDEO_HELP = 'Supports: YouTube, Vimeo, Instagram, Facebook, X.com, Brightcove, and iSpot.tv';
+
+const isSupportedVideoUrl = (value: string) => {
+  if (isBlobVideoUrl(value) || /(\.mp4|\.webm|\.mov|\.mkv|\.m3u8|\.mpd)(\?|$)/i.test(value)) return true;
+  const platform = detectVideoPlatform(value);
+  return Boolean(platform && SUPPORTED_VIDEO_PLATFORMS.has(platform));
+};
+
 const parseInputUrls = (value: string) =>
   Array.from(new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)));
 
@@ -509,6 +518,10 @@ export default function VideoDownloaderPage({
         return;
       }
       if (isBlobVideoUrl(url)) return;
+      if (!isSupportedVideoUrl(url)) {
+        errors.push({ url, error: 'URL not supported.' });
+        return;
+      }
       if (isPlaceholderVideoPlatformUrl(url)) {
         errors.push({ url, error: 'That is a sample placeholder URL, not a real public video.' });
         return;
@@ -818,17 +831,6 @@ export default function VideoDownloaderPage({
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="mb-4 flex flex-wrap justify-center gap-2">
-        {VIDEO_PLATFORMS.map((platform) => (
-          <span
-            key={platform.id}
-            className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm"
-          >
-            {platform.label}
-          </span>
-        ))}
-      </div>
-
       <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
         <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
           <h2 className="text-sm font-semibold text-zinc-900">Download Single/Bulk Video(s)</h2>
@@ -849,6 +851,13 @@ export default function VideoDownloaderPage({
                 onChange={(event) => {
                   setUrlInput(event.target.value);
                   setJobErrors([]);
+                }}
+                onPaste={(event) => {
+                  const pastedUrls = parseInputUrls(event.clipboardData.getData('text'));
+                  if (pastedUrls.some((url) => !isSupportedVideoUrl(url))) {
+                    event.preventDefault();
+                    window.alert('URL not supported.');
+                  }
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
@@ -871,7 +880,17 @@ export default function VideoDownloaderPage({
                 }}
               />
               </div>
-              <div className="flex justify-end">
+              <p className="text-xs text-zinc-500">{SUPPORTED_VIDEO_HELP}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="submit"
+                  aria-pressed={busy && activeQuality === 'fhd'}
+                  disabled={busy || inputUrls.length === 0}
+                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
+                >
+                  {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {busy && activeQuality === 'fhd' ? 'Fetching Video...' : inputUrls.length > 1 ? 'Fetch Videos' : 'Fetch Video'}
+                </button>
                 <BookmarkStarButton
                   url={inputUrls[0] || urlInput}
                   category="video"
@@ -957,17 +976,6 @@ export default function VideoDownloaderPage({
                 </div>
               ) : null}
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="submit"
-                  aria-pressed={busy && activeQuality === 'fhd'}
-                  disabled={busy || inputUrls.length === 0}
-                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
-                >
-                  {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  {busy && activeQuality === 'fhd' ? 'Downloading Video...' : inputUrls.length > 1 ? 'Download All Video' : 'Download Video'}
-                </button>
-              </div>
             </form>
 
             {jobErrors.length ? (
@@ -1030,7 +1038,7 @@ export default function VideoDownloaderPage({
         <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 sm:px-6">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900">
             <LinkIcon className="h-4 w-4 text-blue-600" />
-            Download Single/Bulk Image(s)
+            Download Image/Font
           </h2>
         </div>
         <div className="p-5 sm:p-6">
