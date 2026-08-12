@@ -10,7 +10,13 @@ let cleanupPromise = null;
 const closeServerAndClean = () => {
   if (cleanupPromise) return cleanupPromise;
   cleanupPromise = new Promise((resolve) => {
+    const server = serverHandle?.server;
+    let finished = false;
+    let forceCloseTimer = null;
     const finish = async () => {
+      if (finished) return;
+      finished = true;
+      if (forceCloseTimer) clearTimeout(forceCloseTimer);
       try {
         await serverHandle?.cleanup?.();
       } finally {
@@ -18,8 +24,18 @@ const closeServerAndClean = () => {
         resolve();
       }
     };
-    if (serverHandle?.server?.listening) serverHandle.server.close(() => void finish());
-    else void finish();
+    if (!server?.listening) {
+      void finish();
+      return;
+    }
+
+    server.closeIdleConnections?.();
+    server.close(() => void finish());
+    forceCloseTimer = setTimeout(() => {
+      server.closeAllConnections?.();
+      void finish();
+    }, 3000);
+    forceCloseTimer.unref?.();
   }).finally(() => {
     cleanupPromise = null;
   });

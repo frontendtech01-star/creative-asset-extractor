@@ -66,8 +66,15 @@ const isSupportedVideoUrl = (value: string) => {
   return Boolean(platform && SUPPORTED_VIDEO_PLATFORMS.has(platform));
 };
 
+const normalizePastedVideoUrl = (value: string) => {
+  const raw = String(value || '').trim();
+  const markdownUrl = raw.match(/^\[[^\]]*\]\((https?:\/\/[^\s)]+)\)$/i)?.[1];
+  const extractedUrl = markdownUrl || raw.match(/https?:\/\/[^\s<>()\]]+/i)?.[0] || raw;
+  return extractedUrl.replace(/^[<'"([{]+|[>'"\])},;.!]+$/g, '');
+};
+
 const parseInputUrls = (value: string) =>
-  Array.from(new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)));
+  Array.from(new Set(value.split(/\r?\n/).map(normalizePastedVideoUrl).filter(Boolean)));
 
 const isSupportedBulkImageUrl = (value: string) =>
   /^https?:\/\/.+\.(?:png|jpe?g|webp|avif|gif|svg)(?:[?#].*)?$/i.test(String(value || '').trim());
@@ -857,7 +864,14 @@ export default function VideoDownloaderPage({
                   if (pastedUrls.some((url) => !isSupportedVideoUrl(url))) {
                     event.preventDefault();
                     window.alert('URL not supported.');
+                    return;
                   }
+                  event.preventDefault();
+                  const textarea = event.currentTarget;
+                  const normalizedPaste = pastedUrls.join('\n');
+                  const nextValue = `${urlInput.slice(0, textarea.selectionStart)}${normalizedPaste}${urlInput.slice(textarea.selectionEnd)}`;
+                  setUrlInput(nextValue);
+                  setJobErrors([]);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {

@@ -2766,7 +2766,6 @@ var cleanupDisposableStorage = async () => {
   const disposableAppDataPaths = [
     appCacheRoot,
     path3.join(appDataDir, "feedback"),
-    path3.join(appDataDir, "logs"),
     path3.join(appDataDir, "Cache"),
     path3.join(appDataDir, "Code Cache"),
     path3.join(appDataDir, "GPUCache"),
@@ -2774,9 +2773,6 @@ var cleanupDisposableStorage = async () => {
     path3.join(appDataDir, "DawnGraphiteCache"),
     path3.join(appDataDir, "DawnWebGPUCache"),
     path3.join(appDataDir, "blob_storage"),
-    path3.join(appDataDir, "Session Storage"),
-    path3.join(appDataDir, "Local Storage"),
-    path3.join(appDataDir, "WebStorage"),
     path3.join(appDataDir, "VideoDecodeStats"),
     path3.join(appDataDir, "Shared Dictionary"),
     path3.join(appDataDir, "shared_proto_db"),
