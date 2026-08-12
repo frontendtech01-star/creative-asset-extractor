@@ -2761,6 +2761,35 @@ var MAX_ACTIVITY_LOG_ENTRIES = 100;
 var bookmarksDir = path3.join(appDataDir, "bookmarks");
 var bookmarksPath = path3.join(bookmarksDir, "bookmarks.json");
 var bookmarkBackupsDir = path3.join(bookmarksDir, "backups");
+var cleanupDisposableStorage = async () => {
+  const legacyDataDir = path3.join(os3.homedir(), ".creative-asset-extractor");
+  const disposableAppDataPaths = [
+    appCacheRoot,
+    path3.join(appDataDir, "feedback"),
+    path3.join(appDataDir, "logs"),
+    path3.join(appDataDir, "Cache"),
+    path3.join(appDataDir, "Code Cache"),
+    path3.join(appDataDir, "GPUCache"),
+    path3.join(appDataDir, "DawnCache"),
+    path3.join(appDataDir, "blob_storage"),
+    path3.join(appDataDir, "Service Worker", "CacheStorage"),
+    bookmarkBackupsDir,
+    path3.join(legacyDataDir, "cache"),
+    path3.join(legacyDataDir, "feedback"),
+    path3.join(legacyDataDir, "logs"),
+    path3.join(legacyDataDir, "bookmarks", "backups")
+  ];
+  const disposableTempPaths = [convertedVideoDir, convertedAudioDir];
+  const tempEntries = await fsp3.readdir(os3.tmpdir()).catch(() => []);
+  for (const entry of tempEntries) {
+    if (/^creative-asset-extractor-(?:browser-profile|mp4|audio)/i.test(entry)) {
+      disposableTempPaths.push(path3.join(os3.tmpdir(), entry));
+    }
+  }
+  await Promise.all(
+    [.../* @__PURE__ */ new Set([...disposableAppDataPaths, ...disposableTempPaths])].map((target) => fsp3.rm(target, { recursive: true, force: true }).catch(() => void 0))
+  );
+};
 var relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
 var activeExtractionProxyUrl = "";
 var normalizeExtractionProxyUrl = (rawProxyUrl) => {
@@ -3315,27 +3344,13 @@ var readBookmarkStore = async () => {
     return emptyBookmarkStore();
   }
 };
-var rotateBookmarkBackups = async () => {
-  await fsp3.mkdir(bookmarkBackupsDir, { recursive: true });
-  const backups = (await fsp3.readdir(bookmarkBackupsDir).catch(() => [])).filter((name) => /^bookmarks-\d{4}-\d{2}-\d{2}\.json$/i.test(name)).sort().reverse();
-  await Promise.all(backups.slice(10).map((name) => fsp3.rm(path3.join(bookmarkBackupsDir, name), { force: true }).catch(() => void 0)));
-};
 var writeBookmarkStore = async (store) => {
   await fsp3.mkdir(bookmarksDir, { recursive: true });
-  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const previous = await readBookmarkStore();
-  if (previous.bookmarks.length || previous.history.length || previous.folders.length) {
-    const backupPath = path3.join(bookmarkBackupsDir, `bookmarks-${today}.json`);
-    if (previous.lastBackupDate !== today && !fs2.existsSync(backupPath)) {
-      await fsp3.mkdir(bookmarkBackupsDir, { recursive: true });
-      await fsp3.writeFile(backupPath, JSON.stringify(previous, null, 2));
-      await rotateBookmarkBackups();
-    }
-  }
+  await fsp3.rm(bookmarkBackupsDir, { recursive: true, force: true }).catch(() => void 0);
   const normalized = {
     ...emptyBookmarkStore(),
     ...store,
-    lastBackupDate: today,
+    lastBackupDate: void 0,
     updatedAt: nowIso()
   };
   await fsp3.writeFile(bookmarksPath, JSON.stringify(normalized, null, 2));
@@ -4950,7 +4965,8 @@ app.post("/api/feedback", async (req, res) => {
   }
   const pkg = await resolvePackageMeta();
   const platformMeta = getFeedbackPlatformMeta();
-  const recentLogs = await readRecentActivityLogs(5);
+  const includeActivityHistory = req.body?.includeActivityHistory === true;
+  const recentLogs = includeActivityHistory ? await readRecentActivityLogs(20) : [];
   const logSummary = recentLogs.map((entry) => `${entry.timestamp || ""} ${entry.kind || ""} ${entry.error || entry.message || ""}`.trim()).filter(Boolean).join("\n");
   const payload = {
     name,
@@ -4970,11 +4986,21 @@ ${logSummary}` : suggestions,
     screenshotUrl: String(req.body?.screenshotUrl || "").trim(),
     lastError: String(req.body?.lastError || "").trim()
   };
+  const removeSubmittedScreenshot = async () => {
+    const filePath = resolveFeedbackScreenshotPath(payload.screenshotUrl);
+    if (!filePath) return;
+    const resolved = path3.resolve(filePath);
+    const screenshotRoot = path3.resolve(feedbackScreenshotDir);
+    if (resolved.startsWith(screenshotRoot + path3.sep)) {
+      await fsp3.rm(resolved, { force: true }).catch(() => void 0);
+    }
+  };
   try {
     const target = await resolveFeedbackTarget();
     if (target) {
       const screenshotDataUrl = String(req.body?.screenshotDataUrl || "").trim();
       const mode = await submitFeedbackRemote(target, payload, { screenshotDataUrl });
+      await removeSubmittedScreenshot();
       return res.json({
         ok: true,
         mode,
@@ -8453,6 +8479,13 @@ var saveBufferToDownloads = async (buffer, filename, label = "Download", sourceP
 };
 var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download", sourcePageUrl, kind = "default") => {
   if (!sourcePath) throw new Error(`${label} cache path is missing.`);
+  const removeExportedCacheFile = async () => {
+    const resolvedSource = path3.resolve(sourcePath);
+    const resolvedCacheRoot = path3.resolve(appCacheRoot);
+    if (resolvedSource.startsWith(resolvedCacheRoot + path3.sep)) {
+      await fsp3.rm(resolvedSource, { force: true }).catch(() => void 0);
+    }
+  };
   if (kind === "image" || /\.svg$/i.test(filename) || /\.svg$/i.test(sourcePath)) {
     const sourceBuffer = await fsp3.readFile(sourcePath);
     const detectedImageFormat = detectImageFormatFromBuffer(sourceBuffer);
@@ -8461,6 +8494,7 @@ var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download",
     const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind });
     await fsp3.writeFile(target.filePath, writeBuffer);
     const stat = await validateSavedAssetFile(target.filePath, label);
+    await removeExportedCacheFile();
     return {
       ok: true,
       filename: target.filename,
@@ -8473,6 +8507,7 @@ var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download",
     const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
     await fsp3.copyFile(sourcePath, target.filePath);
     const stat = await validateSavedAssetFile(target.filePath, label);
+    await removeExportedCacheFile();
     return {
       ok: true,
       filename: target.filename,
@@ -20969,7 +21004,7 @@ async function startServer() {
     console.log(`Server running on http://localhost:${activePort}`);
   });
   setupExtractProgressWS(server);
-  return { server, port: activePort, url: `http://localhost:${activePort}` };
+  return { server, port: activePort, url: `http://localhost:${activePort}`, cleanup: cleanupDisposableStorage };
 }
 if (process.env.VDX_SKIP_AUTOSTART !== "1") {
   startServer().catch((error) => {

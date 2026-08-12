@@ -24,6 +24,7 @@ export type FeedbackSubmission = {
   screenshotUrl?: string;
   screenshotDataUrl?: string;
   lastError?: string;
+  includeActivityHistory?: boolean;
 };
 
 export type FeedbackStatus = {

@@ -13,6 +13,7 @@ import {
 } from '../lib/feedbackProfile';
 import { compressScreenshotDataUrlForSheet } from '../lib/compressFeedbackScreenshot.browser';
 import { submitFeedbackForm, uploadFeedbackScreenshot } from '../lib/feedbackSubmit';
+import { apiFetch } from '../lib/api';
 
 export function FeedbackModal({
   open,
@@ -44,6 +45,8 @@ export function FeedbackModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const screenshotDataUrlRef = useRef('');
   const [dragActive, setDragActive] = useState(false);
+  const [activityHistory, setActivityHistory] = useState('');
+  const [includeActivityHistory, setIncludeActivityHistory] = useState(true);
 
   const applyDraft = (draft: FeedbackDraft | null) => {
     if (!draft) return;
@@ -66,6 +69,8 @@ export function FeedbackModal({
     setSubmittedVersion('');
     setDragActive(false);
     screenshotDataUrlRef.current = '';
+    setActivityHistory('');
+    setIncludeActivityHistory(true);
 
     const draft = initialDraft || consumeFeedbackDraft();
     applyDraft(draft);
@@ -86,6 +91,15 @@ export function FeedbackModal({
       setProfile(nextProfile);
       setName(nextProfile.suggestedName || '');
     });
+    void apiFetch('/api/activity-log/recent')
+      .then((response) => response.json())
+      .then((data) => {
+        const entries = Array.isArray(data?.entries) ? data.entries : [];
+        setActivityHistory(entries.map((entry: any) =>
+          `${entry.timestamp || ''} · ${entry.kind || 'activity'} · ${entry.error || entry.message || entry.url || ''}`.trim()
+        ).filter(Boolean).join('\n'));
+      })
+      .catch(() => setActivityHistory(''));
   }, [open, appVersion, productName, initialDraft]);
 
   const handleScreenshotFile = async (file: File | null) => {
@@ -171,6 +185,7 @@ export function FeedbackModal({
         screenshotUrl,
         screenshotDataUrl: screenshotDataUrlRef.current,
         lastError,
+        includeActivityHistory,
       });
       if (result.ok === false) {
         setError('Unable to submit right now. Please try again.');
@@ -351,6 +366,22 @@ export function FeedbackModal({
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                 <p className="font-semibold">Last Error</p>
                 <p className="mt-1 whitespace-pre-wrap">{lastError}</p>
+              </div>
+            ) : null}
+
+            {activityHistory ? (
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-3 text-xs text-zinc-700">
+                <label className="flex items-start gap-2 font-semibold text-zinc-900">
+                  <input
+                    type="checkbox"
+                    checked={includeActivityHistory}
+                    onChange={(event) => setIncludeActivityHistory(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  Include recent app activity and failure history with this feedback
+                </label>
+                <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap font-sans text-[11px] leading-5 text-zinc-600">{activityHistory}</pre>
+                <p className="mt-2 text-[11px] text-zinc-500">This information is sent only when checked and you submit the form.</p>
               </div>
             ) : null}
 

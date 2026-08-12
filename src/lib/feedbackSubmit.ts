@@ -55,6 +55,7 @@ export const submitFeedbackForm = async (input: FeedbackSubmission): Promise<Fee
         screenshotUrl: String(input.screenshotUrl || '').trim(),
         screenshotDataUrl: String(input.screenshotDataUrl || '').trim(),
         lastError: String(input.lastError || '').trim(),
+        includeActivityHistory: input.includeActivityHistory === true,
       }),
     });
     const data = await response.json().catch(() => ({}));

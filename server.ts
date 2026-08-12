@@ -416,6 +416,37 @@ const MAX_ACTIVITY_LOG_ENTRIES = 100;
 const bookmarksDir = path.join(appDataDir, 'bookmarks');
 const bookmarksPath = path.join(bookmarksDir, 'bookmarks.json');
 const bookmarkBackupsDir = path.join(bookmarksDir, 'backups');
+
+const cleanupDisposableStorage = async () => {
+  const legacyDataDir = path.join(os.homedir(), '.creative-asset-extractor');
+  const disposableAppDataPaths = [
+    appCacheRoot,
+    path.join(appDataDir, 'feedback'),
+    path.join(appDataDir, 'logs'),
+    path.join(appDataDir, 'Cache'),
+    path.join(appDataDir, 'Code Cache'),
+    path.join(appDataDir, 'GPUCache'),
+    path.join(appDataDir, 'DawnCache'),
+    path.join(appDataDir, 'blob_storage'),
+    path.join(appDataDir, 'Service Worker', 'CacheStorage'),
+    bookmarkBackupsDir,
+    path.join(legacyDataDir, 'cache'),
+    path.join(legacyDataDir, 'feedback'),
+    path.join(legacyDataDir, 'logs'),
+    path.join(legacyDataDir, 'bookmarks', 'backups'),
+  ];
+  const disposableTempPaths = [convertedVideoDir, convertedAudioDir];
+  const tempEntries = await fsp.readdir(os.tmpdir()).catch(() => [] as string[]);
+  for (const entry of tempEntries) {
+    if (/^creative-asset-extractor-(?:browser-profile|mp4|audio)/i.test(entry)) {
+      disposableTempPaths.push(path.join(os.tmpdir(), entry));
+    }
+  }
+  await Promise.all(
+    [...new Set([...disposableAppDataPaths, ...disposableTempPaths])]
+      .map((target) => fsp.rm(target, { recursive: true, force: true }).catch(() => undefined))
+  );
+};
 // Prefer IPv4 because some media CDNs (notably videos-cdn.ispot.tv) publish an
 // IPv6 route that is unreachable on otherwise healthy local networks.
 const relaxedHttpsAgent = new https.Agent({ rejectUnauthorized: false, family: 4 });
@@ -1168,31 +1199,13 @@ const readBookmarkStore = async (): Promise<BookmarkStoreFile> => {
   }
 };
 
-const rotateBookmarkBackups = async () => {
-  await fsp.mkdir(bookmarkBackupsDir, { recursive: true });
-  const backups = (await fsp.readdir(bookmarkBackupsDir).catch(() => []))
-    .filter((name) => /^bookmarks-\d{4}-\d{2}-\d{2}\.json$/i.test(name))
-    .sort()
-    .reverse();
-  await Promise.all(backups.slice(10).map((name) => fsp.rm(path.join(bookmarkBackupsDir, name), { force: true }).catch(() => undefined)));
-};
-
 const writeBookmarkStore = async (store: BookmarkStoreFile) => {
   await fsp.mkdir(bookmarksDir, { recursive: true });
-  const today = new Date().toISOString().slice(0, 10);
-  const previous = await readBookmarkStore();
-  if (previous.bookmarks.length || previous.history.length || previous.folders.length) {
-    const backupPath = path.join(bookmarkBackupsDir, `bookmarks-${today}.json`);
-    if (previous.lastBackupDate !== today && !fs.existsSync(backupPath)) {
-      await fsp.mkdir(bookmarkBackupsDir, { recursive: true });
-      await fsp.writeFile(backupPath, JSON.stringify(previous, null, 2));
-      await rotateBookmarkBackups();
-    }
-  }
+  await fsp.rm(bookmarkBackupsDir, { recursive: true, force: true }).catch(() => undefined);
   const normalized: BookmarkStoreFile = {
     ...emptyBookmarkStore(),
     ...store,
-    lastBackupDate: today,
+    lastBackupDate: undefined,
     updatedAt: nowIso(),
   };
   await fsp.writeFile(bookmarksPath, JSON.stringify(normalized, null, 2));
@@ -2984,7 +2997,8 @@ app.post('/api/feedback', async (req, res) => {
 
   const pkg = await resolvePackageMeta();
   const platformMeta = getFeedbackPlatformMeta();
-  const recentLogs = await readRecentActivityLogs(5);
+  const includeActivityHistory = req.body?.includeActivityHistory === true;
+  const recentLogs = includeActivityHistory ? await readRecentActivityLogs(20) : [];
   const logSummary = recentLogs
     .map((entry: any) => `${entry.timestamp || ''} ${entry.kind || ''} ${entry.error || entry.message || ''}`.trim())
     .filter(Boolean)
@@ -3004,12 +3018,22 @@ app.post('/api/feedback', async (req, res) => {
     screenshotUrl: String(req.body?.screenshotUrl || '').trim(),
     lastError: String(req.body?.lastError || '').trim(),
   };
+  const removeSubmittedScreenshot = async () => {
+    const filePath = resolveFeedbackScreenshotPath(payload.screenshotUrl);
+    if (!filePath) return;
+    const resolved = path.resolve(filePath);
+    const screenshotRoot = path.resolve(feedbackScreenshotDir);
+    if (resolved.startsWith(screenshotRoot + path.sep)) {
+      await fsp.rm(resolved, { force: true }).catch(() => undefined);
+    }
+  };
 
   try {
     const target = await resolveFeedbackTarget();
     if (target) {
       const screenshotDataUrl = String(req.body?.screenshotDataUrl || '').trim();
       const mode = await submitFeedbackRemote(target, payload, { screenshotDataUrl });
+      await removeSubmittedScreenshot();
       return res.json({
         ok: true,
         mode,
@@ -7519,6 +7543,13 @@ const saveCachedFileToDownloads = async (
   kind: DownloadSaveKind = 'default'
 ) => {
   if (!sourcePath) throw new Error(`${label} cache path is missing.`);
+  const removeExportedCacheFile = async () => {
+    const resolvedSource = path.resolve(sourcePath);
+    const resolvedCacheRoot = path.resolve(appCacheRoot);
+    if (resolvedSource.startsWith(resolvedCacheRoot + path.sep)) {
+      await fsp.rm(resolvedSource, { force: true }).catch(() => undefined);
+    }
+  };
   if (kind === 'image' || /\.svg$/i.test(filename) || /\.svg$/i.test(sourcePath)) {
     const sourceBuffer = await fsp.readFile(sourcePath);
     const detectedImageFormat = detectImageFormatFromBuffer(sourceBuffer);
@@ -7531,6 +7562,7 @@ const saveCachedFileToDownloads = async (
     const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind });
     await fsp.writeFile(target.filePath, writeBuffer);
     const stat = await validateSavedAssetFile(target.filePath, label);
+    await removeExportedCacheFile();
     return {
       ok: true,
       filename: target.filename,
@@ -7543,6 +7575,7 @@ const saveCachedFileToDownloads = async (
     const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
     await fsp.copyFile(sourcePath, target.filePath);
     const stat = await validateSavedAssetFile(target.filePath, label);
+    await removeExportedCacheFile();
     return {
       ok: true,
       filename: target.filename,
@@ -23117,7 +23150,7 @@ export async function startServer() {
     console.log(`Server running on http://localhost:${activePort}`);
   });
   setupExtractProgressWS(server);
-  return { server, port: activePort, url: `http://localhost:${activePort}` };
+  return { server, port: activePort, url: `http://localhost:${activePort}`, cleanup: cleanupDisposableStorage };
 }
 
 if (process.env.VDX_SKIP_AUTOSTART !== '1') {

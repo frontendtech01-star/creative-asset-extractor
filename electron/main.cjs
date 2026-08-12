@@ -5,6 +5,26 @@ const { pathToFileURL } = require('node:url');
 let serverHandle = null;
 let trustedAppOrigin = null;
 let mainWindow = null;
+let cleanupPromise = null;
+
+const closeServerAndClean = () => {
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = new Promise((resolve) => {
+    const finish = async () => {
+      try {
+        await serverHandle?.cleanup?.();
+      } finally {
+        serverHandle = null;
+        resolve();
+      }
+    };
+    if (serverHandle?.server?.listening) serverHandle.server.close(() => void finish());
+    else void finish();
+  }).finally(() => {
+    cleanupPromise = null;
+  });
+  return cleanupPromise;
+};
 
 const parseClipboardUrl = (raw) => {
   const text = String(raw || '').trim();
@@ -154,8 +174,15 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   mainWindow = null;
-  serverHandle?.server?.close?.();
-  if (process.platform !== 'darwin') app.quit();
+  void closeServerAndClean().finally(() => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+});
+
+app.on('before-quit', (event) => {
+  if (!serverHandle || cleanupPromise) return;
+  event.preventDefault();
+  void closeServerAndClean().finally(() => app.quit());
 });
 
 app.on('activate', () => {
