@@ -90,7 +90,7 @@ try {
   await page.keyboard.press('KeyA');
   await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control');
   await page.type(websiteUrlInputSelector, TARGET_URL);
-  await clickButtonByText(page, 'Extract From Open Website');
+  await clickButtonByText(page, 'Extract from Chrome');
   await page.waitForFunction(
     () =>
       document.body?.innerText?.includes('Extract complete') ||
