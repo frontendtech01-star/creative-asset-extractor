@@ -4491,9 +4491,11 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
   });
   const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
-  const fonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(metadataFonts.map((font) => String(font?.url || "")))).map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset)
-  );
+  const fonts = Array.from(new Set(metadataFonts.map((font) => String(font?.url || "")).filter(Boolean))).map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset).sort((a, b) => {
+    const familyDelta = String(a?.family || "").localeCompare(String(b?.family || ""));
+    if (familyDelta !== 0) return familyDelta;
+    return String(a?.url || "").localeCompare(String(b?.url || ""));
+  });
   return {
     images: expandedImages,
     icons: [],
@@ -4529,6 +4531,34 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       ignoreDefaultArgs: ["--enable-automation"]
     });
     const page = await acquireSingleWebsitePage(browser);
+    const capturedFontResponses = /* @__PURE__ */ new Map();
+    const capturedStylesheets = /* @__PURE__ */ new Map();
+    const pendingStylesheetReads = /* @__PURE__ */ new Set();
+    page.on("response", (response) => {
+      const responseUrl = String(response.url() || "").trim();
+      if (!responseUrl) return;
+      const contentType = String(response.headers()["content-type"] || "").toLowerCase();
+      const resourceType = String(response.request().resourceType() || "").toLowerCase();
+      const format = getFontFormatFromUrlOrType(responseUrl, contentType);
+      if (resourceType === "font" || isSupportedFontFormat(format)) {
+        capturedFontResponses.set(responseUrl, {
+          url: responseUrl,
+          format,
+          mimeType: contentType || void 0,
+          source: "Chromium network response",
+          status: DEFAULT_ASSET_STATUS
+        });
+      }
+      if (resourceType === "stylesheet" || contentType.includes("text/css") || /\.css(?:[?#]|$)/i.test(responseUrl)) {
+        let readPromise;
+        readPromise = response.text().then((cssText) => {
+          if (cssText && cssText.length <= 5 * 1024 * 1024) capturedStylesheets.set(responseUrl, cssText);
+        }).catch(() => void 0).then(() => {
+          pendingStylesheetReads.delete(readPromise);
+        });
+        pendingStylesheetReads.add(readPromise);
+      }
+    });
     await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
@@ -4538,15 +4568,46 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
     });
     const firstHtml = await page.content().catch(() => "");
     if (pageHtmlLooksBlocked(firstHtml)) {
-      const solved = await waitForManualCaptchaResolution(page, { timeoutMs: 18e4 });
-      if (!solved) {
-        throw new Error("Captcha was not cleared in time. Complete the captcha in the opened browser window, then click Extract From Open Website again.");
-      }
+      await waitForChallengeOrLoaderSettle(page, { timeoutMs: 25e3, minAssetWaitMs: 8e3 }).catch(() => void 0);
+      await waitForPageContentSettle(page, { minWaitMs: 5e3, readinessTimeoutMs: 4e3 }).catch(() => void 0);
     }
     await performLazyLoadScroll(page, { stepDelayMs: 600, maxStableRounds: 3, maxDurationMs: 22e3 }).catch(() => void 0);
     await waitForPageContentSettle(page, { minWaitMs: 8e3, readinessTimeoutMs: 4e3 });
+    await Promise.allSettled(Array.from(pendingStylesheetReads));
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript());
     const raw = typeof rawText === "string" ? JSON.parse(rawText) : rawText;
+    const discoveredCssUrls = prioritizeFontCssCandidates(Array.from(new Set(
+      (Array.isArray(raw?.fonts) ? raw.fonts : []).map((font) => String(font?.url || "").trim()).filter((url) => /^https?:\/\//i.test(url)).filter((url) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com|use\.typekit\.net|cloud\.typography|fonts\.adobe/i.test(url))
+    ))).slice(0, 80);
+    const browserCssFonts = (await mapWithConcurrency(discoveredCssUrls, 4, async (cssUrl) => {
+      let cssPage = null;
+      try {
+        cssPage = await browser.newPage();
+        await cssPage.setUserAgent(PAGE_FETCH_USER_AGENTS[0]);
+        await cssPage.setExtraHTTPHeaders({
+          Accept: "text/css,*/*;q=0.1",
+          Referer: targetUrl
+        });
+        const cssResponse = await cssPage.goto(cssUrl, { waitUntil: "domcontentloaded", timeout: 12e3 });
+        const responseText = await cssResponse?.text().catch(() => "");
+        const renderedText = responseText || await cssPage.evaluate(() => String(document.body?.innerText || "")).catch(() => "");
+        const cssText = String(renderedText || "").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
+        return cssText && cssText.length <= 5 * 1024 * 1024 ? extractFontsFromCss(cssText, cssUrl) : [];
+      } catch {
+        return [];
+      } finally {
+        await cssPage?.close().catch(() => void 0);
+      }
+    })).flat();
+    const capturedCssFonts = Array.from(capturedStylesheets.entries()).flatMap(
+      ([cssUrl, cssText]) => extractFontsFromCss(cssText, cssUrl)
+    );
+    raw.fonts = [
+      ...Array.isArray(raw?.fonts) ? raw.fonts : [],
+      ...Array.from(capturedFontResponses.values()),
+      ...capturedCssFonts,
+      ...browserCssFonts
+    ];
     const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : []).filter((image) => image?.url && !String(image?.dataUrl || "").startsWith("data:image/")).map((image) => String(image.url)).filter((url) => /^https?:\/\//i.test(url)).slice(0, 80);
     if (missingPreviewUrls.length > 0) {
       const dataUrlsByUrl = await page.evaluate(`
@@ -4641,181 +4702,20 @@ app.post("/api/browser-tabs/chrome/resolve-blob-video", async (req, res) => {
     });
   }
 });
-var normalizeFontFamilyForStaticBackfill = (value = "") => {
-  const family = String(value || "").replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ").trim();
-  if (!family) return "";
-  const lower = family.toLowerCase();
-  if (!lower || isJunkFontLabel(lower) || ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"].includes(lower)) {
-    return "";
-  }
-  return lower;
-};
-var getFontCardFamilyForStaticBackfill = (font) => {
-  const identity = resolveFontIdentityFields(font || {});
-  return normalizeFontFamilyForStaticBackfill(
-    identity.family || font?.family || font?.title || font?.name || buildFontDisplayName(font || {})
-  );
-};
-var hasRenderedFontFamilyWithoutCard = (extracted) => {
-  const renderedFamilies = new Set(
-    (Array.isArray(extracted?.fontUsage) ? extracted.fontUsage : []).map((font) => normalizeFontFamilyForStaticBackfill(font?.family)).filter(Boolean)
-  );
-  if (!renderedFamilies.size) return false;
-  const cardFamilies = new Set(
-    (Array.isArray(extracted?.fonts) ? extracted.fonts : []).map((font) => getFontCardFamilyForStaticBackfill(font)).filter(Boolean)
-  );
-  return Array.from(renderedFamilies).some((family) => !cardFamilies.has(family));
-};
-var isImageSequenceCandidateUrl = (value) => /(?:threesixty|360|jellies|vehicle|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ""));
-var imageSequenceMergeKey = (item) => {
-  const raw = String(item?.url || item?.src || "").trim();
-  if (!raw || !isImageSequenceCandidateUrl(raw)) return raw;
-  try {
-    const parsed = new URL2(raw);
-    const normalizedPath = parsed.pathname.replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, "/").replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, "/").replace(/\/{2,}/g, "/");
-    const hostKey = /\/jellies\/(?:max|relative)\//i.test(normalizedPath) ? "toyota-assets" : parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const countedFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\/(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
-    if (countedFrame && Number(countedFrame[2]) >= 2 && Number(countedFrame[2]) <= MAX_IMAGE_SEQUENCE_FRAMES) {
-      return `sequence:${hostKey}:${countedFrame[1].toLowerCase()}:${Number(countedFrame[3])}`;
-    }
-    const leafFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
-    if (leafFrame) {
-      return `sequence:${hostKey}:${leafFrame[1].toLowerCase()}:${Number(leafFrame[2])}`;
-    }
-    const prefixedFrame = normalizedPath.match(/^(.*[-_])(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
-    if (prefixedFrame && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(raw)) {
-      return `sequence:${hostKey}:${prefixedFrame[1].toLowerCase()}:${Number(prefixedFrame[2])}`;
-    }
-  } catch {
-    return raw;
-  }
-  return raw;
-};
-var imageCandidateScore = (item) => {
-  const width = Number(item?.width || 0) || 0;
-  const height = Number(item?.height || 0) || 0;
-  const area = width * height;
-  if (area > 0) return area;
-  try {
-    const parsed = new URL2(String(item?.url || item?.src || ""));
-    const wid = Number(parsed.searchParams.get("wid") || parsed.searchParams.get("width") || 0) || 0;
-    const hei = Number(parsed.searchParams.get("hei") || parsed.searchParams.get("height") || 0) || 0;
-    if (wid > 0 && hei > 0) return wid * hei;
-    return wid || hei || 0;
-  } catch {
-    return 0;
-  }
-};
-var mergeImageRowsByBestSequenceFrame = (left = [], right = []) => {
-  const rows = /* @__PURE__ */ new Map();
-  [...left, ...right].forEach((item) => {
-    const key = imageSequenceMergeKey(item);
-    if (!key) return;
-    const current = rows.get(key);
-    if (!current || imageCandidateScore(item) >= imageCandidateScore(current)) {
-      rows.set(key, item);
-    }
-  });
-  return Array.from(rows.values());
-};
-var browserTabMatchesRequestedUrl = (tabUrl, requestedUrl) => {
-  const requested = String(requestedUrl || "").trim();
-  const current = String(tabUrl || "").trim();
-  if (!requested) return true;
-  if (!current) return false;
-  try {
-    const requestedParsed = new URL2(requested);
-    const currentParsed = new URL2(current);
-    return requestedParsed.hostname.replace(/^www\./, "").toLowerCase() === currentParsed.hostname.replace(/^www\./, "").toLowerCase() && requestedParsed.pathname.replace(/\/+$/, "") === currentParsed.pathname.replace(/\/+$/, "");
-  } catch {
-    return current === requested;
-  }
-};
-async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
-  const hasAssets = extracted?.images?.length || 0 || (extracted?.icons?.length || 0) || (extracted?.fonts?.length || 0) || (extracted?.videos?.length || 0);
-  const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
-  const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
-  const browserImages = [
-    ...Array.isArray(extracted?.images) ? extracted.images : [],
-    ...Array.isArray(extracted?.icons) ? extracted.icons : []
-  ];
-  const hasImageSequenceCandidate = browserImages.some(
-    (item) => isImageSequenceCandidateUrl(String(item?.url || item?.src || ""))
-  );
-  const hasCompleteToyotaSequence = isToyotaVehicleExtractionTarget(fallbackUrl) && browserImages.filter(
-    (item) => String(item?.source || "").includes("360-sequence") && Number(item?.sequenceFrame || 0) >= 1 && Number(item?.sequenceFrame || 0) <= 36
-  ).length >= 36;
-  const needsImageSequenceBackfill = hasImageSequenceCandidate && !hasCompleteToyotaSequence;
-  if (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill || !fallbackUrl) return extracted;
-  const staticAssets = await withTimeout(
-    extractStaticAssets(fallbackUrl, "", { fast: true }),
-    35e3,
-    `Browser-tab static fallback for ${fallbackUrl}`
-  ).catch(() => null);
-  if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
-  const mergeByUrl = (left = [], right = []) => {
-    const rows = /* @__PURE__ */ new Map();
-    [...left, ...right].forEach((item) => {
-      const key = String(item?.url || item?.src || "").trim();
-      if (key) rows.set(key, item);
-    });
-    return Array.from(rows.values());
-  };
-  return {
-    ...extracted,
-    images: mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images),
-    icons: mergeImageRowsByBestSequenceFrame(extracted?.icons, staticAssets?.icons),
-    videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
-    fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
-    colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
-    extractionMeta: {
-      ...extracted?.extractionMeta,
-      mode: hasAssets || needsRenderedFontBackfill ? "browser-static-font-fallback" : "browser-static-fallback",
-      sectionLabel: extracted?.title || "Static fallback"
-    },
-    pageUrl: extracted?.pageUrl || fallbackUrl,
-    title: extracted?.title || ""
-  };
-}
 app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
   const requestedUrl = String(req.body?.url || "").trim();
   const previousProxyUrl = activeExtractionProxyUrl;
   try {
-    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const tab = await readChromeClientTab();
-    try {
-      if (requestedUrl && !browserTabMatchesRequestedUrl(tab.url || "", requestedUrl)) {
-        throw new Error("Active Chrome tab does not match the pasted URL.");
-      }
-      const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
-      const raw = JSON.parse(rawText || "{}");
-      const fallbackUrl = raw?.url || tab.url || requestedUrl;
-      const extracted = await fillEmptyBrowserExtractionFromStatic(
-        await normalizeBrowserSessionExtraction(raw, fallbackUrl, "open-chrome-tab"),
-        fallbackUrl
-      );
-      return res.json({
-        ok: true,
-        source: "open-chrome-tab",
-        chromeTab: tab,
-        ...extracted
-      });
-    } catch (chromeScriptError) {
-      if (!requestedUrl && !tab.url) throw chromeScriptError;
-      const fallbackUrl = requestedUrl || tab.url;
-      const extracted = await fillEmptyBrowserExtractionFromStatic(
-        await extractAssetsFromControlledBrowserSession(fallbackUrl),
-        fallbackUrl
-      );
-      return res.json({
-        ok: true,
-        source: "controlled-browser-session",
-        chromeTab: tab,
-        warning: "Chrome did not allow direct active-tab scripting. Used a controlled browser session fallback.",
-        chromeError: String(chromeScriptError?.message || chromeScriptError || "").slice(0, 300),
-        ...extracted
-      });
+    if (!requestedUrl) {
+      return res.status(400).json({ ok: false, error: "URL is required." });
     }
+    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
+    const extracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    return res.json({
+      ok: true,
+      source: "controlled-browser-session",
+      ...extracted
+    });
   } catch (error) {
     if (/proxy url|proxy protocol/i.test(String(error?.message || ""))) {
       return res.status(400).json({
@@ -4823,29 +4723,9 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
         error: error?.message || "Invalid proxy URL."
       });
     }
-    const fallbackUrl = requestedUrl;
-    if (fallbackUrl) {
-      try {
-        const extracted = await fillEmptyBrowserExtractionFromStatic(
-          await extractAssetsFromControlledBrowserSession(fallbackUrl),
-          fallbackUrl
-        );
-        return res.json({
-          ok: true,
-          source: "controlled-browser-session",
-          warning: "Open Chrome tab extraction was unavailable. Used a controlled browser session fallback.",
-          ...extracted
-        });
-      } catch (fallbackError) {
-        return res.status(400).json({
-          ok: false,
-          error: fallbackError?.message || error?.message || "Unable to extract assets from Chrome."
-        });
-      }
-    }
     return res.status(400).json({
       ok: false,
-      error: error?.message || "Unable to extract assets from Chrome."
+      error: error?.message || "Unable to extract assets from the automated Chromium crawler."
     });
   } finally {
     activeExtractionProxyUrl = previousProxyUrl;
@@ -5546,21 +5426,6 @@ var waitForPageContentSettle = async (page, options = {}) => {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   }, readinessTimeoutMs).catch(() => void 0);
 };
-var waitForManualCaptchaResolution = async (page, options = {}) => {
-  const timeoutMs = Math.max(15e3, Number(options.timeoutMs || 12e4));
-  const started = Date.now();
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  await page.bringToFront?.().catch(() => void 0);
-  while (Date.now() - started < timeoutMs) {
-    const html = await page.content().catch(() => "");
-    if (html && !pageHtmlLooksBlocked(html)) {
-      await waitForPageContentSettle(page, { minWaitMs: 2200, readinessTimeoutMs: 2200 });
-      return true;
-    }
-    await delay(2e3);
-  }
-  return false;
-};
 var PUPPETEER_BROWSER_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
@@ -5728,24 +5593,54 @@ var fetchSiteHtmlViaCurl = async (siteUrl) => {
 };
 var buildReaderFallbackUrl = (siteUrl) => {
   const normalized = new URL2(siteUrl).href;
-  return `https://r.jina.ai/http://${normalized}`;
+  return `https://r.jina.ai/${normalized}`;
 };
 var fetchReaderFallbackText = async (siteUrl) => {
   assertPublicAssetUrl(siteUrl);
   const readerUrl = buildReaderFallbackUrl(siteUrl);
-  const response = await axios.get(readerUrl, {
-    timeout: 2e4,
-    maxRedirects: 3,
-    validateStatus: () => true,
-    headers: {
-      "User-Agent": PAGE_FETCH_USER_AGENTS[2],
-      Accept: "text/plain, text/markdown, */*"
+  let text = "";
+  try {
+    const response = await axios.get(readerUrl, {
+      timeout: 8e3,
+      maxRedirects: 3,
+      validateStatus: () => true,
+      headers: {
+        "User-Agent": PAGE_FETCH_USER_AGENTS[2],
+        Accept: "text/plain, text/markdown, */*"
+      }
+    });
+    if (response.status >= 200 && response.status < 300) text = String(response.data || "");
+  } catch {
+  }
+  const looksLikeReaderPayload = (value) => /URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(value);
+  if (!looksLikeReaderPayload(text)) {
+    try {
+      const response = await fetch(readerUrl, {
+        headers: {
+          "User-Agent": PAGE_FETCH_USER_AGENTS[2],
+          Accept: "text/plain, text/markdown, */*"
+        },
+        signal: AbortSignal.timeout(25e3)
+      });
+      if (response.ok) text = await response.text();
+    } catch {
     }
-  });
-  if (response.status < 200 || response.status >= 300) return "";
-  const text = String(response.data || "");
-  if (htmlLooksLikeBotWall(text)) return "";
-  if (!/URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(text)) return "";
+  }
+  if (!looksLikeReaderPayload(text)) {
+    try {
+      const { stdout } = await execFileAsync2(
+        process.platform === "darwin" ? "/usr/bin/curl" : "curl",
+        ["-k", "-sL", "--max-time", "25", readerUrl],
+        { maxBuffer: 25 * 1024 * 1024 }
+      );
+      text = String(stdout || "");
+    } catch {
+      return "";
+    }
+  }
+  const hasReaderPayload = looksLikeReaderPayload(text);
+  if (!hasReaderPayload && htmlLooksLikeBotWall(text)) return "";
+  if (!hasReaderPayload) return "";
   return text;
 };
 var buildKnownBlockedSiteFallbackHtml = (siteUrl, readerText = "") => {
@@ -5821,6 +5716,70 @@ var extractReaderFallbackAssets = async (targetUrl, options = {}) => {
   if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
   return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
 };
+var extractProtectedPageAssetsFast = async (targetUrl) => {
+  let browser = null;
+  let page = null;
+  const fonts = [];
+  let colors = [];
+  const pendingStylesheets = [];
+  try {
+    browser = await launchPuppeteerBrowser();
+    page = await acquireSingleWebsitePage(browser);
+    await page.setUserAgent(PAGE_FETCH_USER_AGENTS[2]);
+    await applyPuppeteerStealth(page);
+    page.on("response", (response) => {
+      const responseUrl = String(response.url?.() || "");
+      const resourceType = String(response.request?.().resourceType?.() || "");
+      const headers = response.headers?.() || {};
+      const contentType = String(headers["content-type"] || "").toLowerCase();
+      if (resourceType === "font" || /font\/|application\/font|vnd\.ms-fontobject/i.test(contentType) || /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/i.test(responseUrl)) {
+        const format = getFontFormatFromUrlOrType(responseUrl, contentType);
+        if (responseUrl && isSupportedFontFormat(format)) {
+          fonts.push({ family: "", url: responseUrl, format, status: DEFAULT_ASSET_STATUS });
+        }
+      }
+      if (resourceType === "stylesheet" || /text\/css/i.test(contentType) || /\.css(?:[?#]|$)/i.test(responseUrl)) {
+        pendingStylesheets.push(
+          withTimeout(Promise.resolve(response.text()), 3e3, "Protected page stylesheet read").then((cssText) => {
+            fonts.push(...extractFontsFromCss(String(cssText || ""), responseUrl || targetUrl));
+          }).catch(() => void 0)
+        );
+      }
+    });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 15e3 }).catch(() => void 0);
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    await Promise.allSettled(pendingStylesheets);
+    colors = await page.evaluate(() => {
+      const counts = /* @__PURE__ */ new Map();
+      const add = (value) => {
+        const raw = String(value || "").trim().toLowerCase();
+        if (!raw || raw === "transparent" || raw === "rgba(0, 0, 0, 0)" || raw === "none") return;
+        const rgb = raw.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        const color = rgb ? `#${[rgb[1], rgb[2], rgb[3]].map((part) => Number(part).toString(16).padStart(2, "0")).join("")}` : /^#[0-9a-f]{3,8}$/i.test(raw) ? raw : "";
+        if (!color) return;
+        counts.set(color, (counts.get(color) || 0) + 1);
+      };
+      Array.from(document.querySelectorAll("body, body *")).slice(0, 5e3).forEach((element) => {
+        const style = window.getComputedStyle(element);
+        add(style.color);
+        add(style.backgroundColor);
+        add(style.borderTopColor);
+        add(style.fill);
+        add(style.stroke);
+      });
+      return Array.from(counts.entries()).sort((left, right) => right[1] - left[1]).slice(0, 32).map(([color]) => color);
+    }).catch(() => []);
+  } finally {
+    await page?.close?.().catch(() => void 0);
+    await closePuppeteerBrowser(browser).catch(() => void 0);
+  }
+  const uniqueFonts = Array.from(
+    new Map(
+      fonts.filter((font) => /^https?:\/\//i.test(String(font?.url || ""))).map((font) => [String(font.url), font])
+    ).values()
+  );
+  return { fonts: uniqueFonts, colors };
+};
 var fetchSiteHtmlViaBrowser = async (siteUrl) => {
   let browser = null;
   let page = null;
@@ -5887,19 +5846,7 @@ var extractFontsFromCss = (cssText, baseUrl) => {
           });
         }
       }
-      if (candidates.length > 0) {
-        const gstatic = candidates.find((candidate) => /fonts\.gstatic\.com/i.test(String(candidate?.url || "")));
-        const best = gstatic || candidates.sort((a, b) => scoreFontCssCandidate(b) - scoreFontCssCandidate(a))[0];
-        const familyLabel = String(best?.family || "");
-        const bestUrl = String(best?.url || "");
-        if (/BarlowCondensed/i.test(familyLabel) && !/fonts\.gstatic\.com/i.test(bestUrl)) {
-          continue;
-        }
-        if (/Dobra/i.test(familyLabel) && !/fonts\.gstatic\.com/i.test(bestUrl)) {
-          continue;
-        }
-        fonts.push(best);
-      }
+      fonts.push(...candidates);
     }
   }
   return fonts;
@@ -5925,34 +5872,6 @@ var getFontFormatFromUrlOrType = (url, contentType = "") => {
   return "unknown";
 };
 var SUPPORTED_FONT_FORMATS = /* @__PURE__ */ new Set(["woff2", "woff", "ttf", "otf"]);
-var FONT_FORMAT_PRIORITY = {
-  woff2: 3,
-  woff: 2,
-  otf: 2,
-  ttf: 1
-};
-var scoreFontCssCandidate = (candidate) => {
-  let score = FONT_FORMAT_PRIORITY[String(candidate?.format || "").toLowerCase()] || 0;
-  const url = String(candidate?.url || "").toLowerCase();
-  const family = String(candidate?.family || "").trim().replace(/^['"]+|['"]+$/g, "");
-  const familySlug = family.replace(/[^a-z0-9]+/gi, "").toLowerCase();
-  const urlBase = (url.split("/").pop() || "").replace(/\.[^.]+$/, "").toLowerCase();
-  const urlSlug = urlBase.replace(/[^a-z0-9]+/g, "");
-  if (familySlug && (urlSlug.includes(familySlug) || familySlug.includes(urlSlug))) score += 24;
-  else {
-    const familyTokens = family.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2);
-    const matchedTokens = familyTokens.filter((token) => urlBase.includes(token)).length;
-    score += matchedTokens * 7;
-  }
-  const familyItalic = /italic/i.test(family);
-  const urlItalic = /italic/i.test(urlBase);
-  if (familyItalic !== urlItalic) score -= 18;
-  if (/fonts\.gstatic\.com/i.test(url)) score += 22;
-  if (/-ttf\.ttf(\?|$)/i.test(url)) score += 10;
-  else if (/-woff\.woff(\?|$)/i.test(url)) score += 6;
-  else if (/-woff2\.woff2(\?|$)/i.test(url)) score += 4;
-  return score;
-};
 var isSupportedFontFormat = (format) => SUPPORTED_FONT_FORMATS.has(String(format || "").toLowerCase());
 var isSupportedFontAsset = (font) => {
   if (!font?.url) return false;
@@ -6622,6 +6541,7 @@ var classifyAssetIconCandidate = (item) => {
   if (item?.assetCategory === "icon" || item?.isInlineSvg) return true;
   const url = String(item?.url || "").toLowerCase();
   if (/icon|favicon|sprite|glyph|logo-mark|brandmark|\/icons?\//i.test(url)) return true;
+  if (/(?:^|[\/_\-.])(?:warning|alert|caution|info|water[_-]?drop|hub|allergic[_-]?reaction[_-]?hand)(?:[\/_\-.]|$)/i.test(url)) return true;
   if (/\.ico(?:\?|$)/i.test(url)) return true;
   const alt = String(item?.alt || "").toLowerCase();
   if (alt && /icon|logo|glyph|symbol/.test(alt)) return true;
@@ -9153,7 +9073,7 @@ var isInstallableTtfBuffer = (buffer) => {
   try {
     const parsed = opentype.parse(bufferToExactArrayBuffer(buffer));
     const glyphCount = Number(parsed?.glyphs?.length || parsed?.numGlyphs || 0);
-    const hasBasicLatin = ["A", "a", "0"].every((character) => Number(parsed?.charToGlyphIndex?.(character) || 0) > 0);
+    const mappedCharacterCount = Object.keys(parsed?.tables?.cmap?.glyphIndexMap || {}).length;
     const names = parsed?.names || {};
     const hasReadableName = [
       names.preferredFamily,
@@ -9165,7 +9085,7 @@ var isInstallableTtfBuffer = (buffer) => {
       if (typeof group === "string") return Boolean(group.trim());
       return group && typeof group === "object" && Object.values(group).some((value) => typeof value === "string" && value.trim());
     });
-    return glyphCount > 1 && hasBasicLatin && (hasReadableName || hasValidSfntStructure);
+    return glyphCount > 1 && mappedCharacterCount > 0 && (hasReadableName || hasValidSfntStructure);
   } catch {
     return hasValidSfntStructure;
   }
@@ -9740,7 +9660,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
     }
   }
   const ttfIdentity = buildTtfIdentityBase(preferredBase, extras);
-  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v16-canonical-family-weight-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
+  const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v17-unicode-subsets-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
   const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
@@ -10217,6 +10137,8 @@ var canonicalImageDedupKey = (url) => {
       const sequencePath = parsed.pathname.replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, "/").replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, "/").replace(/\/{2,}/g, "/");
       return `sequence:${sequencePath}`.toLowerCase();
     }
+    const magnoliaImagingSource = parsed.pathname.match(/^(\/\.imaging\/.*?)\/jcr:content(?:\.[a-z0-9]+)?$/i)?.[1];
+    if (magnoliaImagingSource) return `${host}:imaging-source:${magnoliaImagingSource}`.toLowerCase();
     if (leaf && !isOpaqueGeneratedImageLeaf(leaf)) {
       return `${host}:file:${leaf}`;
     }
@@ -16591,7 +16513,7 @@ app.get("/api/section-frame", async (req, res) => {
 });
 app.post("/api/extract", async (req, res) => {
   const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, proxyUrl } = req.body;
-  const needsDeepCrawl = /fabindia\.com|\.imaging\/|\/dam\/jcr:/i.test(url);
+  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = crawlModeBody === "deep" || needsDeepCrawl ? "deep" : "fast";
   const isFastCrawl = crawlMode !== "deep";
   let browser = null;
@@ -16640,21 +16562,82 @@ app.post("/api/extract", async (req, res) => {
         colors: []
       });
     }
-    if (mode === "quick") {
+    const isWarehouseStationeryRequest = /warehousestationery\.co\.nz/i.test(targetUrl);
+    if (mode === "quick" && !isWarehouseStationeryRequest) {
       const quickAssets = await withTimeout(
         extractQuickAssets(targetUrl, { videosOnly }),
-        12e3,
+        // Leave enough room for the reader fallback used by challenge pages.
+        3e4,
         `Quick extract for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       return res.json(quickAssets);
     }
-    if (useStaticExtract) {
+    if (useStaticExtract && !isWarehouseStationeryRequest) {
       const staticAssets = await withTimeout(
         extractStaticAssets(targetUrl, "", { fast: true, videosOnly }),
         isFastCrawl ? 35e3 : 45e3,
         `Static extract for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       return res.json(staticAssets);
+    }
+    const isWarehouseStationeryTarget = isWarehouseStationeryRequest;
+    if (isWarehouseStationeryTarget) {
+      const warehouseAssetsPromise = videosOnly ? Promise.resolve({ fonts: [], colors: [] }) : withTimeout(
+        extractProtectedPageAssetsFast(targetUrl),
+        24e3,
+        `Warehouse Stationery font and color scan for ${targetUrl}`
+      ).catch(() => ({ fonts: [], colors: [] }));
+      const readerText = await withTimeout(
+        fetchReaderFallbackText(targetUrl),
+        55e3,
+        `Warehouse Stationery reader fetch for ${targetUrl}`
+      ).catch(() => "");
+      if (readerText) {
+        const discovered = extractAssetsFromRawText(readerText, targetUrl);
+        const directAssetUrls = Array.from(
+          readerText.matchAll(/https?:\/\/[^\s)"'<>]+\.(?:svg|png|jpe?g|webp|gif|avif|woff2?|ttf|otf)(?:\?[^\s)"'<>]*)?/gi),
+          (match) => match[0]
+        );
+        for (const assetUrl of directAssetUrls) {
+          if (/\.(?:woff2?|ttf|otf)(?:\?|$)/i.test(assetUrl)) {
+            discovered.fonts.push({
+              family: "",
+              url: assetUrl,
+              format: getFontFormatFromUrlOrType(assetUrl, ""),
+              status: DEFAULT_ASSET_STATUS
+            });
+          } else {
+            discovered.images.push({
+              url: assetUrl,
+              type: getAssetTypeFromUrl(assetUrl, "img"),
+              status: DEFAULT_ASSET_STATUS
+            });
+          }
+        }
+        const uniqueByUrl = (items) => Array.from(
+          new Map(
+            items.filter((item) => /^https?:\/\//i.test(String(item?.url || ""))).map((item) => [String(item.url), { ...item, status: item.status || DEFAULT_ASSET_STATUS }])
+          ).values()
+        );
+        const readerImages = uniqueByUrl(discovered.images || []);
+        if (readerImages.length >= 20) {
+          const protectedAssets = await warehouseAssetsPromise;
+          return res.json({
+            images: videosOnly ? [] : readerImages,
+            videos: uniqueByUrl(discovered.videos || []),
+            fonts: uniqueByUrl([...discovered.fonts || [], ...protectedAssets.fonts]),
+            colors: protectedAssets.colors
+          });
+        }
+      }
+      const readerAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        105e3,
+        `Warehouse Stationery reader extraction for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isUsableStaticExtract(readerAssets)) {
+        return res.json(readerAssets);
+      }
     }
     const prefetchedSiteHtml = await withTimeout(
       fetchSiteHtml(targetUrl),

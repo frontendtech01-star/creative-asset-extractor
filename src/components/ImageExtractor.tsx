@@ -113,6 +113,16 @@ const sortImagesForDisplay = (items: any[]) => [...items].sort((a, b) => {
 const duplicateImageGroupKey = (img: any) => {
   const frameInfo = getImageSequenceFrame(img);
   if (frameInfo) return `${getImageSequenceGroupKey(img)}::frame-${frameInfo.frame}`;
+  try {
+    const parsed = new URL(String(img?.url || ''));
+    // Magnolia CMS serves unrelated originals through the shared synthetic
+    // leaf /jcr:content.png. The source path before that leaf is the asset's
+    // true identity; filename-only grouping hides all but one safety icon.
+    const magnoliaSource = parsed.pathname.match(/^(\/\.imaging\/.*?)\/jcr:content(?:\.[a-z0-9]+)?$/i)?.[1];
+    if (magnoliaSource) return `magnolia:${parsed.hostname.replace(/^www\./, '')}:${magnoliaSource}`.toLowerCase();
+  } catch {
+    // Continue with the normal filename/path grouping below.
+  }
   const filename = getImageDisplayName(img, 0).toLowerCase();
   if (filename && !/^image-\d+\./i.test(filename)) return `file:${filename}`;
   try {

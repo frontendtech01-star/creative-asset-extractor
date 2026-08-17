@@ -34,6 +34,11 @@ const getReadableFontLabel = (font: any) => {
   return 'Website Font';
 };
 
+const isIconFont = (font: any) => {
+  const label = `${getReadableFontLabel(font)} ${font?.family || ''} ${font?.name || ''} ${font?.url || ''}`;
+  return /material\s*icons|font\s*awesome|fontawesome|glyphicons?|icomoon|bootstrap[- ]icons|icon[-_ ]?font/i.test(label);
+};
+
 const getOriginalFontFilename = (font: any) => {
   const explicit = String(font?.originalFilename || '').trim();
   if (explicit) return explicit;
@@ -57,16 +62,6 @@ const getFontSourceLabel = (font: any) => {
   if (font?.fontMetadata) return 'Font metadata';
   if (font?.computedFamily) return 'Computed';
   return 'Network';
-};
-
-const getFontVariantKey = (font: any) => {
-  const identity = resolveFontIdentityFields(font);
-  return [
-    getReadableFontLabel(font),
-    normalizeFontWeightKey(identity.weight),
-    normalizeFontStyleKey(String(identity.style || '')),
-    resolveFontSourceFormat(font),
-  ].join('|').toLowerCase();
 };
 
 const getFontSourceVerifier = (font: any) => {
@@ -220,8 +215,11 @@ export default function FontExtractor({
   const displayFonts = useMemo(() => {
     const seen = new Map<string, any>();
     fonts.forEach((font) => {
-      if (!getFontSelectionKey(font)) return;
-      const key = getFontVariantKey(font);
+      const selectionKey = getFontSelectionKey(font);
+      if (!selectionKey) return;
+      // Distinct downloadable font files are distinct assets, even when their
+      // inferred family/weight/style metadata happens to be identical.
+      const key = selectionKey.toLowerCase();
       if (!seen.has(key)) seen.set(key, font);
     });
     return Array.from(seen.values());
@@ -467,6 +465,7 @@ export default function FontExtractor({
           const cardFixVerticalMetrics = fontVerticalMetrics[selectionKey] ?? true;
           const cardFormats = fontFormats[selectionKey] || FONT_DOWNLOAD_FORMATS;
           const sourceVerifier = getFontSourceVerifier(font);
+          const iconFont = isIconFont(font);
           return (
             <div
               key={`${selectionKey}-${idx}`}
@@ -510,9 +509,11 @@ export default function FontExtractor({
               </div>
 
               <div className="mt-2 flex flex-col gap-1.5">
-                <div className="block w-full overflow-hidden rounded-xl text-left">
-                  <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
-                </div>
+                {!iconFont ? (
+                  <div className="block w-full overflow-hidden rounded-xl text-left">
+                    <FontPreview font={font} text={previewText} sourcePageUrl={sourcePageUrl} />
+                  </div>
+                ) : null}
                 <div onClick={(event) => event.stopPropagation()} className="rounded-xl border border-zinc-200 bg-zinc-50 p-2.5">
                   <div className="flex items-center justify-between gap-2 border-b border-zinc-200 pb-2">
                     <div className="min-w-0">

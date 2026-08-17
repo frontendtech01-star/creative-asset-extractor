@@ -1113,10 +1113,12 @@ export default function App() {
     const requestUrl = parsedInput.targetUrl || options?.targetUrl || url;
     const requestProxyUrl = parsedInput.proxyUrl;
     const isYouTube = isYouTubeExtractUrl(requestUrl);
-    const timeoutMs = isYouTube
-      ? 240000
-      : options?.mode === 'quick'
-        ? 12000
+      const timeoutMs = isYouTube
+        ? 240000
+        : options?.mode === 'quick'
+        // Cloudflare-protected storefronts can only be read through the
+        // public reader fallback, which commonly needs 15–25 seconds.
+        ? 32000
         : options?.mode === 'static'
           // A cold stylesheet scan can take longer on sites with many CSS bundles
           // (Nike is a common example). Keep the request alive long enough for
@@ -1233,15 +1235,9 @@ export default function App() {
 
   const handleDeepScan = () => {
     if (loading) {
-      if (crawlMode !== 'fast') return;
-      clearExtractPhaseTimer();
-      extractAbortRef.current?.abort();
-      finishNowRef.current = false;
-      void handleWebsiteExtract(undefined, 'deep');
       return;
     }
-    setCrawlMode('deep');
-    void handleWebsiteExtract(undefined, 'deep');
+    void handleExtractFromOpenWebsite(extractedUrl || url);
   };
 
   const handleWebsiteExtract = async (event?: React.FormEvent, forcedCrawlMode?: WebsiteCrawlMode, overrideUrl?: string) => {
@@ -1263,6 +1259,7 @@ export default function App() {
     setError(null);
     if (!forcedCrawlMode) {
       setAssets(null);
+      partialExtractRef.current = null;
       clearExtractSession();
     }
     setCompletion(null);
@@ -1279,9 +1276,10 @@ export default function App() {
     extractJobSeq.current = jobId;
     const isCurrentJob = () => extractJobSeq.current === jobId;
     const isYouTube = isYouTubeExtractUrl(targetUrl);
+    const isKnownProtectedStorefront = /warehousestationery\.co\.nz/i.test(targetUrl);
 
     const noAssetsYet = () => !partialExtractRef.current || !hasExtractedAssets(partialExtractRef.current);
-    const fallbackTimer = !isYouTube
+    const fallbackTimer = !isYouTube && !isKnownProtectedStorefront
       ? window.setTimeout(() => {
           if (!isCurrentJob() || controller.signal.aborted || finishNowRef.current) return;
           if (!noAssetsYet()) return;
@@ -1315,11 +1313,13 @@ export default function App() {
         }
       } else {
         setExtractPhase('loading');
-        try {
-          quickData = await runExtractRequest(controller.signal, { mode: 'quick', targetUrl });
-        } catch (firstError: any) {
-          if (controller.signal.aborted) throw firstError;
-          quickData = null;
+        if (!isKnownProtectedStorefront) {
+          try {
+            quickData = await runExtractRequest(controller.signal, { mode: 'quick', targetUrl });
+          } catch (firstError: any) {
+            if (controller.signal.aborted) throw firstError;
+            quickData = null;
+          }
         }
         if (quickData && hasExtractedAssets(quickData)) {
           applyExtractResult(quickData, targetUrl, { partial: true });
@@ -1328,7 +1328,8 @@ export default function App() {
         setExtractPhase('dom');
         let staticData: any = null;
         const quickFontCount = Array.isArray(quickData?.fonts) ? quickData.fonts.length : 0;
-        const needsStaticAssetPass = activeCrawlMode === 'deep' || quickFontCount === 0;
+        const needsStaticAssetPass =
+          !isKnownProtectedStorefront && (activeCrawlMode === 'deep' || quickFontCount === 0);
         if (!finishNowRef.current && needsStaticAssetPass) {
           try {
             staticData = await runExtractRequest(controller.signal, { mode: 'static', targetUrl });
@@ -1612,7 +1613,7 @@ export default function App() {
       } else if (key === 'r' && event.shiftKey) {
         event.preventDefault();
         if (mainSection === 'video-downloader') videoDownloaderDownloadRef.current?.();
-        else void handleWebsiteExtract(undefined, undefined, extractedUrl || url);
+        else void handleExtractFromOpenWebsite(extractedUrl || url);
       } else if (key === '1') {
         event.preventDefault();
         setMainNav('website-extraction');
@@ -1734,7 +1735,7 @@ export default function App() {
           <WebsiteExtracterToolbar
             url={url}
             onUrlChange={handleUrlChange}
-            onExtractFromOpenWebsite={handleExtractFromOpenWebsite}
+            onExtractFromOpenWebsite={() => handleExtractFromOpenWebsite()}
             loading={loading}
             extractFromOpenWebsiteLoading={previewCapturing}
             inputRef={websiteInputRef}

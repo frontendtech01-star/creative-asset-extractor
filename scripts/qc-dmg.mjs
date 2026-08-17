@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import WebSocket from 'ws';
 
 const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const releaseDir = path.join(projectRoot, 'release');
@@ -35,6 +36,27 @@ const fail = (msg) => {
   issues.push(msg);
   console.log(`  ✗ ${msg}`);
 };
+
+const waitForAsyncExtract = (serverUrl, extractId) => new Promise((resolve, reject) => {
+  const ws = new WebSocket(`${serverUrl.replace(/^http/i, 'ws')}/ws/extract?extractId=${encodeURIComponent(extractId)}`);
+  const timeout = setTimeout(() => {
+    ws.terminate();
+    reject(new Error('Packaged browser extraction timed out'));
+  }, 180000);
+  ws.on('message', (raw) => {
+    const event = JSON.parse(String(raw));
+    if (event.type === 'complete') {
+      clearTimeout(timeout);
+      ws.close();
+      resolve(event.result || {});
+    } else if (event.type === 'error') {
+      clearTimeout(timeout);
+      ws.close();
+      reject(new Error(event.message || 'Packaged browser extraction failed'));
+    }
+  });
+  ws.on('error', reject);
+});
 
 const appPath = path.resolve(process.env.QC_APP_PATH || findPackagedApp());
 const resourcesPath = path.join(appPath, 'Contents', 'Resources');
@@ -292,11 +314,21 @@ try {
         body: JSON.stringify({ url: extractTargetUrl, ...(extractMode === 'full' ? {} : { mode: extractMode }) }),
         signal: AbortSignal.timeout(extractMode === 'full' ? 240000 : 120000),
       });
-      const extract = await extractRes.json().catch(() => ({}));
+      let extract = await extractRes.json().catch(() => ({}));
+      if (extractRes.ok && extract?.async && extract?.extractId) {
+        extract = await waitForAsyncExtract(serverUrl, String(extract.extractId));
+      }
       if (extractRes.ok && extract.images?.length > 0) {
         pass(`extract OK (${extract.images.length} images)`);
       } else {
         fail(`extract failed: ${extract?.error || extractRes.status}`);
+      }
+
+      const minimumFonts = Math.max(0, Number(process.env.QC_MIN_FONTS || 0));
+      if (minimumFonts > 0) {
+        const extractedFonts = Array.isArray(extract?.fonts) ? extract.fonts : [];
+        if (extractedFonts.length >= minimumFonts) pass(`font extract OK (${extractedFonts.length} fonts)`);
+        else fail(`font extract failed: expected at least ${minimumFonts}, got ${extractedFonts.length}`);
       }
 
       if (process.env.QC_REQUIRE_VIDEO_CARDS === '1' || process.env.QC_REQUIRE_CLEAN_VIDEO_CARDS === '1') {

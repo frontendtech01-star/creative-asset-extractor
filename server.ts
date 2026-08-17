@@ -2432,12 +2432,19 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
     if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
   });
   const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
-  const fonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(metadataFonts.map((font) => String(font?.url || ''))))
-      .map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl))
-      .filter(Boolean)
-      .filter(isSupportedFontAsset)
-  );
+  // Browser extraction is an asset inventory, so distinct URLs must remain
+  // distinct even when they share family/weight/style (for example Google
+  // Fonts unicode subsets or alternate downloadable formats). The UI uses the
+  // URL as its selection key and can safely show every captured file.
+  const fonts = Array.from(new Set(metadataFonts.map((font) => String(font?.url || '')).filter(Boolean)))
+    .map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl))
+    .filter(Boolean)
+    .filter(isSupportedFontAsset)
+    .sort((a: any, b: any) => {
+      const familyDelta = String(a?.family || '').localeCompare(String(b?.family || ''));
+      if (familyDelta !== 0) return familyDelta;
+      return String(a?.url || '').localeCompare(String(b?.url || ''));
+    });
 
   return {
     images: expandedImages,
@@ -2475,6 +2482,35 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       ignoreDefaultArgs: ['--enable-automation'],
     });
     const page = await acquireSingleWebsitePage(browser);
+    const capturedFontResponses = new Map<string, any>();
+    const capturedStylesheets = new Map<string, string>();
+    const pendingStylesheetReads = new Set<Promise<void>>();
+    page.on('response', (response) => {
+      const responseUrl = String(response.url() || '').trim();
+      if (!responseUrl) return;
+      const contentType = String(response.headers()['content-type'] || '').toLowerCase();
+      const resourceType = String(response.request().resourceType() || '').toLowerCase();
+      const format = getFontFormatFromUrlOrType(responseUrl, contentType);
+      if (resourceType === 'font' || isSupportedFontFormat(format)) {
+        capturedFontResponses.set(responseUrl, {
+          url: responseUrl,
+          format,
+          mimeType: contentType || undefined,
+          source: 'Chromium network response',
+          status: DEFAULT_ASSET_STATUS,
+        });
+      }
+      if (resourceType === 'stylesheet' || contentType.includes('text/css') || /\.css(?:[?#]|$)/i.test(responseUrl)) {
+        let readPromise: Promise<void>;
+        readPromise = response.text()
+          .then((cssText) => {
+            if (cssText && cssText.length <= 5 * 1024 * 1024) capturedStylesheets.set(responseUrl, cssText);
+          })
+          .catch(() => undefined)
+          .then(() => { pendingStylesheetReads.delete(readPromise); });
+        pendingStylesheetReads.add(readPromise);
+      }
+    });
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
@@ -2484,15 +2520,56 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
     });
     const firstHtml = await page.content().catch(() => '');
     if (pageHtmlLooksBlocked(firstHtml)) {
-      const solved = await waitForManualCaptchaResolution(page, { timeoutMs: 180000 });
-      if (!solved) {
-        throw new Error('Captcha was not cleared in time. Complete the captcha in the opened browser window, then click Extract From Open Website again.');
-      }
+      await waitForChallengeOrLoaderSettle(page, { timeoutMs: 25000, minAssetWaitMs: 8000 }).catch(() => undefined);
+      await waitForPageContentSettle(page, { minWaitMs: 5000, readinessTimeoutMs: 4000 }).catch(() => undefined);
     }
     await performLazyLoadScroll(page, { stepDelayMs: 600, maxStableRounds: 3, maxDurationMs: 22000 }).catch(() => undefined);
     await waitForPageContentSettle(page, { minWaitMs: 8000, readinessTimeoutMs: 4000 });
+    await Promise.allSettled(Array.from(pendingStylesheetReads));
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript() as any);
     const raw = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
+    // Re-open discovered stylesheets inside the same automated Chromium
+    // session with a compatibility UA. Font providers can return only the
+    // currently selected subset to a modern page UA, while their compatibility
+    // response declares every downloadable unicode subset and variant.
+    const discoveredCssUrls: string[] = prioritizeFontCssCandidates(Array.from(new Set<string>(
+      (Array.isArray(raw?.fonts) ? raw.fonts : [])
+        .map((font: any) => String(font?.url || '').trim())
+        .filter((url: string) => /^https?:\/\//i.test(url))
+        .filter((url: string) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com|use\.typekit\.net|cloud\.typography|fonts\.adobe/i.test(url))
+    ))).slice(0, 80);
+    const browserCssFonts = (await mapWithConcurrency(discoveredCssUrls, 4, async (cssUrl) => {
+      let cssPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
+      try {
+        cssPage = await browser.newPage();
+        await cssPage.setUserAgent(PAGE_FETCH_USER_AGENTS[0]);
+        await cssPage.setExtraHTTPHeaders({
+          Accept: 'text/css,*/*;q=0.1',
+          Referer: targetUrl,
+        });
+        const cssResponse = await cssPage.goto(cssUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
+        const responseText = await cssResponse?.text().catch(() => '');
+        const renderedText = responseText || await cssPage.evaluate(() => String(document.body?.innerText || '')).catch(() => '');
+        const cssText = String(renderedText || '')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;|&apos;/g, "'")
+          .replace(/&amp;/g, '&');
+        return cssText && cssText.length <= 5 * 1024 * 1024 ? extractFontsFromCss(cssText, cssUrl) : [];
+      } catch {
+        return [];
+      } finally {
+        await cssPage?.close().catch(() => undefined);
+      }
+    })).flat();
+    const capturedCssFonts = Array.from(capturedStylesheets.entries()).flatMap(([cssUrl, cssText]) =>
+      extractFontsFromCss(cssText, cssUrl)
+    );
+    raw.fonts = [
+      ...(Array.isArray(raw?.fonts) ? raw.fonts : []),
+      ...Array.from(capturedFontResponses.values()),
+      ...capturedCssFonts,
+      ...browserCssFonts,
+    ];
     const missingPreviewUrls = (Array.isArray(raw?.images) ? raw.images : [])
       .filter((image: any) => image?.url && !String(image?.dataUrl || '').startsWith('data:image/'))
       .map((image: any) => String(image.url))
@@ -2789,42 +2866,16 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
   const requestedUrl = String(req.body?.url || '').trim();
   const previousProxyUrl = activeExtractionProxyUrl;
   try {
-    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const tab = await readChromeClientTab();
-    try {
-      if (requestedUrl && !browserTabMatchesRequestedUrl(tab.url || '', requestedUrl)) {
-        throw new Error('Active Chrome tab does not match the pasted URL.');
-      }
-      const rawText = await executeJavascriptInChromeTab(tab, buildChromeTabAssetCaptureScript());
-      const raw = JSON.parse(rawText || '{}');
-      const fallbackUrl = raw?.url || tab.url || requestedUrl;
-      const extracted = await fillEmptyBrowserExtractionFromStatic(
-        await normalizeBrowserSessionExtraction(raw, fallbackUrl, 'open-chrome-tab'),
-        fallbackUrl
-      );
-      return res.json({
-        ok: true,
-        source: 'open-chrome-tab',
-        chromeTab: tab,
-        ...extracted,
-      });
-    } catch (chromeScriptError: any) {
-      if (!requestedUrl && !tab.url) throw chromeScriptError;
-      const fallbackUrl = requestedUrl || tab.url;
-      const extracted = await fillEmptyBrowserExtractionFromStatic(
-        await extractAssetsFromControlledBrowserSession(fallbackUrl),
-        fallbackUrl
-      );
-      return res.json({
-        ok: true,
-        source: 'controlled-browser-session',
-        chromeTab: tab,
-        warning:
-          'Chrome did not allow direct active-tab scripting. Used a controlled browser session fallback.',
-        chromeError: String(chromeScriptError?.message || chromeScriptError || '').slice(0, 300),
-        ...extracted,
-      });
+    if (!requestedUrl) {
+      return res.status(400).json({ ok: false, error: 'URL is required.' });
     }
+    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
+    const extracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    return res.json({
+      ok: true,
+      source: 'controlled-browser-session',
+      ...extracted,
+    });
   } catch (error: any) {
     if (/proxy url|proxy protocol/i.test(String(error?.message || ''))) {
       return res.status(400).json({
@@ -2832,29 +2883,9 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
         error: error?.message || 'Invalid proxy URL.',
       });
     }
-    const fallbackUrl = requestedUrl;
-    if (fallbackUrl) {
-      try {
-        const extracted = await fillEmptyBrowserExtractionFromStatic(
-          await extractAssetsFromControlledBrowserSession(fallbackUrl),
-          fallbackUrl
-        );
-        return res.json({
-          ok: true,
-          source: 'controlled-browser-session',
-          warning: 'Open Chrome tab extraction was unavailable. Used a controlled browser session fallback.',
-          ...extracted,
-        });
-      } catch (fallbackError: any) {
-        return res.status(400).json({
-          ok: false,
-          error: fallbackError?.message || error?.message || 'Unable to extract assets from Chrome.',
-        });
-      }
-    }
     return res.status(400).json({
       ok: false,
-      error: error?.message || 'Unable to extract assets from Chrome.',
+      error: error?.message || 'Unable to extract assets from the automated Chromium crawler.',
     });
   } finally {
     activeExtractionProxyUrl = previousProxyUrl;
@@ -3927,25 +3958,58 @@ const fetchSiteHtmlViaCurl = async (siteUrl: string) => {
 
 const buildReaderFallbackUrl = (siteUrl: string) => {
   const normalized = new URL(siteUrl).href;
-  return `https://r.jina.ai/http://${normalized}`;
+  return `https://r.jina.ai/${normalized}`;
 };
 
 const fetchReaderFallbackText = async (siteUrl: string) => {
   assertPublicAssetUrl(siteUrl);
   const readerUrl = buildReaderFallbackUrl(siteUrl);
-  const response = await axios.get(readerUrl, {
-    timeout: 20000,
-    maxRedirects: 3,
-    validateStatus: () => true,
-    headers: {
-      'User-Agent': PAGE_FETCH_USER_AGENTS[2],
-      Accept: 'text/plain, text/markdown, */*',
-    },
-  });
-  if (response.status < 200 || response.status >= 300) return '';
-  const text = String(response.data || '');
-  if (htmlLooksLikeBotWall(text)) return '';
-  if (!/URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(text)) return '';
+  let text = '';
+  try {
+    const response = await axios.get(readerUrl, {
+      timeout: 8000,
+      maxRedirects: 3,
+      validateStatus: () => true,
+      headers: {
+        'User-Agent': PAGE_FETCH_USER_AGENTS[2],
+        Accept: 'text/plain, text/markdown, */*',
+      },
+    });
+    if (response.status >= 200 && response.status < 300) text = String(response.data || '');
+  } catch {
+    // curl is more reliable for the reader endpoint in packaged/local runtimes.
+  }
+  const looksLikeReaderPayload = (value: string) =>
+    /URL Source:|Markdown Content:|!\[[^\]]*\]\(|https?:\/\/[^\s)]+\/wp-content\//i.test(value);
+  if (!looksLikeReaderPayload(text)) {
+    try {
+      const response = await fetch(readerUrl, {
+        headers: {
+          'User-Agent': PAGE_FETCH_USER_AGENTS[2],
+          Accept: 'text/plain, text/markdown, */*',
+        },
+        signal: AbortSignal.timeout(25000),
+      });
+      if (response.ok) text = await response.text();
+    } catch {
+      // Fall through to curl.
+    }
+  }
+  if (!looksLikeReaderPayload(text)) {
+    try {
+      const { stdout } = await execFileAsync(
+        process.platform === 'darwin' ? '/usr/bin/curl' : 'curl',
+        ['-k', '-sL', '--max-time', '25', readerUrl],
+        { maxBuffer: 25 * 1024 * 1024 }
+      );
+      text = String(stdout || '');
+    } catch {
+      return '';
+    }
+  }
+  const hasReaderPayload = looksLikeReaderPayload(text);
+  if (!hasReaderPayload && htmlLooksLikeBotWall(text)) return '';
+  if (!hasReaderPayload) return '';
   return text;
 };
 
@@ -4034,6 +4098,86 @@ const extractReaderFallbackAssets = async (targetUrl: string, options: { videosO
   return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
 };
 
+const extractProtectedPageAssetsFast = async (targetUrl: string) => {
+  let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
+  let page: any = null;
+  const fonts: any[] = [];
+  let colors: string[] = [];
+  const pendingStylesheets: Promise<void>[] = [];
+  try {
+    browser = await launchPuppeteerBrowser();
+    page = await acquireSingleWebsitePage(browser);
+    await page.setUserAgent(PAGE_FETCH_USER_AGENTS[2]);
+    await applyPuppeteerStealth(page);
+    page.on('response', (response: any) => {
+      const responseUrl = String(response.url?.() || '');
+      const resourceType = String(response.request?.().resourceType?.() || '');
+      const headers = response.headers?.() || {};
+      const contentType = String(headers['content-type'] || '').toLowerCase();
+      if (
+        resourceType === 'font' ||
+        /font\/|application\/font|vnd\.ms-fontobject/i.test(contentType) ||
+        /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/i.test(responseUrl)
+      ) {
+        const format = getFontFormatFromUrlOrType(responseUrl, contentType);
+        if (responseUrl && isSupportedFontFormat(format)) {
+          fonts.push({ family: '', url: responseUrl, format, status: DEFAULT_ASSET_STATUS });
+        }
+      }
+      if (resourceType === 'stylesheet' || /text\/css/i.test(contentType) || /\.css(?:[?#]|$)/i.test(responseUrl)) {
+        pendingStylesheets.push(
+          withTimeout(Promise.resolve(response.text()), 3000, 'Protected page stylesheet read')
+            .then((cssText) => {
+              fonts.push(...extractFontsFromCss(String(cssText || ''), responseUrl || targetUrl));
+            })
+            .catch(() => undefined)
+        );
+      }
+    });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    await Promise.allSettled(pendingStylesheets);
+    colors = await page.evaluate(() => {
+      const counts = new Map<string, number>();
+      const add = (value: string) => {
+        const raw = String(value || '').trim().toLowerCase();
+        if (!raw || raw === 'transparent' || raw === 'rgba(0, 0, 0, 0)' || raw === 'none') return;
+        const rgb = raw.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        const color = rgb
+          ? `#${[rgb[1], rgb[2], rgb[3]].map((part) => Number(part).toString(16).padStart(2, '0')).join('')}`
+          : /^#[0-9a-f]{3,8}$/i.test(raw)
+            ? raw
+            : '';
+        if (!color) return;
+        counts.set(color, (counts.get(color) || 0) + 1);
+      };
+      Array.from(document.querySelectorAll<HTMLElement>('body, body *')).slice(0, 5000).forEach((element) => {
+        const style = window.getComputedStyle(element);
+        add(style.color);
+        add(style.backgroundColor);
+        add(style.borderTopColor);
+        add(style.fill);
+        add(style.stroke);
+      });
+      return Array.from(counts.entries())
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 32)
+        .map(([color]) => color);
+    }).catch(() => [] as string[]);
+  } finally {
+    await page?.close?.().catch(() => undefined);
+    await closePuppeteerBrowser(browser).catch(() => undefined);
+  }
+  const uniqueFonts = Array.from(
+    new Map(
+      fonts
+        .filter((font) => /^https?:\/\//i.test(String(font?.url || '')))
+        .map((font) => [String(font.url), font])
+    ).values()
+  );
+  return { fonts: uniqueFonts, colors };
+};
+
 const fetchSiteHtmlViaBrowser = async (siteUrl: string) => {
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
   let page: Awaited<ReturnType<Awaited<ReturnType<typeof launchPuppeteerBrowser>>['newPage']>> | null = null;
@@ -4112,21 +4256,10 @@ const extractFontsFromCss = (cssText: string, baseUrl: string) => {
           });
         }
       }
-      if (candidates.length > 0) {
-        const gstatic = candidates.find((candidate) => /fonts\.gstatic\.com/i.test(String(candidate?.url || '')));
-        const best =
-          gstatic ||
-          candidates.sort((a, b) => scoreFontCssCandidate(b) - scoreFontCssCandidate(a))[0];
-        const familyLabel = String(best?.family || '');
-        const bestUrl = String(best?.url || '');
-        if (/BarlowCondensed/i.test(familyLabel) && !/fonts\.gstatic\.com/i.test(bestUrl)) {
-          continue;
-        }
-        if (/Dobra/i.test(familyLabel) && !/fonts\.gstatic\.com/i.test(bestUrl)) {
-          continue;
-        }
-        fonts.push(best);
-      }
+      // Keep every downloadable source declared by the face. A face commonly
+      // exposes several formats or unicode subsets; choosing one "best" URL
+      // made the extractor silently omit valid font assets and variants.
+      fonts.push(...candidates);
     }
   }
   return fonts;
@@ -5033,6 +5166,9 @@ const classifyAssetIconCandidate = (item: any) => {
   if (item?.assetCategory === 'icon' || item?.isInlineSvg) return true;
   const url = String(item?.url || '').toLowerCase();
   if (/icon|favicon|sprite|glyph|logo-mark|brandmark|\/icons?\//i.test(url)) return true;
+  // CMS-authored pictograms are often exported with semantic filenames rather
+  // than an /icons/ directory. Keep those small visual symbols in the icon set.
+  if (/(?:^|[\/_\-.])(?:warning|alert|caution|info|water[_-]?drop|hub|allergic[_-]?reaction[_-]?hand)(?:[\/_\-.]|$)/i.test(url)) return true;
   if (/\.ico(?:\?|$)/i.test(url)) return true;
   const alt = String(item?.alt || '').toLowerCase();
   if (alt && /icon|logo|glyph|symbol/.test(alt)) return true;
@@ -8437,7 +8573,7 @@ const isInstallableTtfBuffer = (buffer: Buffer) => {
   try {
     const parsed = opentype.parse(bufferToExactArrayBuffer(buffer) as any) as any;
     const glyphCount = Number(parsed?.glyphs?.length || parsed?.numGlyphs || 0);
-    const hasBasicLatin = ['A', 'a', '0'].every((character) => Number(parsed?.charToGlyphIndex?.(character) || 0) > 0);
+    const mappedCharacterCount = Object.keys(parsed?.tables?.cmap?.glyphIndexMap || {}).length;
     const names = parsed?.names || {};
     const hasReadableName = [
       names.preferredFamily,
@@ -8452,7 +8588,10 @@ const isInstallableTtfBuffer = (buffer: Buffer) => {
     // Some licensed web fonts expose valid SFNT tables but keep name records in
     // encodings that opentype.js cannot decode. The structural checks above are
     // sufficient for those fonts; retain the parser checks when metadata is readable.
-    return glyphCount > 1 && hasBasicLatin && (hasReadableName || hasValidSfntStructure);
+    // Script-specific webfont subsets (for example Cyrillic, Greek, or
+    // Vietnamese) may intentionally contain no Basic Latin glyphs. A usable
+    // cmap is the correct installability signal for those valid subset fonts.
+    return glyphCount > 1 && mappedCharacterCount > 0 && (hasReadableName || hasValidSfntStructure);
   } catch {
     return hasValidSfntStructure;
   }
@@ -9177,7 +9316,7 @@ const getCachedConvertedFont = async (
   // Version the TTF cache whenever conversion/installability handling changes,
   // so previously broken generated files are never served again.
   const cacheIdentity = normalizedTarget === 'ttf'
-    ? `${cacheSourceUrl}#installable-ttf-v16-canonical-family-weight-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
+    ? `${cacheSourceUrl}#installable-ttf-v17-unicode-subsets-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? 'off' : 'on'}`
     : cacheSourceUrl;
   const cachePath = path.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
@@ -9781,6 +9920,11 @@ const canonicalImageDedupKey = (url: string) => {
         .replace(/\/{2,}/g, '/');
       return `sequence:${sequencePath}`.toLowerCase();
     }
+    // Magnolia imaging URLs commonly end in the identical synthetic leaf
+    // /jcr:content.png. Deduping by that leaf collapses unrelated assets such
+    // as warning, hub, and water-drop pictograms into a single card.
+    const magnoliaImagingSource = parsed.pathname.match(/^(\/\.imaging\/.*?)\/jcr:content(?:\.[a-z0-9]+)?$/i)?.[1];
+    if (magnoliaImagingSource) return `${host}:imaging-source:${magnoliaImagingSource}`.toLowerCase();
     if (leaf && !isOpaqueGeneratedImageLeaf(leaf)) {
       return `${host}:file:${leaf}`;
     }
@@ -17868,7 +18012,7 @@ app.get('/api/section-frame', async (req, res) => {
 app.post('/api/extract', async (req, res) => {
   const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, proxyUrl } = req.body;
   // Force deep crawl for slow-loading sites
-  const needsDeepCrawl = /fabindia\.com|\.imaging\/|\/dam\/jcr:/i.test(url);
+  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = (crawlModeBody === 'deep' || needsDeepCrawl) ? 'deep' : 'fast';
   const isFastCrawl = crawlMode !== 'deep';
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
@@ -17932,22 +18076,89 @@ app.post('/api/extract', async (req, res) => {
       });
     }
 
-    if (mode === 'quick') {
+    const isWarehouseStationeryRequest = /warehousestationery\.co\.nz/i.test(targetUrl);
+
+    if (mode === 'quick' && !isWarehouseStationeryRequest) {
       const quickAssets = await withTimeout(
         extractQuickAssets(targetUrl, { videosOnly }),
-        12000,
+        // Leave enough room for the reader fallback used by challenge pages.
+        30000,
         `Quick extract for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       return res.json(quickAssets);
     }
 
-    if (useStaticExtract) {
+    if (useStaticExtract && !isWarehouseStationeryRequest) {
       const staticAssets = await withTimeout(
         extractStaticAssets(targetUrl, '', { fast: true, videosOnly }),
         isFastCrawl ? 35000 : 45000,
         `Static extract for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       return res.json(staticAssets);
+    }
+
+    const isWarehouseStationeryTarget = isWarehouseStationeryRequest;
+    if (isWarehouseStationeryTarget) {
+      const warehouseAssetsPromise = videosOnly
+        ? Promise.resolve({ fonts: [] as any[], colors: [] as string[] })
+        : withTimeout(
+            extractProtectedPageAssetsFast(targetUrl),
+            24000,
+            `Warehouse Stationery font and color scan for ${targetUrl}`
+          ).catch(() => ({ fonts: [] as any[], colors: [] as string[] }));
+      const readerText = await withTimeout(
+        fetchReaderFallbackText(targetUrl),
+        55000,
+        `Warehouse Stationery reader fetch for ${targetUrl}`
+      ).catch(() => '');
+      if (readerText) {
+        const discovered = extractAssetsFromRawText(readerText, targetUrl);
+        const directAssetUrls = Array.from(
+          readerText.matchAll(/https?:\/\/[^\s)"'<>]+\.(?:svg|png|jpe?g|webp|gif|avif|woff2?|ttf|otf)(?:\?[^\s)"'<>]*)?/gi),
+          (match) => match[0]
+        );
+        for (const assetUrl of directAssetUrls) {
+          if (/\.(?:woff2?|ttf|otf)(?:\?|$)/i.test(assetUrl)) {
+            discovered.fonts.push({
+              family: '',
+              url: assetUrl,
+              format: getFontFormatFromUrlOrType(assetUrl, ''),
+              status: DEFAULT_ASSET_STATUS,
+            });
+          } else {
+            discovered.images.push({
+              url: assetUrl,
+              type: getAssetTypeFromUrl(assetUrl, 'img'),
+              status: DEFAULT_ASSET_STATUS,
+            });
+          }
+        }
+        const uniqueByUrl = (items: any[]) => Array.from(
+          new Map(
+            items
+              .filter((item: any) => /^https?:\/\//i.test(String(item?.url || '')))
+              .map((item: any) => [String(item.url), { ...item, status: item.status || DEFAULT_ASSET_STATUS }])
+          ).values()
+        );
+        const readerImages = uniqueByUrl(discovered.images || []);
+        if (readerImages.length >= 20) {
+          const protectedAssets = await warehouseAssetsPromise;
+          return res.json({
+            images: videosOnly ? [] : readerImages,
+            videos: uniqueByUrl(discovered.videos || []),
+            fonts: uniqueByUrl([...(discovered.fonts || []), ...protectedAssets.fonts]),
+            colors: protectedAssets.colors,
+          });
+        }
+      }
+      const readerAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        105000,
+        `Warehouse Stationery reader extraction for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isUsableStaticExtract(readerAssets)) {
+        return res.json(readerAssets);
+      }
     }
 
     const prefetchedSiteHtml = await withTimeout(
