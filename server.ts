@@ -2205,7 +2205,7 @@ const buildChromeTabAssetCaptureScript = () => `
   const videoUrls = new Set();
   Array.from(document.querySelectorAll('video[src], video source[src], iframe[src], embed[src], object[data]')).forEach((el) => {
     const src = absoluteUrl(el.getAttribute('src') || el.getAttribute('data'));
-    if (src && (/video|youtube|youtu\\.be|vimeo|brightcove|wistia|\\.mp4|\\.m3u8|\\.webm/i.test(src))) videoUrls.add(src);
+    if (src && (/youtube|youtu\\.be|vimeo|brightcove|wistia|\\.(?:mp4|m3u8|mpd|webm|mov)(?:[?#]|$)/i.test(src))) videoUrls.add(src);
   });
   Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
     const name = absoluteUrl(entry.name);
@@ -2432,12 +2432,40 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
     if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
   });
   const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
+  // Network font responses only contain a hashed URL. When a site's CSS
+  // cannot be re-fetched (common with protected Next.js deployments), use the
+  // loaded FontFaceSet as the final identity source. Prefer the dominant
+  // rendered family so icon fonts do not rename the site's text fonts.
+  const renderedFamilyCounts = new Map<string, number>();
+  fontUsage.forEach((font: any) => {
+    const family = normalizeCssFontFamilyName(String(font?.family || ''));
+    const lower = family.toLowerCase();
+    if (
+      !family ||
+      isJunkFontLabel(family) ||
+      ['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'arial', 'verdana'].includes(lower) ||
+      /material\s*icons|font\s*awesome|fontawesome|glyphicons?|icomoon|icon[-_ ]?font/i.test(family)
+    ) return;
+    renderedFamilyCounts.set(family, (renderedFamilyCounts.get(family) || 0) + 1);
+  });
+  const rankedRenderedFamilies = Array.from(renderedFamilyCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const dominantRenderedFamily =
+    rankedRenderedFamilies.length === 1 || (rankedRenderedFamilies[0]?.[1] || 0) > (rankedRenderedFamilies[1]?.[1] || 0)
+      ? rankedRenderedFamilies[0]?.[0] || ''
+      : '';
+  const identifiedFonts = dominantRenderedFamily
+    ? metadataFonts.map((font: any) => {
+        const currentLabel = String(font?.family || font?.title || font?.name || '').trim();
+        if (currentLabel && !isJunkFontLabel(currentLabel)) return font;
+        return { ...font, family: dominantRenderedFamily, source: font?.source || 'FontFaceSet' };
+      })
+    : metadataFonts;
   // Browser extraction is an asset inventory, so distinct URLs must remain
   // distinct even when they share family/weight/style (for example Google
   // Fonts unicode subsets or alternate downloadable formats). The UI uses the
   // URL as its selection key and can safely show every captured file.
-  const fonts = Array.from(new Set(metadataFonts.map((font) => String(font?.url || '')).filter(Boolean)))
-    .map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl))
+  const fonts = Array.from(new Set(identifiedFonts.map((font) => String(font?.url || '')).filter(Boolean)))
+    .map((fontUrl) => pickBestFontForUrl(identifiedFonts, fontUrl))
     .filter(Boolean)
     .filter(isSupportedFontAsset)
     .sort((a: any, b: any) => {
@@ -2445,13 +2473,39 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
       if (familyDelta !== 0) return familyDelta;
       return String(a?.url || '').localeCompare(String(b?.url || ''));
     });
+  const browserVideoCandidates = (Array.isArray(raw?.videos) ? raw.videos : [])
+    .map((video: any) => sanitizeVideoForClient(video, pageUrl || sourceUrl))
+    .filter(Boolean)
+    .filter((video: any) => {
+      const url = String(video?.url || '').trim();
+      return Boolean(url) && !isUnsupportedVideoResourceUrl(url);
+    });
+  // Keep Bitmovin's adaptive-stream cleanup deliberately provider-scoped.
+  // Other providers retain their established extraction and normalization.
+  const bitmovinMaster = browserVideoCandidates.find((video: any) =>
+    /streams\.bitmovin\.com\/.*\/(?:manifest|master)\.m3u8(?:[?#]|$)/i.test(String(video?.url || ''))
+  ) || (/(?:^|\.)xtandi\.com$/i.test(new URL(pageUrl || sourceUrl).hostname)
+    ? browserVideoCandidates.find((video: any) =>
+        /\/(?:manifest|master)\.m3u8(?:[?#]|$)/i.test(String(video?.url || '')) &&
+        !/\/(?:audio)(?:[_/-]|$)/i.test(String(video?.url || ''))
+      )
+    : undefined);
+  const videos = bitmovinMaster
+    ? [{
+        ...bitmovinMaster,
+        sourceUrl: String(bitmovinMaster?.sourceUrl || pageUrl || sourceUrl),
+        provider: 'bitmovin',
+        type: 'm3u8',
+        isDirect: true,
+      }]
+    : (Array.isArray(raw?.videos) ? raw.videos : []);
 
   return {
     images: expandedImages,
     icons: [],
     fonts,
     fontUsage: Array.from(fontUsageByKey.values()),
-    videos: Array.isArray(raw?.videos) ? raw.videos : [],
+    videos,
     colors: Array.isArray(raw?.colors) ? raw.colors : [],
     extractionMeta: {
       mode: source,
@@ -2811,6 +2865,7 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
     (extracted?.fonts?.length || 0) ||
     (extracted?.videos?.length || 0);
   const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
+  const needsVideoBackfill = (extracted?.videos?.length || 0) === 0;
   const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
   const browserImages = [
     ...(Array.isArray(extracted?.images) ? extracted.images : []),
@@ -2827,7 +2882,10 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
       Number(item?.sequenceFrame || 0) <= 36
     ).length >= 36;
   const needsImageSequenceBackfill = hasImageSequenceCandidate && !hasCompleteToyotaSequence;
-  if ((hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill) || !fallbackUrl) return extracted;
+  if (
+    (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill && !needsVideoBackfill) ||
+    !fallbackUrl
+  ) return extracted;
 
   const staticAssets = await withTimeout(
     extractStaticAssets(fallbackUrl, '', { fast: true }),
@@ -2870,7 +2928,8 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'URL is required.' });
     }
     activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const extracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     return res.json({
       ok: true,
       source: 'controlled-browser-session',
@@ -5497,7 +5556,7 @@ const isUnsupportedVideoResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith('data:') || value.startsWith('blob:')) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|webmanifest|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
   if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL(value);
@@ -15512,13 +15571,24 @@ const downloadPlatformVideoToFile = async (
     // Download fresh copy.
   }
 
+  // Bitmovin exposes a standards-compliant HLS master manifest. Passing that
+  // manifest through the generic quality selector can request format IDs that
+  // Bitmovin does not publish. Use its provider-safe adaptive selector; yt-dlp
+  // downloads the chosen video/audio renditions and ffmpeg muxes the final MP4.
+  const isBitmovinManifest =
+    /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) ||
+    (/\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL(options.sourcePageUrl || normalizedUrl).hostname));
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tempTemplate = path.join(os.tmpdir(), `${tempBase}.%(ext)s`);
   const ydlOptions: Record<string, unknown> = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
     ...buildYtDlpSpeedOptions(),
     output: tempTemplate,
-    format: isAudio ? getReferenceAudioFormatSelector() : getReferenceVideoFormatSelector(requestedQuality),
+    format: isAudio
+      ? getReferenceAudioFormatSelector()
+      : isBitmovinManifest
+        ? 'bestvideo+bestaudio/best'
+        : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: 'mp4',
     ...(isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {}),
     ...(isAudio
@@ -18491,7 +18561,8 @@ app.post('/api/extract', async (req, res) => {
     // Intercept network requests
     await page.setRequestInterception(true);
     
-    page.on('request', (request) => {
+    page.on('request', async (request) => {
+      if (request.isInterceptResolutionHandled()) return;
       const requestUrl = request.url();
       const resourceType = request.resourceType();
       if (
@@ -18504,18 +18575,18 @@ app.post('/api/extract', async (req, res) => {
         touchAssetActivity();
       }
       if (videosOnly && ['image', 'font', 'stylesheet'].includes(resourceType)) {
-        request.abort();
+        await request.abort().catch(() => undefined);
         return;
       }
       if (['websocket', 'eventsource'].includes(resourceType)) {
-        request.abort();
+        await request.abort().catch(() => undefined);
         return;
       }
       if (/google-analytics|googletagmanager|doubleclick|facebook\.net\/tr|hotjar|clarity\.ms|segment\.io/i.test(requestUrl)) {
-        request.abort();
+        await request.abort().catch(() => undefined);
         return;
       }
-      request.continue();
+      await request.continue().catch(() => undefined);
     });
     
     const handlePageResponse = async (response: any) => {
@@ -19269,12 +19340,13 @@ app.post('/api/extract', async (req, res) => {
         embeddedPage.on('response', handlePageResponse);
         await embeddedPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         await embeddedPage.setRequestInterception(true);
-        embeddedPage.on('request', (request: any) => {
+        embeddedPage.on('request', async (request: any) => {
+          if (request.isInterceptResolutionHandled()) return;
           const resourceType = request.resourceType();
           if (['image', 'font', 'stylesheet'].includes(resourceType)) {
-            request.abort();
+            await request.abort().catch(() => undefined);
           } else {
-            request.continue();
+            await request.continue().catch(() => undefined);
           }
         });
         await embeddedPage.goto(embeddedUrl, { waitUntil: 'domcontentloaded', timeout: 3500 }).catch(() => undefined);
@@ -19546,15 +19618,25 @@ app.post('/api/extract', async (req, res) => {
       }
     }).catch(async (error: any) => {
       console.error('Background browser extraction error:', error?.message || error);
-      const quickExtracted = await quickExtractPromise.catch(() => null);
+      let quickExtracted = await quickExtractPromise.catch(() => null);
+      // The worker intentionally performs a minimal regex scan and can miss
+      // provider embeds (Vimeo/Wistia/Brightcove). If the browser reaches its
+      // time budget, do one provider-aware static pass before publishing an
+      // empty Videos result.
+      if (videosOnly && !(quickExtracted?.videos?.length > 0)) {
+        quickExtracted = await withTimeout(
+          extractQuickAssets(targetUrl, { videosOnly: true }),
+          30000,
+          `Video fallback extraction for ${targetUrl}`
+        ).catch(() => quickExtracted);
+      }
       if (images.length || videos.length || fonts.length || colors.length) {
         try {
-          const mergeToyotaQuickAssets = isToyotaVehicleExtractionTarget(targetUrl);
           const partialAssets = await dedupeExtractedAssets(
-            mergeToyotaQuickAssets ? [...images, ...(quickExtracted?.images || [])] : images,
-            mergeToyotaQuickAssets ? [...videos, ...(quickExtracted?.videos || [])] : videos,
-            mergeToyotaQuickAssets ? [...fonts, ...(quickExtracted?.fonts || [])] : fonts,
-            mergeToyotaQuickAssets ? [...colors, ...(quickExtracted?.colors || [])] : colors,
+            [...images, ...(quickExtracted?.images || [])],
+            [...videos, ...(quickExtracted?.videos || [])],
+            [...fonts, ...(quickExtracted?.fonts || [])],
+            [...colors, ...(quickExtracted?.colors || [])],
             targetUrl,
             '',
             {
@@ -19562,13 +19644,6 @@ app.post('/api/extract', async (req, res) => {
             videosOnly,
             },
           );
-          const seenUrls = new Set((partialAssets.images || []).map((item: any) => item.url).filter(Boolean));
-          for (const image of mergeToyotaQuickAssets ? [] : (quickExtracted?.images || [])) {
-            if (image?.url && !seenUrls.has(image.url)) {
-              partialAssets.images.push(image);
-              seenUrls.add(image.url);
-            }
-          }
           progressMgr?.complete(partialAssets);
           return;
         } catch (partialError: any) {

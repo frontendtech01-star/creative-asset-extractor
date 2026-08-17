@@ -949,6 +949,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   const aria2Path2 = aria2cAvailable(options);
   const hasAria2 = extraArgs.includes("--no-aria2") || job.platform === "youtube" ? false : Boolean(aria2Path2);
+  const isBitmovinManifest = /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(url) || /\.m3u8(?:[?#]|$)/i.test(url) && /^https?:\/\/(?:[^/]+\.)?xtandi\.com(?:[/:?#]|$)/i.test(String(job.sourcePageUrl || ""));
   void writeLog(job.id, {
     event: "download_start",
     ytdlp_path: ytdlp,
@@ -978,7 +979,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "--output",
     outputTemplate,
     "--format",
-    formatSelector(job.platform, job.quality, Boolean(extraArgs.includes("--quality-fallback"))),
+    isBitmovinManifest && job.quality !== "audio" ? "bestvideo+bestaudio/best" : formatSelector(job.platform, job.quality, Boolean(extraArgs.includes("--quality-fallback"))),
     ...hasAria2 ? ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 32 -s 32 -k 2M"] : [],
     "--concurrent-fragments",
     "32",
@@ -4295,7 +4296,7 @@ var buildChromeTabAssetCaptureScript = () => `
   const videoUrls = new Set();
   Array.from(document.querySelectorAll('video[src], video source[src], iframe[src], embed[src], object[data]')).forEach((el) => {
     const src = absoluteUrl(el.getAttribute('src') || el.getAttribute('data'));
-    if (src && (/video|youtube|youtu\\.be|vimeo|brightcove|wistia|\\.mp4|\\.m3u8|\\.webm/i.test(src))) videoUrls.add(src);
+    if (src && (/youtube|youtu\\.be|vimeo|brightcove|wistia|\\.(?:mp4|m3u8|mpd|webm|mov)(?:[?#]|$)/i.test(src))) videoUrls.add(src);
   });
   Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
     const name = absoluteUrl(entry.name);
@@ -4491,17 +4492,47 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     if (!fontUsageByKey.has(key)) fontUsageByKey.set(key, font);
   });
   const metadataFonts = await enrichFontsWithMetadata(fontCandidates, pageUrl || sourceUrl, { fast: true });
-  const fonts = Array.from(new Set(metadataFonts.map((font) => String(font?.url || "")).filter(Boolean))).map((fontUrl) => pickBestFontForUrl(metadataFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset).sort((a, b) => {
+  const renderedFamilyCounts = /* @__PURE__ */ new Map();
+  fontUsage.forEach((font) => {
+    const family = normalizeCssFontFamilyName(String(font?.family || ""));
+    const lower = family.toLowerCase();
+    if (!family || isJunkFontLabel(family) || ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "arial", "verdana"].includes(lower) || /material\s*icons|font\s*awesome|fontawesome|glyphicons?|icomoon|icon[-_ ]?font/i.test(family)) return;
+    renderedFamilyCounts.set(family, (renderedFamilyCounts.get(family) || 0) + 1);
+  });
+  const rankedRenderedFamilies = Array.from(renderedFamilyCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const dominantRenderedFamily = rankedRenderedFamilies.length === 1 || (rankedRenderedFamilies[0]?.[1] || 0) > (rankedRenderedFamilies[1]?.[1] || 0) ? rankedRenderedFamilies[0]?.[0] || "" : "";
+  const identifiedFonts = dominantRenderedFamily ? metadataFonts.map((font) => {
+    const currentLabel = String(font?.family || font?.title || font?.name || "").trim();
+    if (currentLabel && !isJunkFontLabel(currentLabel)) return font;
+    return { ...font, family: dominantRenderedFamily, source: font?.source || "FontFaceSet" };
+  }) : metadataFonts;
+  const fonts = Array.from(new Set(identifiedFonts.map((font) => String(font?.url || "")).filter(Boolean))).map((fontUrl) => pickBestFontForUrl(identifiedFonts, fontUrl)).filter(Boolean).filter(isSupportedFontAsset).sort((a, b) => {
     const familyDelta = String(a?.family || "").localeCompare(String(b?.family || ""));
     if (familyDelta !== 0) return familyDelta;
     return String(a?.url || "").localeCompare(String(b?.url || ""));
   });
+  const browserVideoCandidates = (Array.isArray(raw?.videos) ? raw.videos : []).map((video) => sanitizeVideoForClient(video, pageUrl || sourceUrl)).filter(Boolean).filter((video) => {
+    const url = String(video?.url || "").trim();
+    return Boolean(url) && !isUnsupportedVideoResourceUrl(url);
+  });
+  const bitmovinMaster = browserVideoCandidates.find(
+    (video) => /streams\.bitmovin\.com\/.*\/(?:manifest|master)\.m3u8(?:[?#]|$)/i.test(String(video?.url || ""))
+  ) || (/(?:^|\.)xtandi\.com$/i.test(new URL2(pageUrl || sourceUrl).hostname) ? browserVideoCandidates.find(
+    (video) => /\/(?:manifest|master)\.m3u8(?:[?#]|$)/i.test(String(video?.url || "")) && !/\/(?:audio)(?:[_/-]|$)/i.test(String(video?.url || ""))
+  ) : void 0);
+  const videos = bitmovinMaster ? [{
+    ...bitmovinMaster,
+    sourceUrl: String(bitmovinMaster?.sourceUrl || pageUrl || sourceUrl),
+    provider: "bitmovin",
+    type: "m3u8",
+    isDirect: true
+  }] : Array.isArray(raw?.videos) ? raw.videos : [];
   return {
     images: expandedImages,
     icons: [],
     fonts,
     fontUsage: Array.from(fontUsageByKey.values()),
-    videos: Array.isArray(raw?.videos) ? raw.videos : [],
+    videos,
     colors: Array.isArray(raw?.colors) ? raw.colors : [],
     extractionMeta: {
       mode: source,
@@ -4702,6 +4733,130 @@ app.post("/api/browser-tabs/chrome/resolve-blob-video", async (req, res) => {
     });
   }
 });
+var normalizeFontFamilyForStaticBackfill = (value = "") => {
+  const family = String(value || "").replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ").trim();
+  if (!family) return "";
+  const lower = family.toLowerCase();
+  if (!lower || isJunkFontLabel(lower) || ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"].includes(lower)) {
+    return "";
+  }
+  return lower;
+};
+var getFontCardFamilyForStaticBackfill = (font) => {
+  const identity = resolveFontIdentityFields(font || {});
+  return normalizeFontFamilyForStaticBackfill(
+    identity.family || font?.family || font?.title || font?.name || buildFontDisplayName(font || {})
+  );
+};
+var hasRenderedFontFamilyWithoutCard = (extracted) => {
+  const renderedFamilies = new Set(
+    (Array.isArray(extracted?.fontUsage) ? extracted.fontUsage : []).map((font) => normalizeFontFamilyForStaticBackfill(font?.family)).filter(Boolean)
+  );
+  if (!renderedFamilies.size) return false;
+  const cardFamilies = new Set(
+    (Array.isArray(extracted?.fonts) ? extracted.fonts : []).map((font) => getFontCardFamilyForStaticBackfill(font)).filter(Boolean)
+  );
+  return Array.from(renderedFamilies).some((family) => !cardFamilies.has(family));
+};
+var isImageSequenceCandidateUrl = (value) => /(?:threesixty|360|jellies|vehicle|lexus|aemassets|assetscs|visualizer)/i.test(String(value || ""));
+var imageSequenceMergeKey = (item) => {
+  const raw = String(item?.url || item?.src || "").trim();
+  if (!raw || !isImageSequenceCandidateUrl(raw)) return raw;
+  try {
+    const parsed = new URL2(raw);
+    const normalizedPath = parsed.pathname.replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, "/").replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, "/").replace(/\/{2,}/g, "/");
+    const hostKey = /\/jellies\/(?:max|relative)\//i.test(normalizedPath) ? "toyota-assets" : parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const countedFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\/(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (countedFrame && Number(countedFrame[2]) >= 2 && Number(countedFrame[2]) <= MAX_IMAGE_SEQUENCE_FRAMES) {
+      return `sequence:${hostKey}:${countedFrame[1].toLowerCase()}:${Number(countedFrame[3])}`;
+    }
+    const leafFrame = normalizedPath.match(/^(.*\/)(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (leafFrame) {
+      return `sequence:${hostKey}:${leafFrame[1].toLowerCase()}:${Number(leafFrame[2])}`;
+    }
+    const prefixedFrame = normalizedPath.match(/^(.*[-_])(\d{1,3})\.(?:png|jpe?g|webp|avif)(?:$)/i);
+    if (prefixedFrame && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(raw)) {
+      return `sequence:${hostKey}:${prefixedFrame[1].toLowerCase()}:${Number(prefixedFrame[2])}`;
+    }
+  } catch {
+    return raw;
+  }
+  return raw;
+};
+var imageCandidateScore = (item) => {
+  const width = Number(item?.width || 0) || 0;
+  const height = Number(item?.height || 0) || 0;
+  const area = width * height;
+  if (area > 0) return area;
+  try {
+    const parsed = new URL2(String(item?.url || item?.src || ""));
+    const wid = Number(parsed.searchParams.get("wid") || parsed.searchParams.get("width") || 0) || 0;
+    const hei = Number(parsed.searchParams.get("hei") || parsed.searchParams.get("height") || 0) || 0;
+    if (wid > 0 && hei > 0) return wid * hei;
+    return wid || hei || 0;
+  } catch {
+    return 0;
+  }
+};
+var mergeImageRowsByBestSequenceFrame = (left = [], right = []) => {
+  const rows = /* @__PURE__ */ new Map();
+  [...left, ...right].forEach((item) => {
+    const key = imageSequenceMergeKey(item);
+    if (!key) return;
+    const current = rows.get(key);
+    if (!current || imageCandidateScore(item) >= imageCandidateScore(current)) {
+      rows.set(key, item);
+    }
+  });
+  return Array.from(rows.values());
+};
+async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
+  const hasAssets = extracted?.images?.length || 0 || (extracted?.icons?.length || 0) || (extracted?.fonts?.length || 0) || (extracted?.videos?.length || 0);
+  const hasDownloadableFonts = (extracted?.fonts?.length || 0) > 0;
+  const needsVideoBackfill = (extracted?.videos?.length || 0) === 0;
+  const needsRenderedFontBackfill = hasRenderedFontFamilyWithoutCard(extracted);
+  const browserImages = [
+    ...Array.isArray(extracted?.images) ? extracted.images : [],
+    ...Array.isArray(extracted?.icons) ? extracted.icons : []
+  ];
+  const hasImageSequenceCandidate = browserImages.some(
+    (item) => isImageSequenceCandidateUrl(String(item?.url || item?.src || ""))
+  );
+  const hasCompleteToyotaSequence = isToyotaVehicleExtractionTarget(fallbackUrl) && browserImages.filter(
+    (item) => String(item?.source || "").includes("360-sequence") && Number(item?.sequenceFrame || 0) >= 1 && Number(item?.sequenceFrame || 0) <= 36
+  ).length >= 36;
+  const needsImageSequenceBackfill = hasImageSequenceCandidate && !hasCompleteToyotaSequence;
+  if (hasAssets && hasDownloadableFonts && !needsRenderedFontBackfill && !needsImageSequenceBackfill && !needsVideoBackfill || !fallbackUrl) return extracted;
+  const staticAssets = await withTimeout(
+    extractStaticAssets(fallbackUrl, "", { fast: true }),
+    35e3,
+    `Browser-tab static fallback for ${fallbackUrl}`
+  ).catch(() => null);
+  if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
+  const mergeByUrl = (left = [], right = []) => {
+    const rows = /* @__PURE__ */ new Map();
+    [...left, ...right].forEach((item) => {
+      const key = String(item?.url || item?.src || "").trim();
+      if (key) rows.set(key, item);
+    });
+    return Array.from(rows.values());
+  };
+  return {
+    ...extracted,
+    images: mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images),
+    icons: mergeImageRowsByBestSequenceFrame(extracted?.icons, staticAssets?.icons),
+    videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
+    fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
+    colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
+    extractionMeta: {
+      ...extracted?.extractionMeta,
+      mode: hasAssets || needsRenderedFontBackfill ? "browser-static-font-fallback" : "browser-static-fallback",
+      sectionLabel: extracted?.title || "Static fallback"
+    },
+    pageUrl: extracted?.pageUrl || fallbackUrl,
+    title: extracted?.title || ""
+  };
+}
 app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
   const requestedUrl = String(req.body?.url || "").trim();
   const previousProxyUrl = activeExtractionProxyUrl;
@@ -4710,7 +4865,8 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
       return res.status(400).json({ ok: false, error: "URL is required." });
     }
     activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const extracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     return res.json({
       ok: true,
       source: "controlled-browser-session",
@@ -6793,7 +6949,7 @@ var isUnsupportedVideoResourceUrl = (rawUrl) => {
   const value = String(rawUrl || "").trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith("data:") || value.startsWith("blob:")) return true;
-  if (/\.(?:js|mjs|css|json|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
+  if (/\.(?:js|mjs|css|json|webmanifest|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
   if (isWistiaHelperResourceUrl(value)) return true;
   try {
     const parsed = new URL2(value);
@@ -14513,13 +14669,14 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
     };
   } catch {
   }
+  const isBitmovinManifest = /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) || /\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL2(options.sourcePageUrl || normalizedUrl).hostname);
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tempTemplate = path3.join(os3.tmpdir(), `${tempBase}.%(ext)s`);
   const ydlOptions = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
     ...buildYtDlpSpeedOptions(),
     output: tempTemplate,
-    format: isAudio ? getReferenceAudioFormatSelector() : getReferenceVideoFormatSelector(requestedQuality),
+    format: isAudio ? getReferenceAudioFormatSelector() : isBitmovinManifest ? "bestvideo+bestaudio/best" : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: "mp4",
     ...isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {},
     ...isAudio ? {
@@ -16911,7 +17068,8 @@ app.post("/api/extract", async (req, res) => {
         await page.setViewport({ width: 1440, height: 1100 });
         await applyPuppeteerStealth(page);
         await page.setRequestInterception(true);
-        page.on("request", (request) => {
+        page.on("request", async (request) => {
+          if (request.isInterceptResolutionHandled()) return;
           const requestUrl = request.url();
           const resourceType = request.resourceType();
           if (!videosOnly && (resourceType === "image" || /\/medias\/[^?#]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(requestUrl))) {
@@ -16920,18 +17078,18 @@ app.post("/api/extract", async (req, res) => {
             touchAssetActivity();
           }
           if (videosOnly && ["image", "font", "stylesheet"].includes(resourceType)) {
-            request.abort();
+            await request.abort().catch(() => void 0);
             return;
           }
           if (["websocket", "eventsource"].includes(resourceType)) {
-            request.abort();
+            await request.abort().catch(() => void 0);
             return;
           }
           if (/google-analytics|googletagmanager|doubleclick|facebook\.net\/tr|hotjar|clarity\.ms|segment\.io/i.test(requestUrl)) {
-            request.abort();
+            await request.abort().catch(() => void 0);
             return;
           }
-          request.continue();
+          await request.continue().catch(() => void 0);
         });
         const handlePageResponse = async (response) => {
           const url2 = sanitizeStreamUrl(response.url(), targetUrl) || response.url();
@@ -17572,12 +17730,13 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
             embeddedPage.on("response", handlePageResponse);
             await embeddedPage.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             await embeddedPage.setRequestInterception(true);
-            embeddedPage.on("request", (request) => {
+            embeddedPage.on("request", async (request) => {
+              if (request.isInterceptResolutionHandled()) return;
               const resourceType = request.resourceType();
               if (["image", "font", "stylesheet"].includes(resourceType)) {
-                request.abort();
+                await request.abort().catch(() => void 0);
               } else {
-                request.continue();
+                await request.continue().catch(() => void 0);
               }
             });
             await embeddedPage.goto(embeddedUrl, { waitUntil: "domcontentloaded", timeout: 3500 }).catch(() => void 0);
@@ -17833,15 +17992,21 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
       }
     }).catch(async (error) => {
       console.error("Background browser extraction error:", error?.message || error);
-      const quickExtracted = await quickExtractPromise.catch(() => null);
+      let quickExtracted = await quickExtractPromise.catch(() => null);
+      if (videosOnly && !(quickExtracted?.videos?.length > 0)) {
+        quickExtracted = await withTimeout(
+          extractQuickAssets(targetUrl, { videosOnly: true }),
+          3e4,
+          `Video fallback extraction for ${targetUrl}`
+        ).catch(() => quickExtracted);
+      }
       if (images.length || videos.length || fonts.length || colors.length) {
         try {
-          const mergeToyotaQuickAssets = isToyotaVehicleExtractionTarget(targetUrl);
           const partialAssets = await dedupeExtractedAssets(
-            mergeToyotaQuickAssets ? [...images, ...quickExtracted?.images || []] : images,
-            mergeToyotaQuickAssets ? [...videos, ...quickExtracted?.videos || []] : videos,
-            mergeToyotaQuickAssets ? [...fonts, ...quickExtracted?.fonts || []] : fonts,
-            mergeToyotaQuickAssets ? [...colors, ...quickExtracted?.colors || []] : colors,
+            [...images, ...quickExtracted?.images || []],
+            [...videos, ...quickExtracted?.videos || []],
+            [...fonts, ...quickExtracted?.fonts || []],
+            [...colors, ...quickExtracted?.colors || []],
             targetUrl,
             "",
             {
@@ -17849,13 +18014,6 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
               videosOnly
             }
           );
-          const seenUrls = new Set((partialAssets.images || []).map((item) => item.url).filter(Boolean));
-          for (const image of mergeToyotaQuickAssets ? [] : quickExtracted?.images || []) {
-            if (image?.url && !seenUrls.has(image.url)) {
-              partialAssets.images.push(image);
-              seenUrls.add(image.url);
-            }
-          }
           progressMgr?.complete(partialAssets);
           return;
         } catch (partialError) {
