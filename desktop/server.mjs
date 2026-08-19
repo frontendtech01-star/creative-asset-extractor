@@ -2681,7 +2681,7 @@ var ensureWoff2Ready = async () => {
 };
 var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path3.join(os3.homedir(), ".creative-asset-extractor");
 var app = express();
-var DEFAULT_PORT = Number(process.env.PORT || 3e3);
+var DEFAULT_PORT = Number(process.env.PORT || 8080);
 var activePort = DEFAULT_PORT;
 var appCacheRoot = path3.join(resolveAppDataDir(), "cache");
 var convertedVideoDir = path3.join(os3.tmpdir(), "creative-asset-extractor-mp4");
@@ -9941,14 +9941,33 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
       conversionProvider = "transfonter";
     }
   } else if (normalizedTarget === "woff" && fromFormat !== "woff" && !cacheOnly) {
-    outputBuffer = await convertFontBufferWithTransfonter(
-      fetched.buffer,
-      preferredBase || extras.fontFamily || "font",
-      fromFormat,
-      extras.fixVerticalMetrics !== false,
-      "woff"
-    );
-    conversionProvider = "transfonter";
+    try {
+      outputBuffer = await convertFontBuffer(
+        url,
+        fetched.buffer,
+        fromFormat,
+        "woff",
+        fetched.contentType,
+        true
+      );
+      if (!isValidFontBuffer(outputBuffer, "woff")) {
+        throw new Error("Local WOFF conversion returned an invalid WOFF binary.");
+      }
+      conversionProvider = "local";
+    } catch (localWoffError) {
+      if (cacheOnly) throw localWoffError;
+      outputBuffer = await convertFontBufferWithTransfonter(
+        fetched.buffer,
+        preferredBase || extras.fontFamily || "font",
+        fromFormat,
+        extras.fixVerticalMetrics !== false,
+        "woff"
+      );
+      if (!isValidFontBuffer(outputBuffer, "woff")) {
+        throw new Error("Transfonter WOFF conversion returned an invalid WOFF binary.");
+      }
+      conversionProvider = "transfonter";
+    }
   } else try {
     outputBuffer = await convertFontBuffer(
       url,
@@ -12702,7 +12721,7 @@ var isPortAvailable = (port) => new Promise((resolve) => {
   }).listen(port, "127.0.0.1");
 });
 var findAvailablePort = async (preferredPort, attempts = 50) => {
-  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 3e3;
+  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 8080;
   for (let offset = 0; offset < attempts; offset += 1) {
     const candidate = start + offset;
     if (await isPortAvailable(candidate)) return candidate;
@@ -18985,14 +19004,32 @@ app.post("/api/convert-font-buffer", async (req, res) => {
         );
         conversionProvider = "transfonter";
       } else if (normalizedTarget === "woff" && normalizedOriginal !== "woff") {
-        output = await convertFontBufferWithTransfonter(
-          buffer,
-          typeof filenameBase === "string" ? filenameBase : "font",
-          normalizedOriginal,
-          fixVerticalMetrics !== false,
-          "woff"
-        );
-        conversionProvider = "transfonter";
+        try {
+          output = await convertFontBuffer(
+            typeof filenameBase === "string" ? filenameBase : "font",
+            buffer,
+            normalizedOriginal,
+            "woff",
+            "",
+            true
+          );
+          if (!isValidFontBuffer(output, "woff")) {
+            throw new Error("Local WOFF conversion returned an invalid WOFF binary.");
+          }
+          conversionProvider = "local";
+        } catch {
+          output = await convertFontBufferWithTransfonter(
+            buffer,
+            typeof filenameBase === "string" ? filenameBase : "font",
+            normalizedOriginal,
+            fixVerticalMetrics !== false,
+            "woff"
+          );
+          if (!isValidFontBuffer(output, "woff")) {
+            throw new Error("Transfonter WOFF conversion returned an invalid WOFF binary.");
+          }
+          conversionProvider = "transfonter";
+        }
       } else {
         output = await convertFontBuffer(
           typeof filenameBase === "string" ? filenameBase : "font",
@@ -20714,47 +20751,27 @@ app.post("/api/download-zip", async (req, res) => {
           } catch (cacheError) {
             const reason = String(cacheError?.message || cacheError || "");
             if (!cacheProbe && /not cached|valid font|decode|conversion|timeout|fetch/i.test(reason)) {
-              try {
-                converted2 = await runFontZipConvert(false);
-              } catch (retryError) {
-                if (toFormat === "ttf") throw retryError;
-                const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url2);
-                if (!fallbackFormat || fallbackFormat === toFormat) throw retryError;
-                converted2 = await convertFontAsset(
-                  url2,
-                  fallbackFormat,
-                  originalFormat,
-                  filenameBase,
-                  {
-                    ...fontExtras,
-                    ...cacheProbe ? { prefetched: cacheProbe } : {}
-                  }
-                );
-              }
+              converted2 = await runFontZipConvert(false);
             } else {
-              if (toFormat === "ttf") throw cacheError;
-              const fallbackFormat = detectedCachedFormat || originalFormat || getFontFormatFromUrlOrType(url2);
-              if (!fallbackFormat || fallbackFormat === toFormat) throw cacheError;
-              converted2 = await convertFontAsset(
-                url2,
-                fallbackFormat,
-                originalFormat,
-                filenameBase,
-                {
-                  ...fontExtras,
-                  ...cacheProbe ? { prefetched: cacheProbe } : {}
-                }
-              );
+              throw cacheError;
             }
           }
           if (!converted2.buffer?.length) {
             throw new Error(`Font file is empty (${converted2?.format || toFormat})`);
           }
-          if (toFormat === "ttf" && detectFontFormatFromBuffer(converted2.buffer) !== "ttf") {
-            throw new Error("TTF conversion produced a non-TTF font file.");
+          const actualFormat = detectFontFormatFromBuffer(converted2.buffer) || normalizeFontFormat(String(converted2?.format || ""));
+          if (actualFormat !== toFormat) {
+            throw new Error(
+              `Requested ${toFormat.toUpperCase()} but conversion produced ${(actualFormat || "unknown").toUpperCase()}.`
+            );
           }
-          const entryName2 = converted2.format && converted2.format !== toFormat ? buildFontZipEntryName(filenameBase, converted2.format, familyFolder) : zipName;
-          return { ok: true, entry: { name: entryName2, buffer: converted2.buffer } };
+          if (!isValidFontBuffer(converted2.buffer, toFormat)) {
+            throw new Error(`Converted font failed exact ${toFormat.toUpperCase()} binary validation.`);
+          }
+          if (toFormat === "ttf" && !isInstallableTtfBuffer(converted2.buffer)) {
+            throw new Error("TTF conversion produced a non-installable TTF font file.");
+          }
+          return { ok: true, entry: { name: zipName, buffer: converted2.buffer } };
         }
         if (isImageConversion) {
           const requestedCachePath = typeof item.cachedPath === "string" ? item.cachedPath.trim() : "";
