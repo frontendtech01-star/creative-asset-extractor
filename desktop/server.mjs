@@ -4931,7 +4931,10 @@ app.post("/api/resolve-font-links", async (req, res) => {
     });
     const flat = resolved.flat();
     const fonts = flat.filter((font) => font?.url && isSupportedFontAsset(font));
-    const uniqueFonts = Array.from(new Map(fonts.map((font) => [String(font.url), font])).values());
+    const uniqueFonts = dedupeFontsByLogicalKey(fonts).map((font) => {
+      const sourceFace = fonts.find((candidate) => String(candidate?.url) === String(font?.url));
+      return sourceFace?.family ? { ...font, family: sourceFace.family } : font;
+    });
     const failures = flat.filter((entry) => entry?.error);
     return res.json({ ok: true, fonts: uniqueFonts, failures });
   } catch (error) {
@@ -6243,14 +6246,26 @@ var extractColorsFromCss = (cssText) => {
   const hexRegex = /#(?:[0-9a-fA-F]{3}){1,2}\b|#(?:[0-9a-fA-F]{4}){1,2}\b/g;
   const rgbRegex = /(?:rgb|rgba)\([^)]+\)/gi;
   const hslRegex = /(?:hsl|hsla)\([^)]+\)/gi;
+  const variables = /* @__PURE__ */ new Map();
+  for (const declaration of String(cssText || "").matchAll(/(--[\w-]+)\s*:\s*([^;{}]+)(?:;|(?=\}))/g)) {
+    variables.set(declaration[1], declaration[2].trim());
+  }
+  const resolveVariables = (value, depth = 0) => {
+    if (depth > 8) return value;
+    return value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]+))?\)/gi, (_all, name, fallback = "") => {
+      const resolved = variables.get(name) || fallback || "";
+      return resolveVariables(resolved, depth + 1);
+    });
+  };
+  const resolvedCss = resolveVariables(String(cssText || ""));
   let match;
-  while ((match = hexRegex.exec(cssText)) !== null) {
+  while ((match = hexRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase());
   }
-  while ((match = rgbRegex.exec(cssText)) !== null) {
+  while ((match = rgbRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase().replace(/\s+/g, ""));
   }
-  while ((match = hslRegex.exec(cssText)) !== null) {
+  while ((match = hslRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase().replace(/\s+/g, ""));
   }
   return colors;
@@ -6314,9 +6329,9 @@ var getPrimaryExtractedColors = (colors) => {
     }
     return selected;
   };
-  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 7, 52);
-  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 3, 48);
-  return [...chromatic, ...neutrals].sort((a, b) => b.score - a.score).slice(0, 10).map((color) => color.hex);
+  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 14, 38);
+  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 6, 36);
+  return [...chromatic, ...neutrals].sort((a, b) => b.score - a.score).slice(0, 20).map((color) => color.hex);
 };
 var SUPPORTED_IMAGE_EXTENSIONS = ["svg", "png", "jpg", "jpeg", "webp", "gif", "avif"];
 var IMAGE_CONTENT_TYPE_TO_EXT = {

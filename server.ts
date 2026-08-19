@@ -3003,7 +3003,15 @@ app.post('/api/resolve-font-links', async (req, res) => {
     });
     const flat = resolved.flat();
     const fonts = flat.filter((font: any) => font?.url && isSupportedFontAsset(font));
-    const uniqueFonts = Array.from(new Map(fonts.map((font: any) => [String(font.url), font])).values());
+    // A Typekit face is commonly declared three times (WOFF2, WOFF and OTF).
+    // Return one downloadable card per family + weight + style, rather than
+    // making the same face appear under duplicate file-derived names.
+    const uniqueFonts = dedupeFontsByLogicalKey(fonts).map((font: any) => {
+      // Keep the CSS family spelling (for example `acumin-pro-wide`) instead
+      // of a prettified filename label so callers can identify the exact face.
+      const sourceFace = fonts.find((candidate: any) => String(candidate?.url) === String(font?.url));
+      return sourceFace?.family ? { ...font, family: sourceFace.family } : font;
+    });
     const failures = flat.filter((entry: any) => entry?.error);
     return res.json({ ok: true, fonts: uniqueFonts, failures });
   } catch (error: any) {
@@ -4635,14 +4643,29 @@ const extractColorsFromCss = (cssText: string) => {
   const rgbRegex = /(?:rgb|rgba)\([^)]+\)/gi;
   const hslRegex = /(?:hsl|hsla)\([^)]+\)/gi;
 
+  // Resolve custom properties before collecting values. This captures both
+  // direct uses (color: var(--brand)) and colors embedded in gradients.
+  const variables = new Map<string, string>();
+  for (const declaration of String(cssText || '').matchAll(/(--[\w-]+)\s*:\s*([^;{}]+)(?:;|(?=\}))/g)) {
+    variables.set(declaration[1], declaration[2].trim());
+  }
+  const resolveVariables = (value: string, depth = 0): string => {
+    if (depth > 8) return value;
+    return value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]+))?\)/gi, (_all, name, fallback = '') => {
+      const resolved = variables.get(name) || fallback || '';
+      return resolveVariables(resolved, depth + 1);
+    });
+  };
+  const resolvedCss = resolveVariables(String(cssText || ''));
+
   let match;
-  while ((match = hexRegex.exec(cssText)) !== null) {
+  while ((match = hexRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase());
   }
-  while ((match = rgbRegex.exec(cssText)) !== null) {
+  while ((match = rgbRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase().replace(/\s+/g, ''));
   }
-  while ((match = hslRegex.exec(cssText)) !== null) {
+  while ((match = hslRegex.exec(resolvedCss)) !== null) {
     colors.push(match[0].toLowerCase().replace(/\s+/g, ''));
   }
   return colors;
@@ -4723,11 +4746,11 @@ const getPrimaryExtractedColors = (colors: string[]) => {
     return selected;
   };
 
-  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 7, 52);
-  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 3, 48);
+  const chromatic = selectDistinct(ranked.filter((color) => !color.neutral), 14, 38);
+  const neutrals = selectDistinct(ranked.filter((color) => color.neutral), 6, 36);
   return [...chromatic, ...neutrals]
     .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
+    .slice(0, 20)
     .map((color) => color.hex);
 };
 
