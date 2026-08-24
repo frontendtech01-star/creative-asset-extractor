@@ -6,7 +6,7 @@ import { buildImagePreviewRequest, buildImageThumbRequest, getImageAssetKey } fr
 type ThumbPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
 type LazyCachedImageThumbProps = {
-  img: { url?: string; cachedUrl?: string; dataUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string };
+  img: { url?: string; cachedUrl?: string; dataUrl?: string; thumbnailUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string };
   sourcePageUrl?: string;
   alt: string;
   fallbackLabel?: string;
@@ -16,7 +16,7 @@ type LazyCachedImageThumbProps = {
   onFailed?: () => void;
 };
 
-const sanitizeInlineSvgDataUrl = (url: string) => {
+const getSafeInlineSvgMarkup = (url: string) => {
   if (!/^data:image\/svg\+xml/i.test(url)) return url;
   try {
     const commaIndex = url.indexOf(',');
@@ -29,6 +29,9 @@ const sanitizeInlineSvgDataUrl = (url: string) => {
       .replace(/^\uFEFF/, '')
       .trim()
       .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<foreignObject\b[\s\S]*?<\/foreignObject>/gi, '')
+      .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/(?:href|xlink:href)\s*=\s*(["'])\s*javascript:[\s\S]*?\1/gi, '')
       .replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, '')
       .replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || '#000000').trim())
       .replace(/var\(\s*--[^)]+\)/gi, '#000000');
@@ -39,14 +42,21 @@ const sanitizeInlineSvgDataUrl = (url: string) => {
       if (!/\sxml:space=/.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xml:space="preserve"');
       sanitized = sanitized.replace(tagMatch[0], tag);
     }
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sanitized)}`;
+    return sanitized;
   } catch {
-    return url;
+    return '';
   }
 };
 
+const sanitizeInlineSvgDataUrl = (url: string) => {
+  const markup = getSafeInlineSvgMarkup(url);
+  return markup && markup !== url
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`
+    : url;
+};
+
 const buildThumbCandidates = (
-  img: { url?: string; cachedUrl?: string; dataUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string },
+  img: { url?: string; cachedUrl?: string; dataUrl?: string; thumbnailUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string },
   _sourcePageUrl: string
 ) => {
   const candidates: string[] = [];
@@ -58,6 +68,7 @@ const buildThumbCandidates = (
   };
   const cached = String(img?.cachedUrl || '').trim();
   const embeddedDataUrl = String(img?.dataUrl || '').trim();
+  const generatedThumbnail = String(img?.thumbnailUrl || '').trim();
   const originalUrl = getImageAssetKey(img);
   const source = String((img as any)?.source || '').toLowerCase();
   const isSvgAsset =
@@ -94,19 +105,21 @@ const buildThumbCandidates = (
     return candidates;
   }
 
-  // Keep the older fast path first: let the browser show the discovered asset
-  // directly. If that fails because the asset host blocks localhost hotlinks,
-  // fall back to the cached/proxied preview with the original page referer.
+  // Prefer the server-generated thumbnail. Remote CDNs frequently reject
+  // localhost hotlinks even after the extraction itself succeeded.
   if (originalUrl.startsWith('http')) {
     const isSequenceOrToyotaAsset =
       String((img as any)?.source || '').includes('360-sequence') ||
       /\/jellies\/(?:max|relative)\//i.test(originalUrl);
     const thumbPreview = buildImageThumbRequest(img, _sourcePageUrl);
     const fallbackPreview = buildImagePreviewRequest(img, _sourcePageUrl);
+    if (generatedThumbnail) {
+      addCandidate(generatedThumbnail.startsWith('http') ? generatedThumbnail : apiUrl(generatedThumbnail));
+    }
+    if (!isSvgAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
     if (isSvgAsset && fallbackPreview) addCandidate(apiUrl(fallbackPreview));
     addCandidate(originalUrl);
     if (isSequenceOrToyotaAsset && fallbackPreview) addCandidate(apiUrl(fallbackPreview));
-    if (!isSvgAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
     if (fallbackPreview) addCandidate(apiUrl(fallbackPreview));
   }
   return candidates.filter(Boolean);
@@ -127,14 +140,20 @@ export default function LazyCachedImageThumb({
   const assetKey = getImageAssetKey(img);
   const cachedPath = String(img?.cachedUrl || '').trim();
   const embeddedDataUrl = String(img?.dataUrl || '').trim();
-  const typeKey = `${String(img?.type || '')}:${String(img?.mimeType || '')}:${String(img?.source || '')}:${String(img?.filename || '')}`;
+  const generatedThumbnail = String(img?.thumbnailUrl || '').trim();
+  const typeKey = `${String(img?.type || '')}:${String(img?.mimeType || '')}:${String(img?.source || '')}:${String(img?.filename || '')}:${generatedThumbnail}`;
   const reportedReadyRef = useRef(false);
   const reportedFailedRef = useRef(false);
   const candidates = useMemo(
     () => buildThumbCandidates(img, sourcePageUrl),
-    [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, typeKey]
+    [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, generatedThumbnail, typeKey]
   );
   const src = candidates[candidateIndex] || '';
+  const inlineSvgFallback = useMemo(() => {
+    const directSvg = [String(img?.dataUrl || ''), assetKey, String(img?.cachedUrl || '')]
+      .find((value) => /^data:image\/svg\+xml/i.test(value));
+    return directSvg ? getSafeInlineSvgMarkup(directSvg) : '';
+  }, [assetKey, img?.cachedUrl, img?.dataUrl]);
 
   const advanceCandidateOrFail = () => {
     if (candidateIndex + 1 < candidates.length) {
@@ -171,14 +190,14 @@ export default function LazyCachedImageThumb({
   const label = fallbackLabel || alt;
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-zinc-100">
+    <div data-thumbnail-phase={phase} className="relative h-full w-full overflow-hidden bg-zinc-100">
       {src && phase !== 'failed' ? (
         <img
           src={src}
           alt={alt}
           className={`${className} h-full w-full`}
           decoding="async"
-          loading="lazy"
+          loading={generatedThumbnail ? 'eager' : 'lazy'}
           onLoad={(event) => {
             setPhase('ready');
             if (!reportedReadyRef.current) {
@@ -204,12 +223,21 @@ export default function LazyCachedImageThumb({
         </div>
       ) : null}
       {phase === 'failed' ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-zinc-50 p-3 text-center">
-          <ImageIcon className="h-7 w-7 text-zinc-300" />
-          <p className="text-xs font-medium leading-snug text-zinc-600 line-clamp-4" title={label}>
-            {label}
-          </p>
-        </div>
+        inlineSvgFallback ? (
+          <div
+            className="absolute inset-0 flex items-center justify-center bg-zinc-50 p-3 [&_svg]:max-h-full [&_svg]:max-w-full [&_svg]:h-auto [&_svg]:w-auto"
+            role="img"
+            aria-label={alt}
+            dangerouslySetInnerHTML={{ __html: inlineSvgFallback }}
+          />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-zinc-50 p-3 text-center">
+            <ImageIcon className="h-7 w-7 text-zinc-300" />
+            <p className="text-xs font-medium leading-snug text-zinc-600 line-clamp-4" title={label}>
+              {label}
+            </p>
+          </div>
+        )
       ) : null}
     </div>
   );

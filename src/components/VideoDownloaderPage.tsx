@@ -651,7 +651,7 @@ export default function VideoDownloaderPage({
           filename: preferredFilename,
           metadataFilename: preferredFilename,
           zipEntryName: asset.kind === 'font'
-            ? `${folder}/${familyFolder}/${preferredFilename}`
+            ? `${folder}/${preferredFilename}`
             : `${folder}/${filename}`,
           ...(asset.kind === 'font'
             ? {
@@ -671,7 +671,7 @@ export default function VideoDownloaderPage({
           toFormat: format,
           filename: `${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
           metadataFilename: `${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
-          zipEntryName: `${folder}/${familyFolder}/${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
+          zipEntryName: `${folder}/${sanitizeBulkPathPart(filenameBase, 'font')}.${format}`,
         }));
       });
       const response = await apiFetch('/api/download-zip', {

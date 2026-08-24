@@ -139,6 +139,34 @@ const quickExtract = async (targetUrl) => {
     if (abs) addUnique(videos, { url: abs, sourceUrl: targetUrl, type: 'video' });
   }
 
+  // Provider embeds are commonly the only video reference in marketing-site
+  // HTML. Keep lightweight source cards here so a successful full browser scan
+  // can merge them without waiting for provider APIs or yt-dlp.
+  const vimeoRegex = /(?:player\.)?vimeo\.com\/(?:video\/)?(\d{6,12})(?:[/?#][^"'<>\s]*)?/gi;
+  while ((match = vimeoRegex.exec(html.replace(/\\\//g, '/'))) !== null) {
+    addUnique(videos, {
+      url: `https://vimeo.com/${match[1]}`,
+      sourceUrl: targetUrl,
+      provider: 'vimeo',
+      isVimeo: true,
+      type: 'vimeo',
+      title: 'Vimeo video',
+    });
+  }
+
+  const wistiaRegex = /(?:fast\.)?wistia\.(?:com|net)\/(?:embed\/(?:medias|iframe)|medias)\/([a-z0-9]{8,12})/gi;
+  while ((match = wistiaRegex.exec(html.replace(/\\\//g, '/'))) !== null) {
+    addUnique(videos, {
+      url: `https://fast.wistia.com/embed/medias/${match[1]}`,
+      sourceUrl: targetUrl,
+      provider: 'wistia',
+      isWistia: true,
+      wistiaHashedId: match[1],
+      type: 'wistia',
+      title: 'Wistia video',
+    });
+  }
+
   // Fetch linked font CSS so the result contains downloadable font files, not stylesheet URLs.
   const stylesheetUrls = [];
   const linkRegex = /<link\b[^>]*>/gi;
@@ -173,11 +201,19 @@ const quickExtract = async (targetUrl) => {
     }
   }
 
-  // Extract colors from inline styles
-  const colorRegex = /(?:color|background(?:-color)?)\s*:\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/g;
+  // Extract literal values, CSS custom-property values, and gradient stops.
+  // Resolving variables lets `linear-gradient(var(--brand), #fff)` contribute
+  // both colors even when the variable is declared elsewhere in the CSS.
+  const variableValues = new Map();
+  for (const declaration of html.matchAll(/(--[\w-]+)\s*:\s*([^;{}]+)(?:;|(?=\}))/g)) {
+    variableValues.set(declaration[1], declaration[2].trim());
+  }
+  const resolveVariables = (value, depth = 0) => depth > 8 ? value : value.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]+))?\)/gi, (_all, name, fallback = '') => resolveVariables(variableValues.get(name) || fallback || '', depth + 1));
+  const colorRegex = /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|rgba?\([^)]+\)|hsla?\([^)]+\)/g;
   const colorSet = new Set();
-  while ((match = colorRegex.exec(html)) !== null) {
-    colorSet.add(match[1]);
+  const resolvedHtml = resolveVariables(html);
+  while ((match = colorRegex.exec(resolvedHtml)) !== null) {
+    colorSet.add(match[0].toLowerCase().replace(/\s+/g, ''));
   }
   colors.push(...colorSet);
 

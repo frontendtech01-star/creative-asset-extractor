@@ -8,7 +8,9 @@ const bufferToExactArrayBuffer = (buffer) =>
 const fontOutputToBuffer = (value) => {
   if (Buffer.isBuffer(value)) return value;
   if (value instanceof ArrayBuffer) return Buffer.from(value);
-  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
   return Buffer.from(String(value || ''), 'utf8');
 };
 
@@ -32,39 +34,58 @@ const ensureWoff2Ready = async () => {
 const getInnerFontBuffer = async (buffer, readFormat) => {
   if (readFormat === 'woff2') {
     await ensureWoff2Ready();
-    const inner = fontOutputToBuffer(woff2.decode(bufferToExactArrayBuffer(buffer)));
-    const innerFormat = inner.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
+    const inner = fontOutputToBuffer(
+      woff2.decode(bufferToExactArrayBuffer(buffer))
+    );
+    const innerFormat =
+      inner.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
     return { buffer: inner, format: innerFormat };
   }
+
   if (readFormat === 'woff') {
     try {
       const font = Font.create(buffer, { type: 'woff' });
       const inner = fontOutputToBuffer(font.write({ type: 'ttf' }));
-      const innerFormat = inner.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
+      const innerFormat =
+        inner.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
       return { buffer: inner, format: innerFormat };
     } catch {
       const parsed = opentype.parse(bufferToExactArrayBuffer(buffer));
       const out = Buffer.from(parsed.toArrayBuffer());
-      const outFormat = out.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
+      const outFormat =
+        out.slice(0, 4).toString('latin1') === 'OTTO' ? 'otf' : 'ttf';
       return { buffer: out, format: outFormat };
     }
   }
+
   if (readFormat === 'ttf' || readFormat === 'otf') {
     return { buffer, format: readFormat };
   }
+
   return { buffer, format: readFormat };
 };
 
 const writeFontBuffer = async (innerBuffer, innerFormat, toFormat) => {
   if (toFormat === innerFormat) return innerBuffer;
-  if (toFormat === 'woff2' && (innerFormat === 'ttf' || innerFormat === 'otf')) {
+
+  if (
+    toFormat === 'woff2' &&
+    (innerFormat === 'ttf' || innerFormat === 'otf')
+  ) {
     await ensureWoff2Ready();
-    return fontOutputToBuffer(woff2.encode(bufferToExactArrayBuffer(innerBuffer)));
+    return fontOutputToBuffer(
+      woff2.encode(bufferToExactArrayBuffer(innerBuffer))
+    );
   }
-  if (toFormat === 'woff' && (innerFormat === 'ttf' || innerFormat === 'otf')) {
+
+  if (
+    toFormat === 'woff' &&
+    (innerFormat === 'ttf' || innerFormat === 'otf')
+  ) {
     const font = Font.create(innerBuffer, { type: innerFormat });
     return fontOutputToBuffer(font.write({ type: 'woff' }));
   }
+
   const font = Font.create(innerBuffer, { type: innerFormat });
   return fontOutputToBuffer(font.write({ type: toFormat }));
 };
@@ -72,21 +93,55 @@ const writeFontBuffer = async (innerBuffer, innerFormat, toFormat) => {
 const convertFontBuffer = async (buffer, fromFormat, toFormat) => {
   const detected = detectFontFormatFromBuffer(buffer);
   const readFormat = detected || String(fromFormat || '').toLowerCase();
+
+  if (!['woff2', 'woff', 'ttf', 'otf'].includes(readFormat)) {
+    throw new Error(
+      `Local converter cannot read ${readFormat || 'unknown'} input.`
+    );
+  }
+
+  if (!['woff2', 'woff', 'ttf', 'otf'].includes(toFormat)) {
+    throw new Error(`Unsupported local output format: ${toFormat}`);
+  }
+
   if (readFormat === toFormat) return buffer;
-  const { buffer: innerBuffer, format: innerFormat } = await getInnerFontBuffer(buffer, readFormat);
+
+  const { buffer: innerBuffer, format: innerFormat } =
+    await getInnerFontBuffer(buffer, readFormat);
+
   return writeFontBuffer(innerBuffer, innerFormat, toFormat);
 };
 
 const run = async () => {
   const input = workerData || {};
   const buffer = Buffer.from(String(input.bufferBase64 || ''), 'base64');
-  const fromFormat = String(input.fromFormat || 'unknown');
-  const toFormat = String(input.toFormat || 'ttf');
+  const fromFormat = String(input.fromFormat || 'unknown').toLowerCase();
+  const toFormat = String(input.toFormat || 'ttf').toLowerCase();
+
   if (!buffer.length) throw new Error('Font buffer was empty');
+
   const output = await convertFontBuffer(buffer, fromFormat, toFormat);
-  parentPort?.postMessage({ ok: true, bufferBase64: output.toString('base64') });
+  const actualFormat = detectFontFormatFromBuffer(output);
+
+  // Never return a source-format fallback under a requested target name.
+  if (actualFormat !== toFormat) {
+    throw new Error(
+      `Requested ${toFormat.toUpperCase()} but local converter produced ${
+        actualFormat ? actualFormat.toUpperCase() : 'UNKNOWN'
+      }.`
+    );
+  }
+
+  parentPort?.postMessage({
+    ok: true,
+    format: actualFormat,
+    bufferBase64: output.toString('base64'),
+  });
 };
 
 run().catch((error) => {
-  parentPort?.postMessage({ ok: false, error: String(error?.message || error || 'Font conversion failed') });
+  parentPort?.postMessage({
+    ok: false,
+    error: String(error?.message || error || 'Font conversion failed'),
+  });
 });

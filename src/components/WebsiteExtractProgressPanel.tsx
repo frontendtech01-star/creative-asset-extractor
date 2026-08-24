@@ -1,5 +1,6 @@
 import React from 'react';
 import { Activity, Clock, Loader2, Zap } from 'lucide-react';
+import type { ExtractionProfile } from '../lib/extractionProfile';
 
 export type WebsiteExtractPhase =
   | 'loading'
@@ -105,6 +106,8 @@ export function WebsiteExtractProgressPanel({
   active,
   phase,
   crawlMode,
+  task,
+  extractionProfile,
   counters,
   partialResults,
   deepScanAvailable,
@@ -115,6 +118,8 @@ export function WebsiteExtractProgressPanel({
   active: boolean;
   phase: WebsiteExtractPhase;
   crawlMode: WebsiteCrawlMode;
+  task?: string;
+  extractionProfile?: ExtractionProfile | null;
   counters: WebsiteExtractCounters;
   partialResults?: boolean;
   deepScanAvailable?: boolean;
@@ -152,9 +157,18 @@ export function WebsiteExtractProgressPanel({
     setPhaseElapsedSeconds(0);
   }, [active, phase]);
 
-  const currentTask = useRotatingTask(active, phase);
+  const rotatingTask = useRotatingTask(active, phase);
+  const currentTask = task || rotatingTask;
   const phaseIndex = PHASE_ORDER.indexOf(phase);
   const phaseMaxSeconds = PHASE_MAX_SECONDS[phase];
+  const browserBudgetSeconds = extractionProfile
+    ? Math.ceil((extractionProfile.kind === 'captcha'
+      ? extractionProfile.challengeWaitMs
+      : extractionProfile.browserBudgetMs) / 1000)
+    : null;
+  const browserBudgetRemaining = browserBudgetSeconds === null
+    ? null
+    : Math.max(0, browserBudgetSeconds - elapsedSeconds);
   const totalFound =
     counters.images + counters.videos + counters.fonts + counters.colors;
 
@@ -185,6 +199,19 @@ export function WebsiteExtractProgressPanel({
               <p className="mt-1 text-xs text-zinc-500">Scanning for images, videos, fonts, and colors…</p>
             )}
             <p className="mt-1 text-xs text-zinc-600">You can click Finish Now anytime.</p>
+            {extractionProfile ? (
+              <p className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs font-medium ${
+                extractionProfile.kind === 'captcha'
+                  ? 'bg-amber-50 text-amber-900'
+                  : extractionProfile.kind === 'heavy'
+                    ? 'bg-violet-50 text-violet-900'
+                    : 'bg-blue-50 text-blue-900'
+              }`}>
+                {extractionProfile.kind === 'captcha'
+                  ? `${extractionProfile.label} · ${Math.ceil(extractionProfile.challengeWaitMs / 1000)} second verification check`
+                  : `${extractionProfile.label} · up to ${Math.ceil(extractionProfile.browserBudgetMs / 1000)} seconds`}
+              </p>
+            ) : null}
             {partialResults ? (
               <p className="mt-1 text-xs text-emerald-700">
                 Assets below update as more are discovered.
@@ -228,6 +255,12 @@ export function WebsiteExtractProgressPanel({
         <span className="font-medium text-blue-700">
           Task time: {formatElapsedClock(phaseElapsedSeconds)} / {formatElapsedClock(phaseMaxSeconds)}
         </span>
+        {browserBudgetSeconds !== null ? (
+          <span className={browserBudgetRemaining === 0 ? 'font-medium text-amber-700' : 'font-medium text-violet-700'}>
+            {extractionProfile?.kind === 'captcha' ? 'Verification check' : 'Chromium limit'}: {formatElapsedClock(elapsedSeconds)} / {formatElapsedClock(browserBudgetSeconds)}
+            {browserBudgetRemaining > 0 ? ` · about ${browserBudgetRemaining}s remaining` : ''}
+          </span>
+        ) : null}
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">

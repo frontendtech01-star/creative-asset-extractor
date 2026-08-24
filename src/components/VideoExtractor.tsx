@@ -485,6 +485,10 @@ export default function VideoExtractor({
               isDirectVideoAssetUrl(String(video?.url || ''))
             );
             const copyUrl = isDirectCdnVideo ? String(video?.url || '') : (embeddedLink || String(video?.url || ''));
+            const isAdaptiveManifest = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(String(video?.url || ''));
+            const generatedThumbnail = isAdaptiveManifest
+              ? `/api/video-frame-thumbnail?url=${encodeURIComponent(String(video?.url || ''))}&sourcePageUrl=${encodeURIComponent(String(video?.sourceUrl || seedUrl || ''))}`
+              : '';
 
             return (
               <div
@@ -492,6 +496,7 @@ export default function VideoExtractor({
                 data-testid="video-card"
                 data-video-title={displayTitle}
                 data-video-embedded={embedded ? 'true' : 'false'}
+                data-video-url={String(video?.url || '')}
                 className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col"
               >
                 <div className="aspect-video bg-zinc-900 relative group">
@@ -516,6 +521,19 @@ export default function VideoExtractor({
                       ) : (
                         <VideoIcon className="h-10 w-10 text-zinc-600" aria-hidden="true" />
                       )}
+                    </div>
+                  ) : isAdaptiveManifest ? (
+                    <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
+                      <img
+                        src={String(video?.thumbnail || video?.poster || generatedThumbnail)}
+                        alt={`${displayTitle} video preview`}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                      <div className="pointer-events-none absolute inset-0 bg-black/10" />
+                      <div className="pointer-events-none absolute flex h-14 w-14 items-center justify-center rounded-full bg-black/65 text-white shadow-lg">
+                        <VideoIcon className="h-7 w-7" aria-hidden="true" />
+                      </div>
                     </div>
                   ) : (
                     <video
@@ -568,14 +586,15 @@ export default function VideoExtractor({
                     </div>
                   </div>
                   <div className="space-y-2">
-                    {!isDirectCdnVideo ? (
+                    {resolveVideoDownloadRequest(video, seedUrl).url ? (
                       <button
                         type="button"
                         onClick={() => handleDownload(video)}
+                        data-testid="video-download-button"
                         className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                       >
                         <Download className="w-4 h-4" />
-                        Download Video
+                        {isAdaptiveManifest ? 'Download MP4' : 'Download Video'}
                       </button>
                     ) : null}
                     <button

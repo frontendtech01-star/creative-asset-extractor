@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { WebsiteExtractPhase, WebsiteExtractCounters } from '../components/WebsiteExtractProgressPanel';
+import type { ExtractionProfile } from './extractionProfile';
 import { resolveAppOrigin } from './api';
 
 type WsEvent =
   | { type: 'phase'; phase: WebsiteExtractPhase }
   | { type: 'task'; task: string }
+  | { type: 'profile'; profile: ExtractionProfile }
   | { type: 'counters'; counters: WebsiteExtractCounters }
   | { type: 'complete'; result: any }
   | { type: 'error'; message: string };
@@ -13,6 +15,7 @@ export type ExtractionProgress = {
   extractId: string;
   phase: WebsiteExtractPhase;
   task: string;
+  profile: ExtractionProfile | null;
   counters: WebsiteExtractCounters;
   complete: boolean;
   error: string | null;
@@ -25,6 +28,7 @@ export function useExtractionProgress(active: boolean, extractId = '') {
     extractId: '',
     phase: 'loading',
     task: 'Starting extraction...',
+    profile: null,
     counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
     complete: false,
     error: null,
@@ -41,6 +45,7 @@ export function useExtractionProgress(active: boolean, extractId = '') {
         extractId: '',
         phase: 'loading',
         task: 'Starting extraction...',
+        profile: null,
         counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
         complete: false,
         error: null,
@@ -61,6 +66,7 @@ export function useExtractionProgress(active: boolean, extractId = '') {
       extractId,
       phase: 'loading',
       task: 'Starting extraction...',
+      profile: null,
       counters: { images: 0, videos: 0, fonts: 0, colors: 0 },
       complete: false,
       error: null,
@@ -87,6 +93,9 @@ export function useExtractionProgress(active: boolean, extractId = '') {
                 break;
               case 'task':
                 next.task = data.task;
+                break;
+              case 'profile':
+                next.profile = data.profile;
                 break;
               case 'counters':
                 next.counters = { ...prev.counters, ...data.counters };

@@ -20,8 +20,8 @@ export const resolveAppOrigin = () => {
     }
   }
   const globalConfig = (globalThis as any).__CREATIVE_EXTRACTOR_CONFIG__;
-  const configuredPort = Number(globalConfig?.apiPort || globalConfig?.port || 3000);
-  return `http://127.0.0.1:${Number.isFinite(configuredPort) && configuredPort > 0 ? configuredPort : 3000}`;
+  const configuredPort = Number(globalConfig?.apiPort || globalConfig?.port || 8080);
+  return `http://127.0.0.1:${Number.isFinite(configuredPort) && configuredPort > 0 ? configuredPort : 8080}`;
 };
 
 export const apiUrl = (path: string) => {

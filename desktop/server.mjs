@@ -34,6 +34,8 @@ var ExtractionProgressManager = class _ExtractionProgressManager {
   constructor() {
     this.clients = /* @__PURE__ */ new Set();
     this.currentPhase = "loading";
+    this.currentTask = "Starting extraction\u2026";
+    this.currentProfile = null;
     this.currentCounters = { images: 0, videos: 0, fonts: 0, colors: 0 };
     this.terminalEvent = null;
   }
@@ -49,6 +51,8 @@ var ExtractionProgressManager = class _ExtractionProgressManager {
         return;
       }
       ws.send(JSON.stringify({ type: "phase", phase: this.currentPhase }));
+      ws.send(JSON.stringify({ type: "task", task: this.currentTask }));
+      if (this.currentProfile) ws.send(JSON.stringify({ type: "profile", profile: this.currentProfile }));
       ws.send(JSON.stringify({ type: "counters", counters: this.currentCounters }));
     }
   }
@@ -65,7 +69,12 @@ var ExtractionProgressManager = class _ExtractionProgressManager {
     this.broadcast({ type: "phase", phase });
   }
   setTask(task) {
+    this.currentTask = task;
     this.broadcast({ type: "task", task });
+  }
+  setProfile(profile) {
+    this.currentProfile = profile;
+    this.broadcast({ type: "profile", profile });
   }
   updateCounters(counters) {
     this.currentCounters = { ...this.currentCounters, ...counters };
@@ -1825,6 +1834,50 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   });
 };
 
+// src/lib/extractionProfile.ts
+var KNOWN_HEAVY_HOSTS = /(?:^|\.)(?:fabindia\.com|warehousestationery\.co\.nz|joannamendoza\.com)$/i;
+function classifyWebsiteExtraction({
+  url,
+  html = "",
+  crawlMode = "fast",
+  captchaDetected = false,
+  profileHint = "auto"
+}) {
+  if (captchaDetected || profileHint === "captcha") {
+    return {
+      kind: "captcha",
+      label: "Verification or CAPTCHA detected",
+      detail: "Checking briefly for automatic verification. If it remains, open the website in Chrome and complete the CAPTCHA before retrying.",
+      browserBudgetMs: 2e4,
+      pageLoadTimeoutMs: 12e3,
+      challengeWaitMs: 9e3
+    };
+  }
+  const assetTags = (html.match(/<(?:img|source|video|script|link)\b/gi) || []).length;
+  const hasLargeMarkup = html.length > 65e4;
+  const hasDenseAssets = assetTags > 140;
+  const isKnownHeavy = KNOWN_HEAVY_HOSTS.test(new URL(url).hostname);
+  const isHeavy = profileHint === "heavy" || profileHint === "auto" && (crawlMode === "deep" || isKnownHeavy || hasLargeMarkup || hasDenseAssets);
+  if (isHeavy) {
+    return {
+      kind: "heavy",
+      label: "Heavy website detected",
+      detail: "This page has a large or highly interactive asset set, so Chromium is given extra time to finish the scan.",
+      browserBudgetMs: 1e4,
+      pageLoadTimeoutMs: 25e3,
+      challengeWaitMs: 2e4
+    };
+  }
+  return {
+    kind: "normal",
+    label: "Normal website scan",
+    detail: "Using the standard fast Chromium scan for this page.",
+    browserBudgetMs: profileHint === "normal" ? 5e3 : 1e4,
+    pageLoadTimeoutMs: 12e3,
+    challengeWaitMs: 9e3
+  };
+}
+
 // src/lib/streamUrl.ts
 var htmlEntities = {
   amp: "&",
@@ -2181,11 +2234,10 @@ var getFontConversionOutputs = (sourceFormat) => {
   if (source === "otf") return ["otf", "ttf", "woff"];
   return [];
 };
-var buildFontZipEntryName = (filenameBase, format, familyFolder = "") => {
+var buildFontZipEntryName = (filenameBase, format, _familyFolder = "") => {
   const safe = sanitizeFontFilenameBase(filenameBase).replace(/\s+/g, "-").replace(/-+/g, "-") || "font";
-  const safeFamily = sanitizeFontFilenameBase(familyFolder || filenameBase).replace(/\s+/g, "-").replace(/-+/g, "-") || "font";
   const ext = String(format || "ttf").toLowerCase();
-  return `fonts/${safeFamily}/${safe}.${ext}`;
+  return `fonts/${safe}.${ext}`;
 };
 var normalizeFontStyleKey = (style) => {
   const raw = String(style || "").trim().toLowerCase();
@@ -2307,7 +2359,9 @@ var preferSingleFontFormatPerFileStem = (fonts) => {
   const groups = /* @__PURE__ */ new Map();
   const passthrough = [];
   for (const font of fonts) {
-    const key = getFontFileVariantKey(font);
+    const fileKey = getFontFileVariantKey(font);
+    const logicalKey = getFontLogicalKey(font);
+    const key = fileKey && logicalKey ? `${fileKey}|${logicalKey}` : fileKey;
     if (!key) {
       passthrough.push(font);
       continue;
@@ -2681,7 +2735,7 @@ var ensureWoff2Ready = async () => {
 };
 var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path3.join(os3.homedir(), ".creative-asset-extractor");
 var app = express();
-var DEFAULT_PORT = Number(process.env.PORT || 8080);
+var DEFAULT_PORT = Number(process.env.PORT || 3e3);
 var activePort = DEFAULT_PORT;
 var appCacheRoot = path3.join(resolveAppDataDir(), "cache");
 var convertedVideoDir = path3.join(os3.tmpdir(), "creative-asset-extractor-mp4");
@@ -4194,6 +4248,34 @@ var buildChromeTabAssetCaptureScript = () => `
       if (externalUse) return;
       const clone = svg.cloneNode(true);
       if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      // An inline icon often relies on a <symbol> in a page-level sprite. Copy
+      // any local references into the standalone SVG so the data URL can paint
+      // outside the source document.
+      Array.from(clone.querySelectorAll('use')).forEach((use) => {
+        const href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
+        if (!href.startsWith('#')) return;
+        const symbol = document.getElementById(href.slice(1));
+        if (!symbol || clone.querySelector('[id="' + CSS.escape(href.slice(1)) + '"]')) return;
+        let defs = clone.querySelector('defs');
+        if (!defs) {
+          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          clone.appendChild(defs);
+        }
+        defs.appendChild(symbol.cloneNode(true));
+      });
+      // CSS classes and currentColor commonly live in the host page stylesheet.
+      // Freeze the relevant computed paint values onto the clone for previews.
+      const sourceNodes = [svg, ...Array.from(svg.querySelectorAll('*'))];
+      const cloneNodes = [clone, ...Array.from(clone.querySelectorAll('*'))];
+      sourceNodes.forEach((sourceNode, nodeIndex) => {
+        const cloneNode = cloneNodes[nodeIndex];
+        if (!cloneNode) return;
+        const style = window.getComputedStyle(sourceNode);
+        ['fill', 'stroke', 'color', 'opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'display', 'visibility'].forEach((property) => {
+          const value = style.getPropertyValue(property);
+          if (value && value !== 'initial' && value !== 'normal') cloneNode.style.setProperty(property, value);
+        });
+      });
       const svgText = new XMLSerializer().serializeToString(clone);
       const bytes = new TextEncoder().encode(svgText);
       let binary = '';
@@ -5873,7 +5955,29 @@ var extractReaderFallbackAssets = async (targetUrl, options = {}) => {
   const fallbackHtml = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
   const sourceText = fallbackHtml || readerText;
   if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
-  return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+  const fallbackAssets = await extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+  if (options.videosOnly || (fallbackAssets.fonts || []).length > 0) return fallbackAssets;
+  const sourceHtml = await withTimeout(
+    fetchSiteHtml(targetUrl),
+    1e4,
+    `Reader fallback font source for ${targetUrl}`
+  ).catch(() => "");
+  if (!sourceHtml || htmlLooksLikeBotWall(sourceHtml)) return fallbackAssets;
+  const providerFonts = await withTimeout(
+    fetchImportedFontProviderFonts(targetUrl, sourceHtml),
+    12e3,
+    `Reader fallback font stylesheet scan for ${targetUrl}`
+  ).catch(() => []);
+  if (providerFonts.length === 0) return fallbackAssets;
+  return dedupeExtractedAssets(
+    fallbackAssets.images || [],
+    fallbackAssets.videos || [],
+    [...fallbackAssets.fonts || [], ...providerFonts],
+    fallbackAssets.colors || [],
+    targetUrl,
+    "",
+    { fast: true }
+  );
 };
 var extractProtectedPageAssetsFast = async (targetUrl) => {
   let browser = null;
@@ -6040,6 +6144,22 @@ var isSupportedFontAsset = (font) => {
   const format = getFontFormatFromUrlOrType(String(font.url), String(font.format || ""));
   return isSupportedFontFormat(format);
 };
+var expandVariableFontWeightFaces = (fonts) => fonts.flatMap((font) => {
+  const match = String(font?.variableWeightRange || font?.weight || "").trim().match(/^(\d{2,3})\s+(\d{2,3})$/);
+  if (!match) return [font];
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 800) return [font];
+  const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900].filter((weight) => weight >= start && weight <= end);
+  if (weights.length < 2) return [font];
+  return weights.map((weight) => ({
+    ...font,
+    weight: String(weight),
+    variableWeightRange: `${start} ${end}`,
+    variationWeight: weight,
+    isVariableFont: true
+  }));
+});
 var getVideoFormatFromUrlOrType = (url, contentType = "") => {
   const value = `${url} ${contentType}`.toLowerCase();
   if (/\.mp4(\?|$)/i.test(value) || value.includes("video/mp4")) return "mp4";
@@ -6783,6 +6903,7 @@ var filterFontsByComputedUsage = (fonts, computedFonts) => {
     style: String(entry.style || "normal").toLowerCase()
   }));
   return fonts.filter((font) => {
+    if (String(font?.source || "") === "@font-face" || String(font?.cssSource || "")) return true;
     const family = normalizeFontFamilyToken(font?.family || "");
     if (!family || family === "inherit") return false;
     return wanted.some((entry) => {
@@ -8546,12 +8667,28 @@ var uniqueDownloadFilePath = async (filename, options = {}) => {
     const resolved = assertPathInsideDownloads(filePath);
     try {
       await fsp3.access(resolved);
+      if (options.overwriteExisting) return { filePath: resolved, filename: candidate, folderPath: targetDir };
       candidate = `${base}-${index}${ext}`;
       index += 1;
     } catch {
       return { filePath: resolved, filename: candidate, folderPath: targetDir };
     }
   }
+};
+var removeExactDuplicateFontExports = async (folderPath, filename, buffer) => {
+  const ext = path3.extname(filename);
+  const base = path3.basename(filename, ext);
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const duplicateName = new RegExp(`^${escapedBase}-\\d+${ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+  const digest = crypto2.createHash("sha256").update(buffer).digest("hex");
+  const entries = await fsp3.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+  await Promise.all(entries.filter((entry) => entry.isFile() && duplicateName.test(entry.name)).map(async (entry) => {
+    const candidate = path3.join(folderPath, entry.name);
+    const existing = await fsp3.readFile(candidate).catch(() => null);
+    if (existing && crypto2.createHash("sha256").update(existing).digest("hex") === digest) {
+      await fsp3.unlink(candidate).catch(() => void 0);
+    }
+  }));
 };
 var saveBufferToDownloads = async (buffer, filename, label = "Download", sourcePageUrl, kind = "default", subfolder = "") => {
   if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
@@ -8560,7 +8697,13 @@ var saveBufferToDownloads = async (buffer, filename, label = "Download", sourceP
   const detectedImageFormat = kind === "image" || /\.svg$/i.test(filename) ? detectImageFormatFromBuffer(buffer) : "";
   const writeBuffer = detectedImageFormat === "svg" ? normalizeSvgBufferForIllustrator(buffer) : buffer;
   const safeFilename = kind === "image" ? reconcileImageFilenameWithBuffer(filename, writeBuffer) : filename;
-  const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind, subfolder });
+  const target = await uniqueDownloadFilePath(safeFilename, {
+    sourcePageUrl,
+    kind,
+    subfolder: kind === "font" ? "" : subfolder,
+    overwriteExisting: kind === "font"
+  });
+  if (kind === "font") await removeExactDuplicateFontExports(target.folderPath, target.filename, writeBuffer);
   await fsp3.writeFile(target.filePath, writeBuffer);
   const stat = await validateSavedAssetFile(target.filePath, label);
   return {
@@ -8599,7 +8742,7 @@ var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download",
       size: stat.size
     };
   } else {
-    const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
+    const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind, overwriteExisting: kind === "font" });
     await fsp3.copyFile(sourcePath, target.filePath);
     const stat = await validateSavedAssetFile(target.filePath, label);
     await removeExportedCacheFile();
@@ -9509,6 +9652,29 @@ var pickOpenTypeName = (value) => {
   return typeof first === "string" ? first.trim() : "";
 };
 var splitPostScriptFontName = (value) => String(value || "").replace(/[-_](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|Italic|Oblique)+$/i, "").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+var readVariableWeightRangeFromSfnt = (buffer) => {
+  if (buffer.length < 12) return "";
+  const tableCount = buffer.readUInt16BE(4);
+  for (let index = 0; index < tableCount; index += 1) {
+    const offset = 12 + index * 16;
+    if (offset + 16 > buffer.length || buffer.toString("latin1", offset, offset + 4) !== "fvar") continue;
+    const tableOffset = buffer.readUInt32BE(offset + 8);
+    const tableLength = buffer.readUInt32BE(offset + 12);
+    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return "";
+    const axisOffset = buffer.readUInt16BE(tableOffset + 4);
+    const axisCount = buffer.readUInt16BE(tableOffset + 8);
+    const axisSize = buffer.readUInt16BE(tableOffset + 10);
+    if (axisSize < 20) return "";
+    for (let axis = 0; axis < axisCount; axis += 1) {
+      const axisRecord = tableOffset + axisOffset + axis * axisSize;
+      if (axisRecord + 20 > buffer.length || buffer.toString("latin1", axisRecord, axisRecord + 4) !== "wght") continue;
+      const min = buffer.readInt32BE(axisRecord + 4) / 65536;
+      const max = buffer.readInt32BE(axisRecord + 12) / 65536;
+      if (Number.isFinite(min) && Number.isFinite(max) && min < max) return `${Math.round(min)} ${Math.round(max)}`;
+    }
+  }
+  return "";
+};
 var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
   const detected = detectFontFormatFromBuffer(buffer);
   const readFormat = detected || normalizeFontFormat(formatHint);
@@ -9528,7 +9694,8 @@ var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
     filename: postScriptName || fullName,
     style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : "",
     postScriptName,
-    postScriptFamily
+    postScriptFamily,
+    variableWeightRange: readVariableWeightRangeFromSfnt(innerBuffer)
   };
 };
 var shouldResolveFontMetadata = (font) => {
@@ -9536,6 +9703,7 @@ var shouldResolveFontMetadata = (font) => {
   if (!label) return true;
   if (isJunkFontLabel(label)) return true;
   if (/\bweb font\s+\d+$/i.test(label)) return true;
+  if (/\bvariable\b/i.test(label)) return true;
   const urlBase = filenameFromUrlPath2(String(font?.url || font?.cachedUrl || "")).replace(/\.[^/.]+$/, "");
   if (urlBase && label.replace(/[^a-z0-9]+/gi, "").toLowerCase() === urlBase.replace(/[^a-z0-9]+/gi, "").toLowerCase()) {
     return true;
@@ -9602,6 +9770,7 @@ var enrichFontsWithMetadata = async (fonts, targetUrl, options = {}) => {
       filename: metadata.filename || font.filename,
       family: metadata.family || font.family,
       style: font.style || metadata.style || void 0,
+      variableWeightRange: metadata.variableWeightRange || font.variableWeightRange || "",
       fontMetadata: {
         postScriptName: metadata.postScriptName || ""
       }
@@ -9822,10 +9991,13 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
       const extractedFamily = String(extras.fontFamily || "").trim();
       const cssFamily = String(cssIdentity.family).trim();
       const resolvedFamily = extractedFamily && !isGenericFontFamilyIdentity(extractedFamily) && normalizeFontIdentityCompare(extractedFamily) === normalizeFontIdentityCompare(cssFamily) ? extractedFamily : cssFamily;
+      const requestedWeight = String(extras.fontWeight || "").trim();
+      const cssWeight = String(cssIdentity.weight || "").trim();
+      const keepRequestedVariableWeight = /^\d{2,3}$/.test(requestedWeight) && /^\d{2,3}\s+\d{2,3}$/.test(cssWeight);
       extras = {
         ...extras,
         fontFamily: resolvedFamily,
-        fontWeight: String(cssIdentity.weight || extras.fontWeight || ""),
+        fontWeight: keepRequestedVariableWeight ? requestedWeight : cssWeight || requestedWeight,
         fontStyle: String(cssIdentity.style || extras.fontStyle || "")
       };
     }
@@ -11037,6 +11209,7 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
   const computedFontKeys = /* @__PURE__ */ new Set();
   const stylesheetUrls = /* @__PURE__ */ new Set();
   const fontFaceCss = [];
+  const fontResourceUrls = /* @__PURE__ */ new Set();
   var _ = {
     toAbsolute(raw) {
       const value = String(raw || "").trim();
@@ -11447,6 +11620,15 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     } catch {
     }
   });
+  Array.from(performance.getEntriesByType("resource") || []).forEach((entry) => {
+    const resource = entry;
+    const url = _.toAbsolute(resource.name || "");
+    const initiator = String(resource.initiatorType || "").toLowerCase();
+    if (!url) return;
+    if (initiator === "font" || /fonts\.gstatic\.com/i.test(url) || /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/i.test(url)) {
+      fontResourceUrls.add(url);
+    }
+  });
   document.querySelectorAll("body *").forEach((el) => {
     const text = (el.textContent || "").replace(/\s+/g, " ").trim();
     if (!text) return;
@@ -11472,7 +11654,8 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
     fontFamilies: Array.from(fontFamilies).slice(0, 48),
     computedFonts: computedFonts.slice(0, 96),
     stylesheetUrls: Array.from(stylesheetUrls).slice(0, 96),
-    fontFaceCss: fontFaceCss.slice(0, 256)
+    fontFaceCss: fontFaceCss.slice(0, 256),
+    fontResourceUrls: Array.from(fontResourceUrls).slice(0, 192)
   };
 });
 var isRichStaticExtract = (assets) => {
@@ -11801,9 +11984,17 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
     const thumbnail = `/api/video-frame-thumbnail?url=${encodeURIComponent(streamUrl)}&sourcePageUrl=${encodeURIComponent(targetUrl)}`;
     return { ...video, thumbnail, thumbnailGenerated: true };
   });
-  const metadataFonts = await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast });
+  const metadataFonts = expandVariableFontWeightFaces(
+    await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast })
+  );
   let uniqueFonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(metadataFonts.map((font) => font.url))).map((url) => pickBestFontForUrl(metadataFonts, url)).filter(Boolean).filter(isSupportedFontAsset)
+    Array.from(new Set(metadataFonts.map((font) => `${font.url}|${font.weight || ""}|${font.style || ""}`))).map((key) => {
+      const [url, weight, style] = key.split("|");
+      return pickBestFontForUrl(
+        metadataFonts.filter((font) => String(font?.weight || "") === weight && String(font?.style || "") === style),
+        url
+      );
+    }).filter(Boolean).filter(isSupportedFontAsset)
   );
   if (!options.fast && uniqueFonts.length > 0 && uniqueFonts.length <= 12) {
     uniqueFonts = await filterUnavailableSitecoreFonts(uniqueFonts, targetUrl);
@@ -12721,7 +12912,7 @@ var isPortAvailable = (port) => new Promise((resolve) => {
   }).listen(port, "127.0.0.1");
 });
 var findAvailablePort = async (preferredPort, attempts = 50) => {
-  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 8080;
+  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 3e3;
   for (let offset = 0; offset < attempts; offset += 1) {
     const candidate = start + offset;
     if (await isPortAvailable(candidate)) return candidate;
@@ -16703,7 +16894,7 @@ app.get("/api/section-frame", async (req, res) => {
   }
 });
 app.post("/api/extract", async (req, res) => {
-  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, proxyUrl } = req.body;
+  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, siteProfile: siteProfileBody, proxyUrl } = req.body;
   const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = crawlModeBody === "deep" || needsDeepCrawl ? "deep" : "fast";
   const isFastCrawl = crawlMode !== "deep";
@@ -16835,8 +17026,17 @@ app.post("/api/extract", async (req, res) => {
       12e3,
       `Prefetch HTML for ${targetUrl}`
     ).catch(() => "");
+    let extractionProfile = classifyWebsiteExtraction({
+      url: targetUrl,
+      html: prefetchedSiteHtml,
+      crawlMode,
+      captchaDetected: Boolean(prefetchedSiteHtml && htmlLooksLikeBotWall(prefetchedSiteHtml)),
+      profileHint: ["normal", "heavy", "captcha"].includes(siteProfileBody) ? siteProfileBody : "auto"
+    });
+    progressMgr?.setProfile(extractionProfile);
+    progressMgr?.setTask(extractionProfile.detail);
     const staticFallbackAssets = async () => extractStaticAssets(targetUrl, prefetchedSiteHtml);
-    if (!prefetchedSiteHtml || htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+    if (!prefetchedSiteHtml || !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
       const blockedFallbackAssets = await withTimeout(
         extractReaderFallbackAssets(targetUrl, { videosOnly }),
         35e3,
@@ -17087,8 +17287,7 @@ app.post("/api/extract", async (req, res) => {
         });
       }
     }
-    const needsLoaderGateBudget = /(?:^|\.)joannamendoza\.com$/i.test(new URL2(targetUrl).hostname);
-    const browserBudgetMs = isToyotaVehicleExtractionTarget(targetUrl) ? 45e3 : needsLoaderGateBudget ? 65e3 : isFastCrawl ? 3e4 : 12e4;
+    const browserBudgetMs = extractionProfile.browserBudgetMs;
     activeExtractProgress?.setPhase("loading");
     quickExtractPromise = extractionProxyUrl ? Promise.resolve(null) : quickExtractInWorker(targetUrl).catch(() => null);
     const browserExtractPromise = withTimeout(
@@ -17234,7 +17433,7 @@ app.post("/api/extract", async (req, res) => {
         page.on("pageerror", (pageErr) => {
           console.warn("Page JS error during extraction:", pageErr?.message || pageErr || "unknown");
         });
-        const pageLoadTimeout = isFastCrawl ? 12e3 : 25e3;
+        const pageLoadTimeout = extractionProfile.pageLoadTimeoutMs;
         const pageWaitUntil = "domcontentloaded";
         const navigated = await page.goto(targetUrl, { waitUntil: pageWaitUntil, timeout: pageLoadTimeout }).catch((e) => {
           console.log("Goto timeout, continuing...", e?.message || e);
@@ -17257,23 +17456,19 @@ app.post("/api/extract", async (req, res) => {
         let initialHtml = await page.content().catch(() => "");
         const shouldWaitForChallengeOrLoader = pageHtmlLooksBlocked(initialHtml);
         if (shouldWaitForChallengeOrLoader) {
-          activeExtractProgress?.setTask("Waiting for website loader or captcha gate");
+          extractionProfile = classifyWebsiteExtraction({
+            url: targetUrl,
+            html: initialHtml,
+            crawlMode,
+            captchaDetected: true,
+            profileHint: ["normal", "heavy", "captcha"].includes(siteProfileBody) ? siteProfileBody : "auto"
+          });
+          activeExtractProgress?.setProfile(extractionProfile);
+          activeExtractProgress?.setTask(extractionProfile.detail);
           await waitForChallengeOrLoaderSettle(page, {
-            timeoutMs: isFastCrawl ? 3e4 : 6e4,
-            minAssetWaitMs: isFastCrawl ? 9e3 : 14e3
+            timeoutMs: extractionProfile.challengeWaitMs,
+            minAssetWaitMs: Math.min(extractionProfile.challengeWaitMs, 9e3)
           });
-          await waitForPageContentSettle(page, {
-            minWaitMs: isFastCrawl ? 6e3 : 9e3,
-            readinessTimeoutMs: isFastCrawl ? 3500 : 6e3
-          });
-          initialHtml = await page.content().catch(() => initialHtml);
-        }
-        if (pageHtmlLooksBlocked(initialHtml)) {
-          await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 2500 : 4500));
-          await page.goto(targetUrl, {
-            waitUntil: isFastCrawl ? "domcontentloaded" : "networkidle2",
-            timeout: isFastCrawl ? 15e3 : 45e3
-          }).catch(() => void 0);
           await waitForPageContentSettle(page, {
             minWaitMs: isFastCrawl ? 6e3 : 9e3,
             readinessTimeoutMs: isFastCrawl ? 3500 : 6e3
@@ -17364,6 +17559,21 @@ app.post("/api/extract", async (req, res) => {
               fonts.push(...extractFontsFromCss(String(cssText || ""), targetUrl));
             });
           }
+          if (Array.isArray(renderedDom?.fontResourceUrls)) {
+            renderedDom.fontResourceUrls.forEach((fontUrl) => {
+              const url2 = String(fontUrl || "").trim();
+              if (!url2) return;
+              const format = getFontFormatFromUrlOrType(url2, "");
+              if (!isSupportedFontFormat(format)) return;
+              fonts.push({
+                family: "",
+                url: url2,
+                format,
+                source: /fonts\.gstatic\.com/i.test(url2) ? "Google Fonts network" : "Rendered font resource",
+                status: DEFAULT_ASSET_STATUS
+              });
+            });
+          }
           if (Array.isArray(renderedDom?.stylesheetUrls) && renderedDom.stylesheetUrls.length > 0) {
             const renderedStylesheetUrls = prioritizeFontCssCandidates(
               renderedDom.stylesheetUrls.filter((url2) => typeof url2 === "string" && /^https?:\/\//i.test(url2))
@@ -17415,6 +17625,92 @@ app.post("/api/extract", async (req, res) => {
             const newCount = images.length;
             if (newCount === prevCount) break;
             prevCount = newCount;
+          }
+        }
+        if (!videosOnly) {
+          try {
+            await page.evaluate(async () => {
+              const ready = document.fonts?.ready;
+              if (!ready) return;
+              await Promise.race([
+                ready,
+                new Promise((resolve) => window.setTimeout(resolve, 3e3))
+              ]);
+            }).catch(() => void 0);
+            await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 900 : 1500));
+            const finalFontDom = await extractRenderedDomAssetsFromPage(page).catch(() => null);
+            if (finalFontDom) {
+              if (Array.isArray(finalFontDom.fontFamilies)) {
+                finalFontDom.fontFamilies.forEach((family) => {
+                  const cleanFamily = String(family || "").trim();
+                  if (!cleanFamily) return;
+                  fonts.push({
+                    family: cleanFamily,
+                    url: "",
+                    format: "computed",
+                    source: "Final FontFaceSet scan",
+                    status: DEFAULT_ASSET_STATUS
+                  });
+                });
+              }
+              if (Array.isArray(finalFontDom.computedFonts)) {
+                const mergedComputedFonts = /* @__PURE__ */ new Map();
+                [...renderedComputedFonts, ...finalFontDom.computedFonts].forEach((entry) => {
+                  const family = String(entry?.family || "").trim();
+                  if (!family) return;
+                  const weight = String(entry?.weight || "").trim() || void 0;
+                  const style = String(entry?.style || "").trim() || void 0;
+                  const key = `${normalizeFontFamilyToken(family)}|${weight || ""}|${style || ""}`;
+                  if (!mergedComputedFonts.has(key)) mergedComputedFonts.set(key, { family, weight, style });
+                });
+                renderedComputedFonts = Array.from(mergedComputedFonts.values()).slice(0, 192);
+              }
+              if (Array.isArray(finalFontDom.fontFaceCss)) {
+                finalFontDom.fontFaceCss.forEach((cssText) => {
+                  fonts.push(...extractFontsFromCss(String(cssText || ""), targetUrl));
+                });
+              }
+              if (Array.isArray(finalFontDom.fontResourceUrls)) {
+                finalFontDom.fontResourceUrls.forEach((fontUrl) => {
+                  const url2 = String(fontUrl || "").trim();
+                  if (!url2) return;
+                  const format = getFontFormatFromUrlOrType(url2, "");
+                  if (!isSupportedFontFormat(format)) return;
+                  fonts.push({
+                    family: "",
+                    url: url2,
+                    format,
+                    source: /fonts\.gstatic\.com/i.test(url2) ? "Google Fonts final resource scan" : "Final rendered font resource",
+                    status: DEFAULT_ASSET_STATUS
+                  });
+                });
+              }
+              if (Array.isArray(finalFontDom.stylesheetUrls) && finalFontDom.stylesheetUrls.length > 0) {
+                const finalStylesheetUrls = prioritizeFontCssCandidates(
+                  finalFontDom.stylesheetUrls.map((url2) => String(url2 || "").trim()).filter((url2) => /^https?:\/\//i.test(url2))
+                ).slice(0, isFastCrawl ? 18 : 48);
+                const finalStylesheetFonts = await mapWithConcurrency(finalStylesheetUrls, 6, async (cssUrl) => {
+                  try {
+                    assertPublicAssetUrl(cssUrl);
+                    const response = await axios.get(cssUrl, {
+                      timeout: isFastCrawl ? 3e3 : 5e3,
+                      httpsAgent: relaxedHttpsAgent,
+                      validateStatus: (status) => status === 200,
+                      headers: {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        Referer: targetUrl
+                      }
+                    });
+                    return extractFontsFromCss(String(response.data || ""), cssUrl);
+                  } catch {
+                    return [];
+                  }
+                });
+                finalStylesheetFonts.forEach((stylesheetFonts) => fonts.push(...stylesheetFonts));
+              }
+            }
+          } catch (fontSettleError) {
+            console.warn("Final rendered font scan failed:", fontSettleError?.message || fontSettleError);
           }
         }
         await new Promise((resolve) => setTimeout(resolve, 400));
@@ -18069,7 +18365,7 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
         setTimeout(() => ExtractionProgressManager.remove(extractKey), 6e4).unref?.();
       }
     });
-    return res.json({ async: true, extractId: extractKey });
+    return res.json({ async: true, extractId: extractKey, extractionProfile });
   } catch (error) {
     progressMgr?.fail(String(error?.message || "Extraction failed"));
     console.error("Extraction error:", error.message);
@@ -20651,10 +20947,22 @@ app.post("/api/insights", async (req, res) => {
 });
 app.post("/api/download-zip", async (req, res) => {
   const { urls, items } = req.body;
-  const list = items || urls;
-  if (!list || !Array.isArray(list)) {
+  const requestedList = items || urls;
+  if (!requestedList || !Array.isArray(requestedList)) {
     return res.status(400).json({ error: "Array of items or urls is required" });
   }
+  const seenFontOutputs = /* @__PURE__ */ new Set();
+  const list = requestedList.filter((item) => {
+    if (!item || typeof item !== "object" || item.assetType !== "font") return true;
+    const family = normalizeFontFamilyToken(String(item.fontFamily || item.familyFolder || item.filenameBase || "font"));
+    const weight = String(item.fontWeight || "400").trim().toLowerCase();
+    const style = String(item.fontStyle || "normal").trim().toLowerCase();
+    const format = String(item.toFormat || item.originalFormat || "ttf").trim().toLowerCase();
+    const key = `${family}|${weight}|${style}|${format}`;
+    if (seenFontOutputs.has(key)) return false;
+    seenFontOutputs.add(key);
+    return true;
+  });
   try {
     const zipFailures = [];
     const usedZipNames = /* @__PURE__ */ new Set();

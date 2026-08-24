@@ -976,6 +976,13 @@ const runDownloadAttempt = async (
   const hasAria2 = extraArgs.includes('--no-aria2') || job.platform === 'youtube'
     ? false
     : Boolean(aria2Path);
+  // Bitmovin publishes separate adaptive video and audio renditions. The
+  // generic direct-video selector requires a muxed format and therefore fails
+  // even though both streams are available. Keep this exception URL-scoped so
+  // every other direct/provider download keeps its established selector.
+  const isBitmovinManifest =
+    /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(url) ||
+    (/\.m3u8(?:[?#]|$)/i.test(url) && /^https?:\/\/(?:[^/]+\.)?xtandi\.com(?:[/:?#]|$)/i.test(String(job.sourcePageUrl || '')));
 
   void writeLog(job.id, {
     event: 'download_start',
@@ -1007,7 +1014,9 @@ const runDownloadAttempt = async (
     '--output',
     outputTemplate,
     '--format',
-    formatSelector(job.platform, job.quality, Boolean(extraArgs.includes('--quality-fallback'))),
+    isBitmovinManifest && job.quality !== 'audio'
+      ? 'bestvideo+bestaudio/best'
+      : formatSelector(job.platform, job.quality, Boolean(extraArgs.includes('--quality-fallback'))),
     ...(hasAria2 ? ['--downloader', 'aria2c', '--downloader-args', 'aria2c:-x 32 -s 32 -k 2M'] : []),
     '--concurrent-fragments', '32',
     '--buffer-size', '128K',

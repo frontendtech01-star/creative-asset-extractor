@@ -12,6 +12,128 @@ const DIRECT_DOWNLOAD_FORMATS = new Set(['png', 'jpg', 'jpeg', 'svg', 'gif']);
 /** Stable identity for selection, download state, and format prefs — always the remote/original URL. */
 export const getImageAssetKey = (img: { url?: string; cachedUrl?: string }) => String(img?.url || '').trim();
 
+const IMAGE_VARIANT_QUERY_PARAMS = new Set([
+  'w',
+  'width',
+  'h',
+  'height',
+  'q',
+  'quality',
+  'fit',
+  'crop',
+  'dpr',
+  'fm',
+  'format',
+  'auto',
+  'v',
+  'ver',
+  'version',
+  'cache',
+  'cb',
+]);
+
+const IMAGE_SEQUENCE_COUNTS = new Set([4, 18, 24, 36, 72, 120]);
+
+const looksLikeImageSequenceAsset = (img: any, rawUrl: string) => {
+  const source = String(img?.source || '').toLowerCase();
+  if (source.includes('360-sequence') || Number(img?.sequenceFrame || 0) > 0) return true;
+
+  const explicitCountMatch = rawUrl.match(
+    /\/(\d{1,3})\/(\d{1,3})\.(?:png|jpe?g|webp|avif|gif)(?:[?#]|$)/i
+  );
+  if (explicitCountMatch && IMAGE_SEQUENCE_COUNTS.has(Number(explicitCountMatch[1] || 0))) {
+    return true;
+  }
+
+  return (
+    /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(rawUrl) &&
+    /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif|gif)(?:[?#]|$)/i.test(rawUrl)
+  );
+};
+
+const getGeneratedImageIdentity = (img: any, rawUrl: string) => {
+  const urlFilename = (() => {
+    try {
+      const parsed = new URL(rawUrl);
+      return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '');
+    } catch {
+      return rawUrl.split(/[?#]/)[0]?.split('/').filter(Boolean).pop() || '';
+    }
+  })();
+
+  const candidates = [
+    String(img?.filename || '').trim(),
+    String(img?.name || '').trim(),
+    urlFilename,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const leaf = candidate.split('/').pop() || candidate;
+    const stem = leaf.replace(/\.(?:png|jpe?g|webp|avif|gif|svg|bmp|ico)$/i, '');
+    const generatedMatch = stem.match(/^([a-f0-9]{20,})(?:[-_].*)?$/i);
+    if (generatedMatch?.[1]) return generatedMatch[1].toLowerCase();
+  }
+
+  return '';
+};
+
+const normalizeImageVariantPath = (pathname: string) =>
+  pathname
+    .replace(/[-_]\d{2,5}x\d{2,5}(?=\.[a-z0-9]+$)/i, '')
+    .replace(/_(?:\d{2,5}x|x\d{2,5})(?=\.[a-z0-9]+$)/i, '')
+    .replace(/\/cdn-cgi\/image\/[^/]+\//i, '/cdn-cgi/image/');
+
+/**
+ * Stable identity used to merge duplicate image renditions without collapsing
+ * 360 sequence frames.
+ */
+export const getImageDedupeKey = (img: any) => {
+  const rawUrl = String(img?.url || img?.src || img?.originalUrl || '').trim();
+  if (!rawUrl) return '';
+
+  if (rawUrl.startsWith('data:')) {
+    return `data:${rawUrl}`;
+  }
+
+  const isSequence = looksLikeImageSequenceAsset(img, rawUrl);
+
+  if (!isSequence) {
+    const generatedIdentity = getGeneratedImageIdentity(img, rawUrl);
+    if (generatedIdentity) return `generated:${generatedIdentity}`;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.hash = '';
+
+    Array.from(parsed.searchParams.keys()).forEach((key) => {
+      if (IMAGE_VARIANT_QUERY_PARAMS.has(key.toLowerCase())) {
+        parsed.searchParams.delete(key);
+      }
+    });
+
+    const remainingParams = Array.from(parsed.searchParams.entries()).sort(([aKey, aValue], [bKey, bValue]) => {
+      const keyCompare = aKey.localeCompare(bKey);
+      return keyCompare !== 0 ? keyCompare : aValue.localeCompare(bValue);
+    });
+
+    parsed.search = '';
+    remainingParams.forEach(([key, value]) => parsed.searchParams.append(key, value));
+
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const pathname = normalizeImageVariantPath(decodeURIComponent(parsed.pathname));
+    const prefix = isSequence ? 'sequence' : 'url';
+
+    return `${prefix}:${host}${pathname}${parsed.search}`;
+  } catch {
+    const clean = rawUrl
+      .split('#')[0]
+      .replace(/[-_]\d{2,5}x\d{2,5}(?=\.[a-z0-9]+(?:[?#]|$))/i, '');
+
+    return `${isSequence ? 'sequence' : 'url'}:${clean}`;
+  }
+};
+
 export const resolveImageAssetUrl = (img: { url?: string; cachedUrl?: string }) => {
   const url = String(img?.cachedUrl || img?.url || '').trim();
   if (!url) return '';

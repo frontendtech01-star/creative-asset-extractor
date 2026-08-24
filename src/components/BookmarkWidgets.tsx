@@ -21,7 +21,9 @@ import {
   BookmarkItem,
   BookmarkStore,
   BookmarkCategory,
+  clearRecentHistory,
   deleteBookmark,
+  deleteRecentHistory,
   duplicateBookmark,
   emptyBookmarkStore,
   importBookmarks,
@@ -364,12 +366,14 @@ export function BookmarkManagerModal({
   onClose,
   onReload,
   onOpenBookmark,
+  onOpenRecent,
 }: {
   open: boolean;
   store: BookmarkStore | null;
   onClose: () => void;
   onReload: () => void;
   onOpenBookmark: (bookmark: BookmarkItem) => void;
+  onOpenRecent: (url: string) => void;
 }) {
   const [query, setQuery] = React.useState('');
   const [sort, setSort] = React.useState<'used' | 'added' | 'name' | 'url' | 'favorites'>('used');
@@ -450,6 +454,15 @@ export function BookmarkManagerModal({
             </div>
           </aside>
           <section className="min-h-0 overflow-y-auto p-4">
+            <RecentRows
+              store={data}
+              category="website"
+              title="Recent Searches"
+              onOpen={onOpenRecent}
+              onBookmark={(url) => void saveBookmark({ url, category: 'website', title: titleFromUrl(url), favorite: true, tags: [] }).then(onReload)}
+              onDelete={(url) => void deleteRecentHistory(url, 'website').then(onReload)}
+              onClear={() => void clearRecentHistory('website').then(onReload)}
+            />
             <div className="mb-4 flex flex-col gap-2 sm:flex-row">
               <input
                 ref={inputRef}

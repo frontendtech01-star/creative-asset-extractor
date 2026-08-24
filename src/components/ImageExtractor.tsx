@@ -110,79 +110,17 @@ const sortImagesForDisplay = (items: any[]) => [...items].sort((a, b) => {
   return 0;
 });
 
-const duplicateImageGroupKey = (img: any) => {
-  const frameInfo = getImageSequenceFrame(img);
-  if (frameInfo) return `${getImageSequenceGroupKey(img)}::frame-${frameInfo.frame}`;
-  try {
-    const parsed = new URL(String(img?.url || ''));
-    // Magnolia CMS serves unrelated originals through the shared synthetic
-    // leaf /jcr:content.png. The source path before that leaf is the asset's
-    // true identity; filename-only grouping hides all but one safety icon.
-    const magnoliaSource = parsed.pathname.match(/^(\/\.imaging\/.*?)\/jcr:content(?:\.[a-z0-9]+)?$/i)?.[1];
-    if (magnoliaSource) return `magnolia:${parsed.hostname.replace(/^www\./, '')}:${magnoliaSource}`.toLowerCase();
-  } catch {
-    // Continue with the normal filename/path grouping below.
-  }
-  const filename = getImageDisplayName(img, 0).toLowerCase();
-  if (filename && !/^image-\d+\./i.test(filename)) return `file:${filename}`;
-  try {
-    const parsed = new URL(String(img?.url || ''));
-    parsed.search = '';
-    parsed.hash = '';
-    return `path:${parsed.hostname.replace(/^www\./, '')}:${parsed.pathname.replace(/-\d+x\d+(?=\.[a-z0-9]+$)/i, '')}`.toLowerCase();
-  } catch {
-    return String(img?.url || '').toLowerCase();
-  }
-};
-
-const loadedPreviewArea = (preview?: { width?: number; height?: number } | null) =>
-  Math.max(0, Number(preview?.width || 0)) * Math.max(0, Number(preview?.height || 0));
-
-const imageAreaScore = (
-  img: any,
-  previewState: PreviewState,
-  fetchedMeta: Record<string, { format?: string; dimensions?: string; size?: string }>,
-  thumbMeta: Record<string, { width?: number; height?: number; bytes?: number; format?: string }>
-) => {
-  const key = getImageAssetKey(img);
-  const previewArea = loadedPreviewArea(previewState[key]);
-  if (previewArea > 0) return previewArea;
-  const thumbArea = loadedPreviewArea(thumbMeta[key]);
-  if (thumbArea > 0) return thumbArea;
-  const extractedArea = Math.max(0, Number(img?.width || 0)) * Math.max(0, Number(img?.height || 0));
-  if (extractedArea > 0) return extractedArea;
-  const dims = String(fetchedMeta[key]?.dimensions || '').match(/(\d+)[×x](\d+)/i);
-  if (dims) return Math.max(0, Number(dims[1] || 0)) * Math.max(0, Number(dims[2] || 0));
-  return 0;
-};
-
-const keepLargestVisibleImages = (
-  items: any[],
-  previewState: PreviewState,
-  fetchedMeta: Record<string, { format?: string; dimensions?: string; size?: string }>,
-  thumbMeta: Record<string, { width?: number; height?: number; bytes?: number; format?: string }>
-) => {
-  const chosen = new Map<string, any>();
-  const order = new Map<string, number>();
-  items.forEach((img, index) => {
-    const key = duplicateImageGroupKey(img);
-    const current = chosen.get(key);
-    if (!order.has(key)) order.set(key, index);
-    if (!current) {
-      chosen.set(key, img);
-      return;
-    }
-    const nextArea = imageAreaScore(img, previewState, fetchedMeta, thumbMeta);
-    const currentArea = imageAreaScore(current, previewState, fetchedMeta, thumbMeta);
-    if (nextArea > currentArea) chosen.set(key, img);
+// Server-side canonical dedupe decides which variants are true duplicates.
+// The gallery only removes exact repeated cards; it must not hide distinct
+// extracted assets just because they share a filename or responsive URL shape.
+const keepExtractedImages = (items: any[]) => {
+  const unique = new Map<string, any>();
+  items.forEach((img) => {
+    const key = getImageAssetKey(img) || String(img?.url || '');
+    if (key && !unique.has(key)) unique.set(key, img);
   });
-  return [...chosen.entries()]
-    .sort((a, b) => (order.get(a[0]) || 0) - (order.get(b[0]) || 0))
-    .map(([, img]) => img);
+  return [...unique.values()];
 };
-
-const hideFailedPreviewImages = (items: any[], previewState: PreviewState) =>
-  items.filter((img) => previewState[getImageAssetKey(img)]?.status !== 'failed');
 
 const isSequenceImage = (img: any) => Boolean(getImageSequenceFrame(img));
 
@@ -389,9 +327,12 @@ export default function ImageExtractor({
     return matchesSearch && matchesFilter;
   }), [filterType, warmedImages, searchTerm]);
 
-  const previewableImages = hideFailedPreviewImages(filteredImages, previewState);
+  // A thumbnail can fail because of a remote CDN or hotlink policy. Keep the
+  // extracted card available for search, source URL copy, and download rather
+  // than silently reducing the user's image count.
+  const previewableImages = filteredImages;
   const visibleImages = previewableImages.filter((img) => previewState[getImageAssetKey(img)]?.status === 'ready');
-  const displayImages = keepLargestVisibleImages(previewableImages, previewState, fetchedMeta, thumbMetaByKey);
+  const displayImages = keepExtractedImages(previewableImages);
   const sequenceDisplayImages = displayImages.filter(isSequenceImage);
   const sequenceDisplayGroups = groupSequenceDisplayImages(sequenceDisplayImages);
   const sequenceKeys = new Set(sequenceDisplayImages.map(getImageAssetKey));
@@ -401,7 +342,7 @@ export default function ImageExtractor({
     onValidCountChange?.(displayImages.length);
   }, [displayImages.length, onValidCountChange]);
 
-  const uniqueTypes = Array.from(new Set(images.map(img => img.type.toLowerCase()))).filter(Boolean);
+  const uniqueTypes = Array.from(new Set(images.map(img => String(img?.type || '').toLowerCase()))).filter(Boolean);
   const selectedCount = displayImages.filter((img) => selected.has(getImageAssetKey(img))).length;
   const handleToggleImageSelection = (img: any) => {
     const key = getImageAssetKey(img);

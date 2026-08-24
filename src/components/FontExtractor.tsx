@@ -5,6 +5,7 @@ import {
   buildFontDisplayName,
   buildFontZipItem,
   getFontFilenameBase,
+  getFontLogicalKey,
   getFontSelectionKey,
   isJunkFontLabel,
   normalizeFontStyleKey,
@@ -12,6 +13,7 @@ import {
   resolveFontIdentityFields,
   resolveFontAssetUrl,
   resolveFontSourceFormat,
+  scoreFontRecord,
   type FontZipOutputFormat,
 } from '../lib/fontAsset';
 
@@ -135,7 +137,14 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
 
   return (
     <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2.5">
-      <p className="min-h-12 text-base leading-5 text-zinc-900" style={loaded ? { fontFamily: `"${family}"` } : undefined}>
+      <p
+        className="min-h-12 text-base leading-5 text-zinc-900"
+        style={loaded ? {
+          fontFamily: `"${family}"`,
+          fontWeight: String(font?.variationWeight || font?.weight || '400'),
+          fontVariationSettings: font?.variationWeight ? `'wght' ${font.variationWeight}` : undefined,
+        } : undefined}
+      >
         {text || DEFAULT_PREVIEW_TEXT}
       </p>
     </div>
@@ -192,9 +201,18 @@ export default function FontExtractor({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font save failed');
+      const expectedOutputCount = requestedFormats.length;
+      const addedCount = Number(result?.addedCount ?? expectedOutputCount);
+      const failedCount = Number(result?.failedCount ?? 0);
+      if (failedCount > 0 || addedCount < expectedOutputCount) {
+        throw new Error(
+          `Font conversion was incomplete: expected ${expectedOutputCount} output file${expectedOutputCount === 1 ? '' : 's'}, ` +
+          `but ${addedCount} succeeded and ${failedCount} failed.`
+        );
+      }
       const label = getReadableFontLabel(font);
       const formatLabel = requestedFormats.map((format) => format.toUpperCase()).join(', ');
-      const message = `${label} saved as ${formatLabel} in ${result.filename || `${getFontFilenameBase(font)}.zip`}.`;
+      const message = `${label} saved as ${formatLabel} (${addedCount} file${addedCount === 1 ? '' : 's'}) in ${result.filename || `${getFontFilenameBase(font)}.zip`}.`;
       setDownloadResult({ ok: true, message });
       onDownloadReady?.({
         title: 'Font saved',
@@ -213,16 +231,50 @@ export default function FontExtractor({
   };
 
   const displayFonts = useMemo(() => {
-    const seen = new Map<string, any>();
+    const byUrl = new Map<string, any>();
+
     fonts.forEach((font) => {
       const selectionKey = getFontSelectionKey(font);
       if (!selectionKey) return;
-      // Distinct downloadable font files are distinct assets, even when their
-      // inferred family/weight/style metadata happens to be identical.
-      const key = selectionKey.toLowerCase();
-      if (!seen.has(key)) seen.set(key, font);
+
+      const urlKey = selectionKey.toLowerCase();
+      const current = byUrl.get(urlKey);
+      const currentScore = current
+        ? scoreFontRecord(current) +
+          (getFontLogicalKey(current) ? 1000 : 0) +
+          (String(current?.family || '').trim() ? 50 : 0)
+        : -1;
+      const nextScore =
+        scoreFontRecord(font) +
+        (getFontLogicalKey(font) ? 1000 : 0) +
+        (String(font?.family || '').trim() ? 50 : 0);
+
+      if (!current || nextScore > currentScore) {
+        byUrl.set(urlKey, font);
+      }
     });
-    return Array.from(seen.values());
+
+    const byLogicalKey = new Map<string, any>();
+    const passthrough: any[] = [];
+
+    Array.from(byUrl.values()).forEach((font) => {
+      const logicalKey = getFontLogicalKey(font);
+
+      if (!logicalKey) {
+        passthrough.push(font);
+        return;
+      }
+
+      const current = byLogicalKey.get(logicalKey);
+      const currentScore = current ? scoreFontRecord(current) : -1;
+      const nextScore = scoreFontRecord(font);
+
+      if (!current || nextScore > currentScore) {
+        byLogicalKey.set(logicalKey, font);
+      }
+    });
+
+    return [...byLogicalKey.values(), ...passthrough];
   }, [fonts]);
 
   useEffect(() => {
@@ -307,8 +359,17 @@ export default function FontExtractor({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error || 'Font ZIP save failed');
+      const expectedOutputCount = selectedFonts.length * requestedFormats.length;
+      const addedCount = Number(result?.addedCount ?? expectedOutputCount);
+      const failedCount = Number(result?.failedCount ?? 0);
+      if (failedCount > 0 || addedCount < expectedOutputCount) {
+        throw new Error(
+          `Font conversion was incomplete: expected ${expectedOutputCount} output files, ` +
+          `but ${addedCount} succeeded and ${failedCount} failed.`
+        );
+      }
       const formatLabel = requestedFormats.map((format) => format.toUpperCase()).join(', ');
-      const message = `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as ${formatLabel} in ${result.filename || 'fonts.zip'}.`;
+      const message = `${selectedFonts.length} selected font${selectedFonts.length === 1 ? '' : 's'} saved as ${addedCount} files (${formatLabel}) in ${result.filename || 'fonts.zip'}.`;
       setDownloadResult({ ok: true, message });
       onDownloadReady?.({
         title: 'Fonts saved',

@@ -14,8 +14,18 @@ import {
 } from './components/WebsiteExtractProgressPanel';
 import { ResponsibleUseModal } from './components/ResponsibleUseNotice';
 import { useExtractionProgress } from './lib/extractionWs';
-import { buildImageZipItem, imageNeedsConversionChoice, resolveZipRasterTargetFormat } from './lib/imageAsset';
-import { buildFontZipItems } from './lib/fontAsset';
+import { type ExtractionProfile, type ExtractionProfileHint } from './lib/extractionProfile';
+import {
+  buildImageZipItem,
+  getImageDedupeKey,
+  imageNeedsConversionChoice,
+  resolveZipRasterTargetFormat,
+} from './lib/imageAsset';
+import {
+  buildFontZipItems,
+  getFontLogicalKey,
+  scoreFontRecord,
+} from './lib/fontAsset';
 import {
   isUsableExtractedVideo,
   isYouTubeExtractUrl,
@@ -55,14 +65,11 @@ import {
   BookmarkStarButton,
   KeyboardShortcutsModal,
   PinnedBookmarks,
-  RecentRows,
   isEditableTarget,
 } from './components/BookmarkWidgets';
 import {
   BookmarkItem,
   BookmarkStore,
-  clearRecentHistory,
-  deleteRecentHistory,
   emptyBookmarkStore,
   fetchBookmarkStore,
   markBookmarkUsed,
@@ -217,16 +224,105 @@ const preloadExtractorChunks = () => {
   if (SHOW_CREATIVE_BRIEF) void import('./components/AiInsights');
 };
 
+const getImageDimensionHint = (item: any) => {
+  let width = Math.max(0, Number(item?.width || 0));
+  let height = Math.max(0, Number(item?.height || 0));
+  const rawUrl = String(item?.url || item?.src || '').trim();
+
+  try {
+    const parsed = new URL(rawUrl);
+    width = width || Math.max(0, Number(parsed.searchParams.get('width') || parsed.searchParams.get('w') || 0));
+    height = height || Math.max(0, Number(parsed.searchParams.get('height') || parsed.searchParams.get('h') || 0));
+
+    const sizeMatch = parsed.pathname.match(/[-_](\d{2,5})x(\d{2,5})(?=\.[a-z0-9]+$)/i);
+    if (sizeMatch) {
+      width = width || Number(sizeMatch[1] || 0);
+      height = height || Number(sizeMatch[2] || 0);
+    }
+  } catch {
+    // Extracted width/height remains the fallback.
+  }
+
+  return { width, height };
+};
+
+const getImageMergeQualityScore = (item: any) => {
+  const { width, height } = getImageDimensionHint(item);
+  const dimensionScore = width > 0 && height > 0 ? width * height : Math.max(width, height) ** 2;
+  const bytes = Math.max(0, Number(item?.bytes || item?.size || 0));
+  const cachedBonus = String(item?.cachedUrl || '').trim() ? 10 : 0;
+  return dimensionScore * 1000 + bytes + cachedBonus;
+};
+
 const mergeImageAssets = (images: any[] = [], icons: any[] = []) => {
-  const seen = new Set<string>();
-  const merged: any[] = [];
+  const seen = new Map<string, any>();
+
   [...images, ...icons].forEach((item) => {
-    const key = String(item?.url || item?.src || '').trim();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    merged.push(item);
+    const rawUrl = String(item?.url || item?.src || '').trim();
+    if (!rawUrl) return;
+
+    const key = getImageDedupeKey(item) || `url:${rawUrl}`;
+    const current = seen.get(key);
+
+    if (!current || getImageMergeQualityScore(item) > getImageMergeQualityScore(current)) {
+      seen.set(key, item);
+    }
   });
-  return merged;
+
+  return Array.from(seen.values());
+};
+
+const normalizeFontUrlKey = (font: any) => {
+  const raw = String(font?.url || font?.cachedUrl || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('data:')) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return raw.split('#')[0];
+  }
+};
+
+const getFontMergeQualityScore = (font: any) =>
+  scoreFontRecord(font) +
+  (getFontLogicalKey(font) ? 1000 : 0) +
+  (String(font?.family || '').trim() ? 50 : 0) +
+  (font?.weight !== undefined && font?.weight !== null ? 10 : 0) +
+  (String(font?.style || '').trim() ? 5 : 0);
+
+const mergeFontAssets = (left: any[] = [], right: any[] = []) => {
+  const byUrl = new Map<string, any>();
+
+  [...left, ...right].forEach((font) => {
+    const urlKey = normalizeFontUrlKey(font);
+    if (!urlKey) return;
+
+    const current = byUrl.get(urlKey);
+    if (!current || getFontMergeQualityScore(font) > getFontMergeQualityScore(current)) {
+      byUrl.set(urlKey, font);
+    }
+  });
+
+  const byLogicalKey = new Map<string, any>();
+  const passthrough: any[] = [];
+
+  Array.from(byUrl.values()).forEach((font) => {
+    const logicalKey = getFontLogicalKey(font);
+    if (!logicalKey) {
+      passthrough.push(font);
+      return;
+    }
+
+    const current = byLogicalKey.get(logicalKey);
+    if (!current || getFontMergeQualityScore(font) > getFontMergeQualityScore(current)) {
+      byLogicalKey.set(logicalKey, font);
+    }
+  });
+
+  return [...byLogicalKey.values(), ...passthrough];
 };
 
 const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
@@ -282,7 +378,7 @@ const hasExtractedAssets = (data: any) => {
 };
 
 const normalizeExtractColors = (colors: unknown) =>
-  Array.from(new Set(Array.isArray(colors) ? colors.map((color) => String(color || '').trim()).filter(Boolean) : [])).slice(0, 10);
+  Array.from(new Set(Array.isArray(colors) ? colors.map((color) => String(color || '').trim()).filter(Boolean) : [])).slice(0, 20);
 
 type PreviewCapturedAsset = {
   url: string;
@@ -491,9 +587,9 @@ const mergeExtractPayload = (base: any, incoming: any) => {
   const incomingImages = mergeImageAssets(incoming?.images, incoming?.icons);
 
   return {
-    images: mergeListByUrl(baseImages, incomingImages),
+    images: mergeImageAssets(baseImages, incomingImages),
     videos: sanitizeVideoAssets(mergeListByUrl(base?.videos, incoming?.videos)),
-    fonts: mergeListByUrl(base?.fonts, incoming?.fonts),
+    fonts: mergeFontAssets(base?.fonts, incoming?.fonts),
     colors: normalizeExtractColors(
       Array.isArray(incoming?.colors) && incoming.colors.length > 0 ? incoming.colors : base?.colors
     ),
@@ -533,6 +629,8 @@ export default function App() {
   const [extractPhase, setExtractPhase] = useState<WebsiteExtractPhase>('loading');
   const [crawlMode, setCrawlMode] = useState<WebsiteCrawlMode>('fast');
   const [activeExtractId, setActiveExtractId] = useState('');
+  const [extractionProfile, setExtractionProfile] = useState<ExtractionProfile | null>(null);
+  const [extractionProfileHint, setExtractionProfileHint] = useState<ExtractionProfileHint>('normal');
   const finishNowRef = React.useRef(false);
   const partialExtractRef = React.useRef<any>(null);
   const extractPhaseTimerRef = React.useRef<number | null>(null);
@@ -623,7 +721,6 @@ export default function App() {
     await saveBookmark({ url: currentUrl, category, title: titleFromUrl(currentUrl), favorite: true, tags: [] }).catch(() => undefined);
     reloadBookmarks();
   }, [bookmarkStore.bookmarks, mainSection, reloadBookmarks, url]);
-
 
   React.useEffect(() => {
     if (!assets?.videos?.length) return;
@@ -765,13 +862,10 @@ export default function App() {
       if (!response.ok || !data?.ok) {
         throw new Error(data?.error || 'Unable to fetch assets from the open Chrome tab.');
       }
-      // Keep the user-entered website URL as the project source. Some browser
-      // extraction payloads can report the currently inspected asset URL; using
-      // that here makes downloads land in folders such as `assets_CreativeAssets`
-      // instead of `WebsiteName_CreativeAssets`.
       const sourceUrl = target;
+      const cleanFonts = mergeFontAssets([], Array.isArray(data?.fonts) ? data.fonts : []);
       applyExtractResult(data, sourceUrl, {
-        detail: `${mergeImageAssets(data.images, data.icons).length + (data.fonts?.length || 0) + (data.videos?.length || 0) + (data.colors?.length || 0)} assets captured from ${data.source === 'open-chrome-tab' ? 'the open Chrome tab' : 'a controlled browser session'}.`,
+        detail: `${mergeImageAssets(data.images, data.icons).length + cleanFonts.length + (data.videos?.length || 0) + (data.colors?.length || 0)} assets captured from ${data.source === 'open-chrome-tab' ? 'the open Chrome tab' : 'a controlled browser session'}.`,
       });
     } catch (chromeError: any) {
       if (controller.signal.aborted || chromeError?.name === 'AbortError') return;
@@ -811,9 +905,15 @@ export default function App() {
     }
     const savedExtraction = readExtractSession();
     if (savedExtraction?.assets && savedExtraction.extractedUrl) {
+      const normalizedSavedAssets = {
+        ...savedExtraction.assets,
+        images: mergeImageAssets(savedExtraction.assets.images, savedExtraction.assets.icons),
+        icons: [],
+        fonts: mergeFontAssets([], savedExtraction.assets.fonts),
+      };
       setUrl(savedExtraction.url || savedExtraction.extractedUrl);
       setExtractedUrl(savedExtraction.extractedUrl);
-      setAssets(savedExtraction.assets as any);
+      setAssets(normalizedSavedAssets as any);
       setActiveTab(normalizeExtracterTab(savedExtraction.activeTab));
       setCompletion(savedExtraction.completion || null);
     }
@@ -912,7 +1012,7 @@ export default function App() {
       setSeenReleaseNotification(release);
       setReleaseUpdateAvailable(false);
     } catch {
-      // Release notes are best-effort.
+      // Release notes are best-effort on launch.
     }
     setReleaseOpen(true);
   };
@@ -964,7 +1064,6 @@ export default function App() {
       if (!response.ok) throw new Error('Folder could not be opened.');
       return true;
     } catch {
-      // Browsers do not expose download folders directly; keep this as a best-effort local shortcut.
       return false;
     }
   };
@@ -1040,6 +1139,9 @@ export default function App() {
 
   const friendlyExtractionError = (message: string, isYouTube = false) => {
     const text = String(message || '').trim();
+    if (/captcha|browser verification|verification gate/i.test(text)) {
+      return 'This site requires a CAPTCHA or browser verification. Open it in Chrome, complete the check, then retry extraction.';
+    }
     if (/failed to fetch|network error|connection refused|could not connect|ERR_CONNECTION|load failed/i.test(text)) {
       return 'The app could not reach its local server. Quit and reopen the app (or reinstall from the DMG), then try Extract again.';
     }
@@ -1068,7 +1170,7 @@ export default function App() {
     }
   };
 
-  const waitForWsComplete = React.useCallback(async (extractId: string): Promise<any> => {
+  const waitForWsComplete = React.useCallback(async (extractId: string, timeoutMs = 40_000): Promise<any> => {
     if (wsProgressRef.current.extractId === extractId && wsProgressRef.current.complete) {
       return wsProgressRef.current.result || null;
     }
@@ -1076,7 +1178,7 @@ export default function App() {
       const timeout = window.setTimeout(() => {
         clearInterval(poll);
         resolve(null);
-      }, 130000);
+      }, timeoutMs);
       const poll = setInterval(() => {
         if (wsProgressRef.current.extractId !== extractId) return;
         if (wsProgressRef.current.complete) {
@@ -1116,18 +1218,12 @@ export default function App() {
       const timeoutMs = isYouTube
         ? 240000
         : options?.mode === 'quick'
-        // Cloudflare-protected storefronts can only be read through the
-        // public reader fallback, which commonly needs 15–25 seconds.
         ? 32000
         : options?.mode === 'static'
-          // A cold stylesheet scan can take longer on sites with many CSS bundles
-          // (Nike is a common example). Keep the request alive long enough for
-          // downloadable font URLs to be returned instead of falling back to the
-          // image-only quick result.
           ? 45000
           : options?.crawlMode === 'deep'
             ? 95000
-            : 125000; // Extended to allow backend-forced deep crawl (120s) + overhead
+            : 125000;
     const timeoutId = window.setTimeout(abortRequest, timeoutMs);
     signal?.addEventListener('abort', abortRequest, { once: true });
 
@@ -1137,7 +1233,7 @@ export default function App() {
           ? { url: requestUrl, mode: 'quick', extractionMode: 'full', proxyUrl: requestProxyUrl || undefined }
           : options?.mode === 'static'
             ? { url: requestUrl, mode: 'static', extractionMode: 'full', proxyUrl: requestProxyUrl || undefined }
-            : { url: requestUrl, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode, proxyUrl: requestProxyUrl || undefined };
+            : { url: requestUrl, extractionMode: 'full', crawlMode: options?.crawlMode || crawlMode, siteProfile: extractionProfileHint, proxyUrl: requestProxyUrl || undefined };
       const response = await apiFetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1167,13 +1263,14 @@ export default function App() {
     options?: { partial?: boolean; detail?: string }
   ) => {
     const mergedImages = mergeImageAssets(data?.images, data?.icons);
+    const mergedFonts = mergeFontAssets([], Array.isArray(data?.fonts) ? data.fonts : []);
     const nextTab = normalizeExtracterTab(activeTab);
     const nextAssets = {
       ...data,
       images: mergedImages,
       icons: [],
       videos: sanitizeVideoAssets(Array.isArray(data?.videos) ? data.videos : [], sourceUrl),
-      fonts: Array.isArray(data?.fonts) ? data.fonts : [],
+      fonts: mergedFonts,
       colors: normalizeExtractColors(data?.colors),
       extractionMeta: data?.extractionMeta,
     };
@@ -1221,6 +1318,7 @@ export default function App() {
     setExtractPhase('loading');
     partialExtractRef.current = null;
     setActiveExtractId('');
+    setExtractionProfile(null);
     setAssets(null);
     setExtractedUrl('');
     setCompletion(null);
@@ -1234,9 +1332,7 @@ export default function App() {
   };
 
   const handleDeepScan = () => {
-    if (loading) {
-      return;
-    }
+    if (loading) return;
     void handleExtractFromOpenWebsite(extractedUrl || url);
   };
 
@@ -1267,6 +1363,7 @@ export default function App() {
     setExtractPartial(false);
     setExtractPhase('loading');
     setActiveExtractId('');
+    setExtractionProfile(null);
     finishNowRef.current = false;
     clearExtractPhaseTimer();
     extractAbortRef.current?.abort();
@@ -1328,8 +1425,7 @@ export default function App() {
         setExtractPhase('dom');
         let staticData: any = null;
         const quickFontCount = Array.isArray(quickData?.fonts) ? quickData.fonts.length : 0;
-        const needsStaticAssetPass =
-          !isKnownProtectedStorefront && (activeCrawlMode === 'deep' || quickFontCount === 0);
+        const needsStaticAssetPass = !isKnownProtectedStorefront && (activeCrawlMode === 'deep' || quickFontCount === 0);
         if (!finishNowRef.current && needsStaticAssetPass) {
           try {
             staticData = await runExtractRequest(controller.signal, { mode: 'static', targetUrl });
@@ -1337,9 +1433,7 @@ export default function App() {
             staticData = null;
           }
           if (staticData && hasExtractedAssets(staticData)) {
-            const mergedStatic = quickData
-              ? mergeExtractPayload(quickData, staticData)
-              : staticData;
+            const mergedStatic = quickData ? mergeExtractPayload(quickData, staticData) : staticData;
             applyExtractResult(mergedStatic, targetUrl, { partial: true });
             quickData = mergedStatic;
           }
@@ -1362,14 +1456,19 @@ export default function App() {
               targetUrl,
             });
             if (browserData?.async) {
-              // Server returned immediately — browser extraction runs in background.
-              // Wait for WebSocket 'complete' event which carries the full results.
               const pendingExtractId = String(browserData.extractId || '');
+              const browserProfile = browserData.extractionProfile || null;
+              setExtractionProfile(browserProfile);
               setActiveExtractId(pendingExtractId);
-              const wsResult = await waitForWsComplete(pendingExtractId);
+              const wsResult = await waitForWsComplete(
+                pendingExtractId,
+                Number(browserProfile?.browserBudgetMs || 10_000) + 10_000,
+              );
               if (wsResult) {
                 data = baseData ? mergeExtractPayload(baseData, wsResult) : wsResult;
               } else {
+                const extractionError = wsProgressRef.current.error;
+                if (extractionError) throw new Error(extractionError);
                 data = baseData && hasExtractedAssets(baseData) ? baseData : null;
               }
             } else {
@@ -1401,9 +1500,7 @@ export default function App() {
         throw new Error('No assets found on this page.');
       }
       const normalizedExtractUrl = parseClipboardUrl(targetUrl) || targetUrl;
-      if (normalizedExtractUrl) {
-        lastAutoFilledUrlRef.current = normalizedExtractUrl;
-      }
+      if (normalizedExtractUrl) lastAutoFilledUrlRef.current = normalizedExtractUrl;
       setExtractPhase('finalizing');
       const finishedEarly = finishNowRef.current;
       const partialDetail = finishedEarly
@@ -1420,8 +1517,7 @@ export default function App() {
       if (fallbackTimer) window.clearTimeout(fallbackTimer);
       if (finishNowRef.current && partialExtractRef.current) {
         applyExtractResult(partialExtractRef.current, targetUrl, {
-          detail:
-            'Extraction completed with available assets. Some lazy assets may require scrolling manually.',
+          detail: 'Extraction completed with available assets. Some lazy assets may require scrolling manually.',
         });
       } else if (err?.name !== 'AbortError') {
         const message = friendlyExtractionError(err.message, isYouTubeExtractUrl(targetUrl));
@@ -1439,6 +1535,7 @@ export default function App() {
       clearExtractPhaseTimer();
       if (isCurrentJob()) {
         setActiveExtractId('');
+        setExtractionProfile(null);
         finishNowRef.current = false;
         setLoading(false);
         setRetryingExtract(false);
@@ -1660,7 +1757,7 @@ export default function App() {
                   C
                 </div>
                 <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
-                <span className="text-xs font-medium text-violet-700">Beta Release</span>
+                <span className="text-xs font-medium text-violet-700">v1.0</span>
               </div>
               <nav className="flex flex-wrap items-center justify-end gap-1">
                 <button
@@ -1750,19 +1847,39 @@ export default function App() {
             }
           />
 
+          <fieldset className="mt-3 rounded-xl border border-zinc-200 bg-white px-3 py-2" aria-label="Website scan time">
+            <legend className="px-1 text-xs font-bold uppercase tracking-wide text-zinc-600">Expected website type</legend>
+            <div className="flex flex-wrap gap-2">
+              {([
+                ['normal', 'Normal'],
+                ['heavy', 'Heavy/deep'],
+                ['captcha', 'CAPTCHA'],
+              ] as const).map(([value, label]) => {
+                const checked = extractionProfileHint === value;
+                return (
+                  <label
+                    key={value}
+                    className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
+                      checked ? 'border-blue-600 bg-blue-50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                    } ${loading ? 'cursor-not-allowed opacity-60' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={loading}
+                      onChange={() => setExtractionProfileHint(value)}
+                      className="h-3.5 w-3.5 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    {label}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-xs text-zinc-500">Choose the expected site type before extracting.</p>
+          </fieldset>
+
           <div className="mt-3 space-y-3">
             <PinnedBookmarks store={bookmarkStore} category="website" onOpen={openBookmark} />
-            <RecentRows
-              store={bookmarkStore}
-              category="website"
-              title="Recent Searches"
-              onOpen={(nextUrl) => {
-                extractWebsiteBookmarkFromChrome(nextUrl);
-              }}
-              onBookmark={(nextUrl) => void saveBookmark({ url: nextUrl, category: 'website', title: titleFromUrl(nextUrl), favorite: true, tags: [] }).then(reloadBookmarks)}
-              onDelete={(nextUrl) => void deleteRecentHistory(nextUrl, 'website').then(setBookmarkStore).catch((error) => setError(error?.message || 'Could not delete recent search.'))}
-              onClear={() => void clearRecentHistory('website').then(setBookmarkStore).catch((error) => setError(error?.message || 'Could not clear recent searches.'))}
-            />
           </div>
 
           {(clipboardDetected || pendingClipboardUrl) ? (
@@ -1792,6 +1909,8 @@ export default function App() {
               active={loading}
               phase={wsProgress.connected ? wsProgress.phase : extractPhase}
               crawlMode={crawlMode}
+              task={wsProgress.connected ? wsProgress.task : undefined}
+              extractionProfile={wsProgress.profile || extractionProfile}
               partialResults={extractPartial}
               deepScanAvailable={loading && crawlMode === 'fast' && retryingExtract}
               counters={wsProgress.connected ? wsProgress.counters : {
@@ -1898,9 +2017,9 @@ export default function App() {
                 <div className={activeTab === 'fonts' ? '' : 'hidden'}>
                   <FontExtractor
                     key={`fonts-${assetStateVersion}`}
-                  fonts={assets.fonts}
-                  sourcePageUrl={extractedUrl}
-                  onValidCountChange={setValidFontCount}
+                    fonts={assets.fonts}
+                    sourcePageUrl={extractedUrl}
+                    onValidCountChange={setValidFontCount}
                     onDownloadReady={showDownloadReadyNotice}
                   />
                 </div>
@@ -1912,9 +2031,6 @@ export default function App() {
                     hideManualSearch
                     onDownloadReady={showDownloadReadyNotice}
                     onOpenInDownloader={(request) => {
-                      // Commit the section change first. Starting a downloader
-                      // job in the same render batch made the active header tab
-                      // visibly bounce while the downloader mounted.
                       setMainNav('video-downloader');
                       window.requestAnimationFrame(() => {
                         videoDownloaderAutoStartSeq.current += 1;
@@ -1986,6 +2102,7 @@ export default function App() {
         onClose={() => setBookmarkManagerOpen(false)}
         onReload={reloadBookmarks}
         onOpenBookmark={openBookmark}
+        onOpenRecent={extractWebsiteBookmarkFromChrome}
       />
       <BookmarkSearchModal
         open={bookmarkSearchOpen}

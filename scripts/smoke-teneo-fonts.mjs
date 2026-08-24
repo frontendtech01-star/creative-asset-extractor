@@ -158,7 +158,7 @@ const items = fonts.flatMap((font) => {
   return ['woff', 'ttf'].map((format) => ({
     ...baseItem,
     toFormat: format,
-    zipEntryName: `fonts/${family}/${filenameBase}.${format}`,
+    zipEntryName: `fonts/${filenameBase}.${format}`,
   }));
 });
 const expectedTtfIdentity = new Map(

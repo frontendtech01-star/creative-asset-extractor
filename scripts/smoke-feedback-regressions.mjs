@@ -143,8 +143,8 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Font family folder strips source extension', fontAsset, ".replace(/\\.(?:woff2?|ttf|otf|eot|svg)$/i, '')");
   assertIncludes('Invalid local TTF triggers Transfonter', server, '!isInstallableTtfBuffer(outputBuffer)');
   assertIncludes('Invalid buffer TTF triggers Transfonter', server, '!isInstallableTtfBuffer(output)');
-  assertIncludes('TTF ZIP must not fall back to WOFF', server, "if (toFormat === 'ttf') throw retryError");
-  assertIncludes('TTF ZIP must not fall back to WOFF', server, "TTF conversion produced a non-TTF font file.");
+  assertIncludes('TTF ZIP must not fall back to WOFF', server, 'Never replace WOFF with the original TTF/WOFF2 source format.');
+  assertIncludes('TTF ZIP must not fall back to WOFF', server, 'Requested ${toFormat.toUpperCase()} but conversion produced');
   assertIncludes('Bulk asset download popup callback', videoDownloaderPage, 'Bulk assets saved');
   assertIncludes('Bulk asset download popup callback', videoDownloaderPage, 'onDownloadReady');
   assertIncludes('Final counter client reconciliation', extractionWs, 'data.result?.images');
@@ -289,7 +289,7 @@ const checkSelectedFontZipConversion = async () => {
       originalFormat: sourceFormat,
       filenameBase,
       familyFolder: family,
-      zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.${sourceFormat}`,
+      zipEntryName: `fonts/${filenameBase.replace(/\s+/g, '-')}.${sourceFormat}`,
       metadataFilename: family,
       assetType: 'font',
     };
@@ -299,7 +299,7 @@ const checkSelectedFontZipConversion = async () => {
       {
         ...originalItem,
         toFormat: 'ttf',
-        zipEntryName: `fonts/${family.replace(/\s+/g, '-')}/${filenameBase.replace(/\s+/g, '-')}.ttf`,
+        zipEntryName: `fonts/${filenameBase.replace(/\s+/g, '-')}.ttf`,
       },
     ];
   });

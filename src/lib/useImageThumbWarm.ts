@@ -7,7 +7,14 @@ export const useImageThumbWarm = (
   images: Array<{ url?: string; cachedUrl?: string; [key: string]: unknown }>,
   sourcePageUrl = ''
 ) => {
-  const [metaByKey, setMetaByKey] = useState<Record<string, { width?: number; height?: number; bytes?: number; format?: string }>>({});
+  const [metaByKey, setMetaByKey] = useState<Record<string, {
+    thumbUrl?: string;
+    lqip?: string;
+    width?: number;
+    height?: number;
+    bytes?: number;
+    format?: string;
+  }>>({});
   const imagesKey = useMemo(
     () => images.map((img) => getImageAssetKey(img)).join('|'),
     [images]
@@ -22,14 +29,19 @@ export const useImageThumbWarm = (
       url: getImageAssetKey(img),
     }));
     void (async () => {
-      for (let offset = 0; offset < items.length && !cancelled; offset += 24) {
+      const batches: typeof items[] = [];
+      for (let offset = 0; offset < items.length; offset += 60) {
+        batches.push(items.slice(offset, offset + 60));
+      }
+      await Promise.all(batches.map(async (batch) => {
+        if (cancelled) return;
         try {
           const response = await apiFetch('/api/warm-image-thumbs-batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               sourcePageUrl: sourcePageUrl || undefined,
-              items: items.slice(offset, offset + 24),
+              items: batch,
             }),
           });
           const data = await response.json();
@@ -38,7 +50,7 @@ export const useImageThumbWarm = (
         } catch {
           // Continue warming later batches when one remote asset fails.
         }
-      }
+      }));
     })();
 
     return () => {

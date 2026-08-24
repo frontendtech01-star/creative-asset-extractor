@@ -14,12 +14,15 @@ export const getFontConversionOutputs = (sourceFormat: string): FontZipOutputFor
   return [];
 };
 
-export const buildFontZipEntryName = (filenameBase: string, format: string, familyFolder = '') => {
+/**
+ * Font exports stay flat so a single ZIP has one predictable `fonts/` folder.
+ * The filename carries family, weight, and style, which keeps every face
+ * identifiable without nested folders or duplicate source-file labels.
+ */
+export const buildFontZipEntryName = (filenameBase: string, format: string, _familyFolder = '') => {
   const safe = sanitizeFontFilenameBase(filenameBase).replace(/\s+/g, '-').replace(/-+/g, '-') || 'font';
-  const safeFamily =
-    sanitizeFontFilenameBase(familyFolder || filenameBase).replace(/\s+/g, '-').replace(/-+/g, '-') || 'font';
   const ext = String(format || 'ttf').toLowerCase();
-  return `fonts/${safeFamily}/${safe}.${ext}`;
+  return `fonts/${safe}.${ext}`;
 };
 
 export type FontDownloadFormat = 'original' | FontZipOutputFormat;
@@ -36,9 +39,10 @@ export const resolveFontAssetUrl = (font: { url?: string; cachedUrl?: string }) 
   return '';
 };
 
-export const getFontSelectionKey = (font: { url?: string; family?: string; weight?: string | number; style?: string }) => {
+export const getFontSelectionKey = (font: { url?: string; family?: string; weight?: string | number; style?: string; variationWeight?: string | number }) => {
   const url = String(font?.url || '').trim();
-  if (!url.startsWith('data:')) return url;
+  const variation = String(font?.variationWeight ?? '').trim();
+  if (!url.startsWith('data:')) return variation ? `${url}#wght=${variation}` : url;
   return `inline-font:${String(font?.family || '').trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url.length}`;
 };
 
@@ -202,7 +206,12 @@ const preferSingleFontFormatPerFileStem = (fonts: any[]) => {
   const groups = new Map<string, any[]>();
   const passthrough: any[] = [];
   for (const font of fonts) {
-    const key = getFontFileVariantKey(font);
+    // A variable font can legitimately reuse one file URL for several named
+    // CSS weights. Keep those instances distinct; only collapse alternate
+    // binary formats for the same family/weight/style face.
+    const fileKey = getFontFileVariantKey(font);
+    const logicalKey = getFontLogicalKey(font);
+    const key = fileKey && logicalKey ? `${fileKey}|${logicalKey}` : fileKey;
     if (!key) {
       passthrough.push(font);
       continue;

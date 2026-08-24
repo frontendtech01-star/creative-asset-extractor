@@ -28,6 +28,7 @@ import { promisify } from 'util';
 import { createRequire } from 'module';
 import { setupExtractProgressWS, ExtractionProgressManager, setGlobalProgressManager } from './server/extract-progress-ws';
 import { registerVideoDownloaderRoutes } from './server/video-downloader-routes';
+import { classifyWebsiteExtraction } from './src/lib/extractionProfile';
 import { isExpiredStreamUrl, isLikelyHttpMediaUrl, recoverYouTubeWatchFromMergeQuery, sanitizeStreamUrl } from './src/lib/streamUrl';
 import {
   convertRasterImageBuffer,
@@ -319,7 +320,7 @@ const resolveAppDataDir = () =>
   String(process.env.VDX_USER_DATA || '').trim() || path.join(os.homedir(), '.creative-asset-extractor');
 
 const app = express();
-const DEFAULT_PORT = Number(process.env.PORT || 8080);
+const DEFAULT_PORT = Number(process.env.PORT || 3000);
 let activePort = DEFAULT_PORT;
 const appCacheRoot = path.join(resolveAppDataDir(), 'cache');
 const convertedVideoDir = path.join(os.tmpdir(), 'creative-asset-extractor-mp4');
@@ -2103,6 +2104,34 @@ const buildChromeTabAssetCaptureScript = () => `
       if (externalUse) return;
       const clone = svg.cloneNode(true);
       if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      // An inline icon often relies on a <symbol> in a page-level sprite. Copy
+      // any local references into the standalone SVG so the data URL can paint
+      // outside the source document.
+      Array.from(clone.querySelectorAll('use')).forEach((use) => {
+        const href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
+        if (!href.startsWith('#')) return;
+        const symbol = document.getElementById(href.slice(1));
+        if (!symbol || clone.querySelector('[id="' + CSS.escape(href.slice(1)) + '"]')) return;
+        let defs = clone.querySelector('defs');
+        if (!defs) {
+          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          clone.appendChild(defs);
+        }
+        defs.appendChild(symbol.cloneNode(true));
+      });
+      // CSS classes and currentColor commonly live in the host page stylesheet.
+      // Freeze the relevant computed paint values onto the clone for previews.
+      const sourceNodes = [svg, ...Array.from(svg.querySelectorAll('*'))];
+      const cloneNodes = [clone, ...Array.from(clone.querySelectorAll('*'))];
+      sourceNodes.forEach((sourceNode, nodeIndex) => {
+        const cloneNode = cloneNodes[nodeIndex];
+        if (!cloneNode) return;
+        const style = window.getComputedStyle(sourceNode);
+        ['fill', 'stroke', 'color', 'opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'display', 'visibility'].forEach((property) => {
+          const value = style.getPropertyValue(property);
+          if (value && value !== 'initial' && value !== 'normal') cloneNode.style.setProperty(property, value);
+        });
+      });
       const svgText = new XMLSerializer().serializeToString(clone);
       const bytes = new TextEncoder().encode(svgText);
       let binary = '';
@@ -4162,7 +4191,36 @@ const extractReaderFallbackAssets = async (targetUrl: string, options: { videosO
   const fallbackHtml = buildKnownBlockedSiteFallbackHtml(targetUrl, readerText);
   const sourceText = fallbackHtml || readerText;
   if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
-  return extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+  const fallbackAssets = await extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+
+  // Reader responses are useful for recovering visible media, but they are
+  // markdown rather than the original document and therefore omit linked
+  // Typekit/Google font stylesheets.  Do a small source-page stylesheet pass
+  // before returning an otherwise strong reader result so font cards are not
+  // lost merely because the image fallback completed first (Fordham is one
+  // such site).
+  if (options.videosOnly || (fallbackAssets.fonts || []).length > 0) return fallbackAssets;
+  const sourceHtml = await withTimeout(
+    fetchSiteHtml(targetUrl),
+    10000,
+    `Reader fallback font source for ${targetUrl}`
+  ).catch(() => '');
+  if (!sourceHtml || htmlLooksLikeBotWall(sourceHtml)) return fallbackAssets;
+  const providerFonts = await withTimeout(
+    fetchImportedFontProviderFonts(targetUrl, sourceHtml),
+    12000,
+    `Reader fallback font stylesheet scan for ${targetUrl}`
+  ).catch(() => [] as any[]);
+  if (providerFonts.length === 0) return fallbackAssets;
+  return dedupeExtractedAssets(
+    fallbackAssets.images || [],
+    fallbackAssets.videos || [],
+    [...(fallbackAssets.fonts || []), ...providerFonts],
+    fallbackAssets.colors || [],
+    targetUrl,
+    '',
+    { fast: true }
+  );
 };
 
 const extractProtectedPageAssetsFast = async (targetUrl: string) => {
@@ -4405,6 +4463,26 @@ const isSupportedFontAsset = (font: any) => {
   const format = getFontFormatFromUrlOrType(String(font.url), String(font.format || ''));
   return isSupportedFontFormat(format);
 };
+
+// A variable @font-face rule can declare a range such as `400 700` while
+// pointing at one WOFF2 asset. Present common named weights separately so the
+// user can select the desired instance instead of downloading one vague range.
+const expandVariableFontWeightFaces = (fonts: any[]) => fonts.flatMap((font) => {
+  const match = String(font?.variableWeightRange || font?.weight || '').trim().match(/^(\d{2,3})\s+(\d{2,3})$/);
+  if (!match) return [font];
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 800) return [font];
+  const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900].filter((weight) => weight >= start && weight <= end);
+  if (weights.length < 2) return [font];
+  return weights.map((weight) => ({
+    ...font,
+    weight: String(weight),
+    variableWeightRange: `${start} ${end}`,
+    variationWeight: weight,
+    isVariableFont: true,
+  }));
+});
 
 const getVideoFormatFromUrlOrType = (url: string, contentType = '') => {
   const value = `${url} ${contentType}`.toLowerCase();
@@ -5362,6 +5440,11 @@ const filterFontsByComputedUsage = (fonts: any[], computedFonts: Array<{ family:
     style: String(entry.style || 'normal').toLowerCase(),
   }));
   return fonts.filter((font) => {
+    // A section may not contain italic text even though its stylesheet
+    // declares an italic face. Font extraction is expected to return every
+    // downloadable face, so never discard authored @font-face entries merely
+    // because the selected section currently uses only normal text.
+    if (String(font?.source || '') === '@font-face' || String(font?.cssSource || '')) return true;
     const family = normalizeFontFamilyToken(font?.family || '');
     if (!family || family === 'inherit') return false;
     return wanted.some((entry) => {
@@ -7687,7 +7770,7 @@ const reconcileZipEntryNameWithBuffer = (zipEntryName: string, buffer: Buffer) =
 
 const uniqueDownloadFilePath = async (
   filename: string,
-  options: { sourcePageUrl?: string; kind?: DownloadSaveKind; subfolder?: string; rootFolderName?: string } = {}
+  options: { sourcePageUrl?: string; kind?: DownloadSaveKind; subfolder?: string; rootFolderName?: string; overwriteExisting?: boolean } = {}
 ) => {
   const requestedRootFolderName = sanitizeFilenameBase(String(options.rootFolderName || '').trim());
   const rootFolderName = /^(?:asset|assets|image|images|font|fonts|video|videos)$/i.test(requestedRootFolderName)
@@ -7716,12 +7799,29 @@ const uniqueDownloadFilePath = async (
     const resolved = assertPathInsideDownloads(filePath);
     try {
       await fsp.access(resolved);
+      if (options.overwriteExisting) return { filePath: resolved, filename: candidate, folderPath: targetDir };
       candidate = `${base}-${index}${ext}`;
       index += 1;
     } catch {
       return { filePath: resolved, filename: candidate, folderPath: targetDir };
     }
   }
+};
+
+const removeExactDuplicateFontExports = async (folderPath: string, filename: string, buffer: Buffer) => {
+  const ext = path.extname(filename);
+  const base = path.basename(filename, ext);
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const duplicateName = new RegExp(`^${escapedBase}-\\d+${ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+  const digest = crypto.createHash('sha256').update(buffer).digest('hex');
+  const entries = await fsp.readdir(folderPath, { withFileTypes: true }).catch(() => [] as any[]);
+  await Promise.all(entries.filter((entry: any) => entry.isFile() && duplicateName.test(entry.name)).map(async (entry: any) => {
+    const candidate = path.join(folderPath, entry.name);
+    const existing = await fsp.readFile(candidate).catch(() => null);
+    if (existing && crypto.createHash('sha256').update(existing).digest('hex') === digest) {
+      await fsp.unlink(candidate).catch(() => undefined);
+    }
+  }));
 };
 
 const saveBufferToDownloads = async (
@@ -7744,7 +7844,15 @@ const saveBufferToDownloads = async (
   const safeFilename = kind === 'image'
     ? reconcileImageFilenameWithBuffer(filename, writeBuffer)
     : filename;
-  const target = await uniqueDownloadFilePath(safeFilename, { sourcePageUrl, kind, subfolder });
+  // Keep every individual font download together in the page's Fonts folder.
+  // Family/weight/style belong in the filename, not in per-face subfolders.
+  const target = await uniqueDownloadFilePath(safeFilename, {
+    sourcePageUrl,
+    kind,
+    subfolder: kind === 'font' ? '' : subfolder,
+    overwriteExisting: kind === 'font',
+  });
+  if (kind === 'font') await removeExactDuplicateFontExports(target.folderPath, target.filename, writeBuffer);
   await fsp.writeFile(target.filePath, writeBuffer);
   const stat = await validateSavedAssetFile(target.filePath, label);
   return {
@@ -7794,7 +7902,7 @@ const saveCachedFileToDownloads = async (
       size: stat.size,
     };
   } else {
-    const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind });
+    const target = await uniqueDownloadFilePath(filename, { sourcePageUrl, kind, overwriteExisting: kind === 'font' });
     await fsp.copyFile(sourcePath, target.filePath);
     const stat = await validateSavedAssetFile(target.filePath, label);
     await removeExportedCacheFile();
@@ -8980,6 +9088,30 @@ const splitPostScriptFontName = (value: string) =>
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .trim();
 
+const readVariableWeightRangeFromSfnt = (buffer: Buffer) => {
+  if (buffer.length < 12) return '';
+  const tableCount = buffer.readUInt16BE(4);
+  for (let index = 0; index < tableCount; index += 1) {
+    const offset = 12 + index * 16;
+    if (offset + 16 > buffer.length || buffer.toString('latin1', offset, offset + 4) !== 'fvar') continue;
+    const tableOffset = buffer.readUInt32BE(offset + 8);
+    const tableLength = buffer.readUInt32BE(offset + 12);
+    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return '';
+    const axisOffset = buffer.readUInt16BE(tableOffset + 4);
+    const axisCount = buffer.readUInt16BE(tableOffset + 8);
+    const axisSize = buffer.readUInt16BE(tableOffset + 10);
+    if (axisSize < 20) return '';
+    for (let axis = 0; axis < axisCount; axis += 1) {
+      const axisRecord = tableOffset + axisOffset + axis * axisSize;
+      if (axisRecord + 20 > buffer.length || buffer.toString('latin1', axisRecord, axisRecord + 4) !== 'wght') continue;
+      const min = buffer.readInt32BE(axisRecord + 4) / 65536;
+      const max = buffer.readInt32BE(axisRecord + 12) / 65536;
+      if (Number.isFinite(min) && Number.isFinite(max) && min < max) return `${Math.round(min)} ${Math.round(max)}`;
+    }
+  }
+  return '';
+};
+
 const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') => {
   const detected = detectFontFormatFromBuffer(buffer);
   const readFormat = detected || normalizeFontFormat(formatHint);
@@ -9006,6 +9138,7 @@ const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') =
     style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : '',
     postScriptName,
     postScriptFamily,
+    variableWeightRange: readVariableWeightRangeFromSfnt(innerBuffer),
   };
 };
 
@@ -9014,6 +9147,7 @@ const shouldResolveFontMetadata = (font: any) => {
   if (!label) return true;
   if (isJunkFontLabel(label)) return true;
   if (/\bweb font\s+\d+$/i.test(label)) return true;
+  if (/\bvariable\b/i.test(label)) return true;
   const urlBase = filenameFromUrlPath(String(font?.url || font?.cachedUrl || '')).replace(/\.[^/.]+$/, '');
   if (urlBase && label.replace(/[^a-z0-9]+/gi, '').toLowerCase() === urlBase.replace(/[^a-z0-9]+/gi, '').toLowerCase()) {
     return true;
@@ -9086,6 +9220,7 @@ const enrichFontsWithMetadata = async (fonts: any[], targetUrl: string, options:
       filename: metadata.filename || font.filename,
       family: metadata.family || font.family,
       style: font.style || metadata.style || undefined,
+      variableWeightRange: metadata.variableWeightRange || font.variableWeightRange || '',
       fontMetadata: {
         postScriptName: metadata.postScriptName || '',
       },
@@ -9386,10 +9521,17 @@ const getCachedConvertedFont = async (
         normalizeFontIdentityCompare(extractedFamily) === normalizeFontIdentityCompare(cssFamily)
           ? extractedFamily
           : cssFamily;
+      const requestedWeight = String(extras.fontWeight || '').trim();
+      const cssWeight = String(cssIdentity.weight || '').trim();
+      // Preserve a selected concrete variable-font instance (for example
+      // Modern Gothic 600) rather than replacing it with the CSS range
+      // (`400 700`). This keeps filenames, name records and cache entries
+      // distinct for every downloaded variable-font weight.
+      const keepRequestedVariableWeight = /^\d{2,3}$/.test(requestedWeight) && /^\d{2,3}\s+\d{2,3}$/.test(cssWeight);
       extras = {
         ...extras,
         fontFamily: resolvedFamily,
-        fontWeight: String(cssIdentity.weight || extras.fontWeight || ''),
+        fontWeight: keepRequestedVariableWeight ? requestedWeight : (cssWeight || requestedWeight),
         fontStyle: String(cssIdentity.style || extras.fontStyle || ''),
       };
     }
@@ -10904,6 +11046,7 @@ const extractRenderedDomAssetsFromPage = async (
     const computedFontKeys = new Set<string>();
     const stylesheetUrls = new Set<string>();
     const fontFaceCss: string[] = [];
+    const fontResourceUrls = new Set<string>();
     // tsx uses keepNames:true → avoid const/var fn = ()=>{} patterns
     // which get wrapped with __name(fn, "name") and break in browser context.
     // Using object methods instead (not wrapped by __name).
@@ -11337,6 +11480,24 @@ const extractRenderedDomAssetsFromPage = async (
       }
     });
 
+    // Keep the exact font-file requests that the rendered page actually used.
+    // This is especially important for Google Fonts on SPAs, where the family can
+    // be visible in computed styles before the fonts.gstatic.com WOFF2 request is
+    // available to the earlier DOM/CSS scan.
+    Array.from(performance.getEntriesByType('resource') || []).forEach((entry) => {
+      const resource = entry as PerformanceResourceTiming;
+      const url = _.toAbsolute(resource.name || '');
+      const initiator = String(resource.initiatorType || '').toLowerCase();
+      if (!url) return;
+      if (
+        initiator === 'font' ||
+        /fonts\.gstatic\.com/i.test(url) ||
+        /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/i.test(url)
+      ) {
+        fontResourceUrls.add(url);
+      }
+    });
+
     document.querySelectorAll('body *').forEach((el) => {
       const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
       if (!text) return;
@@ -11364,6 +11525,7 @@ const extractRenderedDomAssetsFromPage = async (
       computedFonts: computedFonts.slice(0, 96),
       stylesheetUrls: Array.from(stylesheetUrls).slice(0, 96),
       fontFaceCss: fontFaceCss.slice(0, 256),
+      fontResourceUrls: Array.from(fontResourceUrls).slice(0, 192),
     };
   });
 
@@ -11783,10 +11945,18 @@ const dedupeExtractedAssets = async (
     const thumbnail = `/api/video-frame-thumbnail?url=${encodeURIComponent(streamUrl)}&sourcePageUrl=${encodeURIComponent(targetUrl)}`;
     return { ...video, thumbnail, thumbnailGenerated: true };
   });
-  const metadataFonts = await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast });
+  const metadataFonts = expandVariableFontWeightFaces(
+    await enrichFontsWithMetadata(fonts, targetUrl, { fast: options.fast })
+  );
   let uniqueFonts = dedupeFontsByLogicalKey(
-    Array.from(new Set(metadataFonts.map((font) => font.url)))
-      .map((url) => pickBestFontForUrl(metadataFonts, url))
+    Array.from(new Set(metadataFonts.map((font) => `${font.url}|${font.weight || ''}|${font.style || ''}`)))
+      .map((key) => {
+        const [url, weight, style] = key.split('|');
+        return pickBestFontForUrl(
+          metadataFonts.filter((font) => String(font?.weight || '') === weight && String(font?.style || '') === style),
+          url
+        );
+      })
       .filter(Boolean)
       .filter(isSupportedFontAsset)
   );
@@ -12975,7 +13145,7 @@ const isPortAvailable = (port: number) =>
   });
 
 const findAvailablePort = async (preferredPort: number, attempts = 50) => {
-  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 8080;
+  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 3000;
   for (let offset = 0; offset < attempts; offset += 1) {
     const candidate = start + offset;
     if (await isPortAvailable(candidate)) return candidate;
@@ -18125,7 +18295,7 @@ app.get('/api/section-frame', async (req, res) => {
 
 // API Endpoint to extract assets
 app.post('/api/extract', async (req, res) => {
-  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, proxyUrl } = req.body;
+  const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, siteProfile: siteProfileBody, proxyUrl } = req.body;
   // Force deep crawl for slow-loading sites
   const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = (crawlModeBody === 'deep' || needsDeepCrawl) ? 'deep' : 'fast';
@@ -18281,9 +18451,21 @@ app.post('/api/extract', async (req, res) => {
       12000,
       `Prefetch HTML for ${targetUrl}`
     ).catch(() => '');
+    let extractionProfile = classifyWebsiteExtraction({
+      url: targetUrl,
+      html: prefetchedSiteHtml,
+      crawlMode,
+      captchaDetected: Boolean(prefetchedSiteHtml && htmlLooksLikeBotWall(prefetchedSiteHtml)),
+      profileHint: ['normal', 'heavy', 'captcha'].includes(siteProfileBody) ? siteProfileBody : 'auto',
+    });
+    progressMgr?.setProfile(extractionProfile);
+    progressMgr?.setTask(extractionProfile.detail);
     const staticFallbackAssets = async () => extractStaticAssets(targetUrl, prefetchedSiteHtml);
 
-    if (!prefetchedSiteHtml || htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+    // A CAPTCHA page cannot yield useful reader/static assets. Start the short
+    // Chromium verification check immediately so the user gets a clear status
+    // instead of waiting through two long fallback attempts.
+    if (!prefetchedSiteHtml || !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
       const blockedFallbackAssets = await withTimeout(
         extractReaderFallbackAssets(targetUrl, { videosOnly }),
         35000,
@@ -18571,18 +18753,9 @@ app.post('/api/extract', async (req, res) => {
       }
     }
 
-    // Toyota's vehicle page often spends most of the generic 30s budget in
-    // consent/app hydration before its image viewer requests appear. Give this
-    // known extraction target enough time to expose the real blue 360 seed;
-    // other fast crawls keep the existing budget.
-    const needsLoaderGateBudget = /(?:^|\.)joannamendoza\.com$/i.test(new URL(targetUrl).hostname);
-    const browserBudgetMs = isToyotaVehicleExtractionTarget(targetUrl)
-      ? 45000
-      : needsLoaderGateBudget
-        ? 65000
-      : isFastCrawl
-        ? 30000
-        : 120000;
+    // The classified profile is the single source of truth for Chromium's
+    // budget so the time shown to the user always matches the actual limit.
+    const browserBudgetMs = extractionProfile.browserBudgetMs;
     activeExtractProgress?.setPhase('loading');
     // Launch parallel quick static extraction in a worker thread
     quickExtractPromise = extractionProxyUrl ? Promise.resolve(null) : quickExtractInWorker(targetUrl).catch(() => null);
@@ -18771,7 +18944,7 @@ app.post('/api/extract', async (req, res) => {
     // Long-lived analytics, ad and streaming requests make networkidle2 a poor
     // readiness signal for modern sites. DOM readiness plus the bounded asset
     // settle/scroll passes below is both faster and more reliable.
-    const pageLoadTimeout = isFastCrawl ? 12000 : 25000;
+    const pageLoadTimeout = extractionProfile.pageLoadTimeoutMs;
     const pageWaitUntil = 'domcontentloaded';
     const navigated = await page
       .goto(targetUrl, { waitUntil: pageWaitUntil as 'domcontentloaded' | 'networkidle2', timeout: pageLoadTimeout })
@@ -18800,26 +18973,19 @@ app.post('/api/extract', async (req, res) => {
     let initialHtml = await page.content().catch(() => '');
     const shouldWaitForChallengeOrLoader = pageHtmlLooksBlocked(initialHtml);
     if (shouldWaitForChallengeOrLoader) {
-      activeExtractProgress?.setTask('Waiting for website loader or captcha gate');
+      extractionProfile = classifyWebsiteExtraction({
+        url: targetUrl,
+        html: initialHtml,
+        crawlMode,
+        captchaDetected: true,
+        profileHint: ['normal', 'heavy', 'captcha'].includes(siteProfileBody) ? siteProfileBody : 'auto',
+      });
+      activeExtractProgress?.setProfile(extractionProfile);
+      activeExtractProgress?.setTask(extractionProfile.detail);
       await waitForChallengeOrLoaderSettle(page, {
-        timeoutMs: isFastCrawl ? 30000 : 60000,
-        minAssetWaitMs: isFastCrawl ? 9000 : 14000,
+        timeoutMs: extractionProfile.challengeWaitMs,
+        minAssetWaitMs: Math.min(extractionProfile.challengeWaitMs, 9000),
       });
-      await waitForPageContentSettle(page, {
-        minWaitMs: isFastCrawl ? 6000 : 9000,
-        readinessTimeoutMs: isFastCrawl ? 3500 : 6000,
-      });
-      initialHtml = await page.content().catch(() => initialHtml);
-    }
-
-    if (pageHtmlLooksBlocked(initialHtml)) {
-      await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 2500 : 4500));
-      await page
-        .goto(targetUrl, {
-          waitUntil: isFastCrawl ? 'domcontentloaded' : 'networkidle2',
-          timeout: isFastCrawl ? 15000 : 45000,
-        })
-        .catch(() => undefined);
       await waitForPageContentSettle(page, {
         minWaitMs: isFastCrawl ? 6000 : 9000,
         readinessTimeoutMs: isFastCrawl ? 3500 : 6000,
@@ -18917,6 +19083,21 @@ app.post('/api/extract', async (req, res) => {
           fonts.push(...extractFontsFromCss(String(cssText || ''), targetUrl));
         });
       }
+      if (Array.isArray(renderedDom?.fontResourceUrls)) {
+        renderedDom.fontResourceUrls.forEach((fontUrl) => {
+          const url = String(fontUrl || '').trim();
+          if (!url) return;
+          const format = getFontFormatFromUrlOrType(url, '');
+          if (!isSupportedFontFormat(format)) return;
+          fonts.push({
+            family: '',
+            url,
+            format,
+            source: /fonts\.gstatic\.com/i.test(url) ? 'Google Fonts network' : 'Rendered font resource',
+            status: DEFAULT_ASSET_STATUS,
+          });
+        });
+      }
       if (Array.isArray(renderedDom?.stylesheetUrls) && renderedDom.stylesheetUrls.length > 0) {
         const renderedStylesheetUrls = prioritizeFontCssCandidates(
           renderedDom.stylesheetUrls.filter((url: unknown) => typeof url === 'string' && /^https?:\/\//i.test(url))
@@ -18975,6 +19156,108 @@ app.post('/api/extract', async (req, res) => {
         const newCount = images.length;
         if (newCount === prevCount) break;
         prevCount = newCount;
+      }
+    }
+
+    // Final font settle/rescan for React/Next/Vue SPAs. Some sites expose the
+    // computed family immediately but request the actual WOFF2 only after the
+    // app finishes rendering. Waiting on FontFaceSet and re-reading performance
+    // resources makes Google Fonts such as Roboto reliably downloadable.
+    if (!videosOnly) {
+      try {
+        await page
+          .evaluate(async () => {
+            const ready = document.fonts?.ready;
+            if (!ready) return;
+            await Promise.race([
+              ready,
+              new Promise<void>((resolve) => window.setTimeout(resolve, 3000)),
+            ]);
+          })
+          .catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, isFastCrawl ? 900 : 1500));
+
+        const finalFontDom = await extractRenderedDomAssetsFromPage(page).catch(() => null);
+        if (finalFontDom) {
+          if (Array.isArray(finalFontDom.fontFamilies)) {
+            finalFontDom.fontFamilies.forEach((family) => {
+              const cleanFamily = String(family || '').trim();
+              if (!cleanFamily) return;
+              fonts.push({
+                family: cleanFamily,
+                url: '',
+                format: 'computed',
+                source: 'Final FontFaceSet scan',
+                status: DEFAULT_ASSET_STATUS,
+              });
+            });
+          }
+
+          if (Array.isArray(finalFontDom.computedFonts)) {
+            const mergedComputedFonts = new Map<string, { family: string; weight?: string; style?: string }>();
+            [...renderedComputedFonts, ...finalFontDom.computedFonts].forEach((entry: any) => {
+              const family = String(entry?.family || '').trim();
+              if (!family) return;
+              const weight = String(entry?.weight || '').trim() || undefined;
+              const style = String(entry?.style || '').trim() || undefined;
+              const key = `${normalizeFontFamilyToken(family)}|${weight || ''}|${style || ''}`;
+              if (!mergedComputedFonts.has(key)) mergedComputedFonts.set(key, { family, weight, style });
+            });
+            renderedComputedFonts = Array.from(mergedComputedFonts.values()).slice(0, 192);
+          }
+
+          if (Array.isArray(finalFontDom.fontFaceCss)) {
+            finalFontDom.fontFaceCss.forEach((cssText) => {
+              fonts.push(...extractFontsFromCss(String(cssText || ''), targetUrl));
+            });
+          }
+
+          if (Array.isArray(finalFontDom.fontResourceUrls)) {
+            finalFontDom.fontResourceUrls.forEach((fontUrl) => {
+              const url = String(fontUrl || '').trim();
+              if (!url) return;
+              const format = getFontFormatFromUrlOrType(url, '');
+              if (!isSupportedFontFormat(format)) return;
+              fonts.push({
+                family: '',
+                url,
+                format,
+                source: /fonts\.gstatic\.com/i.test(url) ? 'Google Fonts final resource scan' : 'Final rendered font resource',
+                status: DEFAULT_ASSET_STATUS,
+              });
+            });
+          }
+
+          if (Array.isArray(finalFontDom.stylesheetUrls) && finalFontDom.stylesheetUrls.length > 0) {
+            const finalStylesheetUrls = prioritizeFontCssCandidates(
+              finalFontDom.stylesheetUrls
+                .map((url) => String(url || '').trim())
+                .filter((url) => /^https?:\/\//i.test(url))
+            ).slice(0, isFastCrawl ? 18 : 48);
+
+            const finalStylesheetFonts = await mapWithConcurrency(finalStylesheetUrls, 6, async (cssUrl) => {
+              try {
+                assertPublicAssetUrl(cssUrl);
+                const response = await axios.get(cssUrl, {
+                  timeout: isFastCrawl ? 3000 : 5000,
+                  httpsAgent: relaxedHttpsAgent,
+                  validateStatus: (status) => status === 200,
+                  headers: {
+                    'User-Agent':
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    Referer: targetUrl,
+                  },
+                });
+                return extractFontsFromCss(String(response.data || ''), cssUrl);
+              } catch {
+                return [];
+              }
+            });
+            finalStylesheetFonts.forEach((stylesheetFonts) => fonts.push(...stylesheetFonts));
+          }
+        }
+      } catch (fontSettleError: any) {
+        console.warn('Final rendered font scan failed:', fontSettleError?.message || fontSettleError);
       }
     }
 
@@ -19715,7 +19998,7 @@ app.post('/api/extract', async (req, res) => {
 
     // Return immediately with async marker — browser extraction continues in background.
     // Results arrive via WebSocket 'complete' event.
-    return res.json({ async: true, extractId: extractKey });
+    return res.json({ async: true, extractId: extractKey, extractionProfile });
 
   } catch (error: any) {
     // Non-browser errors (setup, etc.). Browser extraction errors are handled in the background promise above.
@@ -22817,11 +23100,27 @@ app.post('/api/insights', async (req, res) => {
 // API Endpoint to download multiple files as ZIP
 app.post('/api/download-zip', async (req, res) => {
   const { urls, items } = req.body;
-  const list = items || urls;
+  const requestedList = items || urls;
 
-  if (!list || !Array.isArray(list)) {
+  if (!requestedList || !Array.isArray(requestedList)) {
     return res.status(400).json({ error: 'Array of items or urls is required' });
   }
+
+  // UI/browser discovery can report the same face from CSS, a network
+  // request and a computed-style pass. Keep one output per family + weight +
+  // style + requested format so a ZIP never contains `-1` / `-2` copies.
+  const seenFontOutputs = new Set<string>();
+  const list = requestedList.filter((item: any) => {
+    if (!item || typeof item !== 'object' || item.assetType !== 'font') return true;
+    const family = normalizeFontFamilyToken(String(item.fontFamily || item.familyFolder || item.filenameBase || 'font'));
+    const weight = String(item.fontWeight || '400').trim().toLowerCase();
+    const style = String(item.fontStyle || 'normal').trim().toLowerCase();
+    const format = String(item.toFormat || item.originalFormat || 'ttf').trim().toLowerCase();
+    const key = `${family}|${weight}|${style}|${format}`;
+    if (seenFontOutputs.has(key)) return false;
+    seenFontOutputs.add(key);
+    return true;
+  });
 
   try {
     const zipFailures: Array<{

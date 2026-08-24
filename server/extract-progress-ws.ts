@@ -1,5 +1,6 @@
 import type { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { ExtractionProfile } from '../src/lib/extractionProfile';
 
 export type ExtractPhase =
   | 'loading'
@@ -19,6 +20,7 @@ export type ExtractCounters = {
 type ProgressEvent =
   | { type: 'phase'; phase: ExtractPhase }
   | { type: 'task'; task: string }
+  | { type: 'profile'; profile: ExtractionProfile }
   | { type: 'counters'; counters: ExtractCounters }
   | { type: 'complete'; result: any }
   | { type: 'error'; message: string };
@@ -26,6 +28,8 @@ type ProgressEvent =
 export class ExtractionProgressManager {
   private clients = new Set<WebSocket>();
   private currentPhase: ExtractPhase = 'loading';
+  private currentTask = 'Starting extraction…';
+  private currentProfile: ExtractionProfile | null = null;
   private currentCounters: ExtractCounters = { images: 0, videos: 0, fonts: 0, colors: 0 };
   private terminalEvent: Extract<ProgressEvent, { type: 'complete' | 'error' }> | null = null;
 
@@ -41,6 +45,8 @@ export class ExtractionProgressManager {
         return;
       }
       ws.send(JSON.stringify({ type: 'phase', phase: this.currentPhase }));
+      ws.send(JSON.stringify({ type: 'task', task: this.currentTask }));
+      if (this.currentProfile) ws.send(JSON.stringify({ type: 'profile', profile: this.currentProfile }));
       ws.send(JSON.stringify({ type: 'counters', counters: this.currentCounters }));
     }
   }
@@ -60,7 +66,13 @@ export class ExtractionProgressManager {
   }
 
   setTask(task: string) {
+    this.currentTask = task;
     this.broadcast({ type: 'task', task });
+  }
+
+  setProfile(profile: ExtractionProfile) {
+    this.currentProfile = profile;
+    this.broadcast({ type: 'profile', profile });
   }
 
   updateCounters(counters: Partial<ExtractCounters>) {

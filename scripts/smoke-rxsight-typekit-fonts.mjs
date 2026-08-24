@@ -169,7 +169,7 @@ const createItems = (fonts, bulkPath) => fonts.map((font) => {
     originalFormat: String(font.format || 'woff2'),
     filenameBase,
     metadataFilename: bulkPath ? `${filenameBase}.ttf` : filenameBase,
-    zipEntryName: `fonts/${safeName(family)}/${filenameBase}.ttf`,
+    zipEntryName: `fonts/${filenameBase}.ttf`,
     assetType: 'font',
     toFormat: 'ttf',
     status: String(font.status || 'path-only'),
