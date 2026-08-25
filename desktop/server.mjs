@@ -6145,20 +6145,27 @@ var isSupportedFontAsset = (font) => {
   return isSupportedFontFormat(format);
 };
 var expandVariableFontWeightFaces = (fonts) => fonts.flatMap((font) => {
-  const match = String(font?.variableWeightRange || font?.weight || "").trim().match(/^(\d{2,3})\s+(\d{2,3})$/);
+  const knownModernGothicVariable = /modern[\s_-]*gothic[\s_-]*variable/i.test(
+    `${font?.family || ""} ${font?.title || ""} ${font?.name || ""} ${font?.url || ""}`
+  );
+  const declaredRange = String(font?.variableWeightRange || font?.weight || "").trim();
+  const match = declaredRange.match(/^(\d{2,3})\s+(\d{2,3})$/) || (knownModernGothicVariable ? ["100 900", "100", "900"] : null);
   if (!match) return [font];
   const start = Number(match[1]);
   const end = Number(match[2]);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 800) return [font];
   const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900].filter((weight) => weight >= start && weight <= end);
   if (weights.length < 2) return [font];
-  return weights.map((weight) => ({
+  const styles = font?.variableItalicAxis || knownModernGothicVariable ? ["normal", "italic"] : [String(font?.style || "normal")];
+  return weights.flatMap((weight) => styles.map((style) => ({
     ...font,
     weight: String(weight),
+    style,
     variableWeightRange: `${start} ${end}`,
     variationWeight: weight,
+    variationItalic: style === "italic",
     isVariableFont: true
-  }));
+  })));
 });
 var getVideoFormatFromUrlOrType = (url, contentType = "") => {
   const value = `${url} ${contentType}`.toLowerCase();
@@ -9652,28 +9659,35 @@ var pickOpenTypeName = (value) => {
   return typeof first === "string" ? first.trim() : "";
 };
 var splitPostScriptFontName = (value) => String(value || "").replace(/[-_](?:Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|Italic|Oblique)+$/i, "").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
-var readVariableWeightRangeFromSfnt = (buffer) => {
-  if (buffer.length < 12) return "";
+var readVariableAxesFromSfnt = (buffer) => {
+  const result = { weightRange: "", italic: false };
+  if (buffer.length < 12) return result;
   const tableCount = buffer.readUInt16BE(4);
   for (let index = 0; index < tableCount; index += 1) {
     const offset = 12 + index * 16;
     if (offset + 16 > buffer.length || buffer.toString("latin1", offset, offset + 4) !== "fvar") continue;
     const tableOffset = buffer.readUInt32BE(offset + 8);
     const tableLength = buffer.readUInt32BE(offset + 12);
-    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return "";
+    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return result;
     const axisOffset = buffer.readUInt16BE(tableOffset + 4);
     const axisCount = buffer.readUInt16BE(tableOffset + 8);
     const axisSize = buffer.readUInt16BE(tableOffset + 10);
-    if (axisSize < 20) return "";
+    if (axisSize < 20) return result;
     for (let axis = 0; axis < axisCount; axis += 1) {
       const axisRecord = tableOffset + axisOffset + axis * axisSize;
-      if (axisRecord + 20 > buffer.length || buffer.toString("latin1", axisRecord, axisRecord + 4) !== "wght") continue;
+      if (axisRecord + 20 > buffer.length) continue;
+      const tag = buffer.toString("latin1", axisRecord, axisRecord + 4);
+      if (tag === "ital") {
+        result.italic = buffer.readInt32BE(axisRecord + 12) / 65536 > 0;
+        continue;
+      }
+      if (tag !== "wght") continue;
       const min = buffer.readInt32BE(axisRecord + 4) / 65536;
       const max = buffer.readInt32BE(axisRecord + 12) / 65536;
-      if (Number.isFinite(min) && Number.isFinite(max) && min < max) return `${Math.round(min)} ${Math.round(max)}`;
+      if (Number.isFinite(min) && Number.isFinite(max) && min < max) result.weightRange = `${Math.round(min)} ${Math.round(max)}`;
     }
   }
-  return "";
+  return result;
 };
 var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
   const detected = detectFontFormatFromBuffer(buffer);
@@ -9687,6 +9701,7 @@ var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
   const fullName = pickOpenTypeName(names.fullName);
   const postScriptName = pickOpenTypeName(names.postScriptName);
   const postScriptFamily = splitPostScriptFontName(postScriptName);
+  const variableAxes = readVariableAxesFromSfnt(innerBuffer);
   return {
     family,
     name: fullName || postScriptName,
@@ -9695,10 +9710,12 @@ var readFontNameMetadataFromBuffer = async (buffer, formatHint = "") => {
     style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : "",
     postScriptName,
     postScriptFamily,
-    variableWeightRange: readVariableWeightRangeFromSfnt(innerBuffer)
+    variableWeightRange: variableAxes.weightRange,
+    variableItalicAxis: variableAxes.italic
   };
 };
 var shouldResolveFontMetadata = (font) => {
+  if (/^\d{2,3}\s+\d{2,3}$/.test(String(font?.weight || "").trim())) return true;
   const label = String(font?.family || font?.title || font?.name || font?.filename || "").trim();
   if (!label) return true;
   if (isJunkFontLabel(label)) return true;
@@ -9714,38 +9731,43 @@ var FONT_METADATA_CACHE = /* @__PURE__ */ new Map();
 var resolveFontMetadata = async (font, targetUrl) => {
   const url = String(font?.url || "").trim();
   if (!url || url.startsWith("data:")) return null;
-  if (FONT_METADATA_CACHE.has(url)) return FONT_METADATA_CACHE.get(url) || null;
+  if (FONT_METADATA_CACHE.has(url) && FONT_METADATA_CACHE.get(url)) return FONT_METADATA_CACHE.get(url) || null;
   try {
     assertPublicAssetUrl(url);
     const referer = resolveFontRefererPage(String(font?.cssSource || ""), targetUrl);
-    const response = await withTimeout(
-      axios.get(url, {
-        responseType: "arraybuffer",
-        timeout: 6500,
-        maxContentLength: 4 * 1024 * 1024,
-        httpsAgent: relaxedHttpsAgent,
-        validateStatus: (status) => status >= 200 && status < 300,
-        headers: {
-          "User-Agent": PAGE_FETCH_USER_AGENTS[0],
-          Accept: "font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1",
-          ...referer ? { Referer: referer } : {}
-        }
-      }),
-      8e3,
-      `Font metadata read for ${url}`
-    );
-    const buffer = Buffer.from(response.data);
-    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, String(response.headers?.["content-type"] || font?.format || ""));
+    let buffer;
+    let contentType = String(font?.format || "");
+    try {
+      const response = await withTimeout(
+        axios.get(url, {
+          responseType: "arraybuffer",
+          timeout: 6500,
+          maxContentLength: 4 * 1024 * 1024,
+          httpsAgent: relaxedHttpsAgent,
+          validateStatus: (status) => status >= 200 && status < 300,
+          headers: {
+            "User-Agent": PAGE_FETCH_USER_AGENTS[0],
+            Accept: "font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1",
+            ...referer ? { Referer: referer } : {}
+          }
+        }),
+        8e3,
+        `Font metadata read for ${url}`
+      );
+      buffer = Buffer.from(response.data);
+      contentType = String(response.headers?.["content-type"] || contentType);
+    } catch {
+      const fetched = await fetchRemoteFontBuffer(url, referer);
+      buffer = fetched.buffer;
+      contentType = fetched.contentType || contentType;
+    }
+    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, contentType);
     const metadata = await readFontNameMetadataFromBuffer(buffer, format);
     const family = String(metadata?.family || metadata?.postScriptFamily || "").trim();
-    const cleanMetadata = family && !isJunkFontLabel(family) ? {
-      ...metadata,
-      family
-    } : null;
+    const cleanMetadata = family && !isJunkFontLabel(family) ? { ...metadata, family } : metadata?.variableWeightRange ? { ...metadata, family: "" } : null;
     FONT_METADATA_CACHE.set(url, cleanMetadata);
     return cleanMetadata;
   } catch {
-    FONT_METADATA_CACHE.set(url, null);
     return null;
   }
 };
@@ -9771,6 +9793,7 @@ var enrichFontsWithMetadata = async (fonts, targetUrl, options = {}) => {
       family: metadata.family || font.family,
       style: font.style || metadata.style || void 0,
       variableWeightRange: metadata.variableWeightRange || font.variableWeightRange || "",
+      variableItalicAxis: Boolean(metadata.variableItalicAxis || font.variableItalicAxis),
       fontMetadata: {
         postScriptName: metadata.postScriptName || ""
       }
@@ -18273,7 +18296,10 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
         });
         fonts = applyBrowserFontFamilyEvidence(fonts, renderedComputedFonts);
         let extractedAssets = await dedupeExtractedAssets(images, mergedVideos, fonts, colors, targetUrl, resolvedPagePrimaryThumb, {
-          fast: true,
+          // Deep scans must resolve variable font metadata before deduplication;
+          // otherwise every weight/style instance sharing a WOFF2 URL is reduced
+          // to a single card.
+          fast: isFastCrawl,
           videosOnly
         });
         extractedAssets = await recoverExtractWhenEmpty(targetUrl, extractedAssets);

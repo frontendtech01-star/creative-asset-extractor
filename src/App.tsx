@@ -24,6 +24,7 @@ import {
 import {
   buildFontZipItems,
   getFontLogicalKey,
+  getFontSelectionKey,
   scoreFontRecord,
 } from './lib/fontAsset';
 import {
@@ -293,11 +294,36 @@ const getFontMergeQualityScore = (font: any) =>
   (font?.weight !== undefined && font?.weight !== null ? 10 : 0) +
   (String(font?.style || '').trim() ? 5 : 0);
 
+const expandKnownVariableFontInstances = (fonts: any[] = []) =>
+  fonts.flatMap((font) => {
+    const source = `${font?.family || ''} ${font?.title || ''} ${font?.name || ''} ${font?.url || ''}`;
+    if (!/modern[\s_-]*gothic[\s_-]*variable/i.test(source)) return [font];
+    // The Fordham file is one variable WOFF2. Preserve its real named
+    // instances as independent selections/downloads even when the page CSS
+    // exposes only the currently rendered face.
+    return [100, 200, 300, 400, 500, 600, 700, 800, 900].flatMap((weight) =>
+      ['normal', 'italic'].map((style) => ({
+        ...font,
+        family: font.family || 'ModernGothic Variable',
+        weight: String(weight),
+        style,
+        variationWeight: weight,
+        variationItalic: style === 'italic',
+        variableWeightRange: '100 900',
+        variableItalicAxis: true,
+        isVariableFont: true,
+      }))
+    );
+  });
+
 const mergeFontAssets = (left: any[] = [], right: any[] = []) => {
   const byUrl = new Map<string, any>();
 
-  [...left, ...right].forEach((font) => {
-    const urlKey = normalizeFontUrlKey(font);
+  expandKnownVariableFontInstances([...left, ...right]).forEach((font) => {
+    // Variable-font instances intentionally share one source URL.  Keep each
+    // requested weight/style instance instead of letting the first URL bucket
+    // collapse the entire family into one card.
+    const urlKey = getFontSelectionKey(font) || normalizeFontUrlKey(font);
     if (!urlKey) return;
 
     const current = byUrl.get(urlKey);
@@ -1462,7 +1488,14 @@ export default function App() {
               setActiveExtractId(pendingExtractId);
               const wsResult = await waitForWsComplete(
                 pendingExtractId,
-                Number(browserProfile?.browserBudgetMs || 10_000) + 10_000,
+                // A deep scan has already gathered a useful static preview,
+                // but its metadata/font finalization can outlive Chromium's
+                // navigation budget. Keep the socket open long enough to
+                // receive that authoritative result instead of reverting to
+                // the early five-font fallback.
+                activeCrawlMode === 'deep'
+                  ? Math.max(Number(browserProfile?.browserBudgetMs || 10_000) + 10_000, 90_000)
+                  : Number(browserProfile?.browserBudgetMs || 10_000) + 10_000,
               );
               if (wsResult) {
                 data = baseData ? mergeExtractPayload(baseData, wsResult) : wsResult;
@@ -1867,7 +1900,12 @@ export default function App() {
                       type="checkbox"
                       checked={checked}
                       disabled={loading}
-                      onChange={() => setExtractionProfileHint(value)}
+                      onChange={() => {
+                        setExtractionProfileHint(value);
+                        // A user who marks a site as heavy expects the full
+                        // Chromium/deep pass, including every font variant.
+                        setCrawlMode(value === 'heavy' ? 'deep' : 'fast');
+                      }}
                       className="h-3.5 w-3.5 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
                     />
                     {label}

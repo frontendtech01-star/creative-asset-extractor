@@ -142,7 +142,10 @@ function FontPreview({ font, text, sourcePageUrl }: { font: any; text: string; s
         style={loaded ? {
           fontFamily: `"${family}"`,
           fontWeight: String(font?.variationWeight || font?.weight || '400'),
-          fontVariationSettings: font?.variationWeight ? `'wght' ${font.variationWeight}` : undefined,
+          fontVariationSettings: [
+            font?.variationWeight ? `'wght' ${font.variationWeight}` : '',
+            font?.variationItalic ? "'ital' 1" : '',
+          ].filter(Boolean).join(', ') || undefined,
         } : undefined}
       >
         {text || DEFAULT_PREVIEW_TEXT}
@@ -309,6 +312,16 @@ export default function FontExtractor({
 
   const selectedFonts = displayFonts.filter((font) => selected.has(getFontSelectionKey(font)));
   const selectedCount = selectedFonts.length;
+  const allFontsSelected = displayFonts.length > 0 && selectedCount === displayFonts.length;
+  const selectAllFonts = () => {
+    setSelected(
+      new Set(
+        displayFonts
+          .map((font) => getFontSelectionKey(font))
+          .filter(Boolean)
+      )
+    );
+  };
   const toggleSelected = (font: any) => {
     const key = getFontSelectionKey(font);
     setSelected((current) => {
@@ -430,11 +443,11 @@ export default function FontExtractor({
         <div className="flex w-full gap-2 sm:w-auto">
           <button
             type="button"
-            onClick={() => setSelected(new Set())}
-            disabled={selectedCount === 0}
-            className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50 sm:flex-none"
+            onClick={() => allFontsSelected ? setSelected(new Set()) : selectAllFonts()}
+            disabled={displayFonts.length === 0}
+            className="flex-1 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-100 disabled:opacity-50 sm:flex-none"
           >
-            Clear Selection
+            {allFontsSelected ? 'Clear Selection' : `Select All (${displayFonts.length})`}
           </button>
           <button
             onClick={handleDownloadAll}

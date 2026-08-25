@@ -4468,20 +4468,34 @@ const isSupportedFontAsset = (font: any) => {
 // pointing at one WOFF2 asset. Present common named weights separately so the
 // user can select the desired instance instead of downloading one vague range.
 const expandVariableFontWeightFaces = (fonts: any[]) => fonts.flatMap((font) => {
-  const match = String(font?.variableWeightRange || font?.weight || '').trim().match(/^(\d{2,3})\s+(\d{2,3})$/);
+  const knownModernGothicVariable = /modern[\s_-]*gothic[\s_-]*variable/i.test(
+    `${font?.family || ''} ${font?.title || ''} ${font?.name || ''} ${font?.url || ''}`
+  );
+  // Fordham's Modern Gothic variable file occasionally returns incomplete
+  // name/fvar data through the web transport. Its published variable asset
+  // is a 100–900 weight family with an italic axis, so retain the actual
+  // selectable instances instead of reducing it to one arbitrary CSS face.
+  const declaredRange = String(font?.variableWeightRange || font?.weight || '').trim();
+  const match = (declaredRange.match(/^(\d{2,3})\s+(\d{2,3})$/) ||
+    (knownModernGothicVariable ? ['100 900', '100', '900'] : null));
   if (!match) return [font];
   const start = Number(match[1]);
   const end = Number(match[2]);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 800) return [font];
   const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900].filter((weight) => weight >= start && weight <= end);
   if (weights.length < 2) return [font];
-  return weights.map((weight) => ({
+  const styles = (font?.variableItalicAxis || knownModernGothicVariable)
+    ? ['normal', 'italic']
+    : [String(font?.style || 'normal')];
+  return weights.flatMap((weight) => styles.map((style) => ({
     ...font,
     weight: String(weight),
+    style,
     variableWeightRange: `${start} ${end}`,
     variationWeight: weight,
+    variationItalic: style === 'italic',
     isVariableFont: true,
-  }));
+  })));
 });
 
 const getVideoFormatFromUrlOrType = (url: string, contentType = '') => {
@@ -9088,28 +9102,35 @@ const splitPostScriptFontName = (value: string) =>
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .trim();
 
-const readVariableWeightRangeFromSfnt = (buffer: Buffer) => {
-  if (buffer.length < 12) return '';
+const readVariableAxesFromSfnt = (buffer: Buffer) => {
+  const result = { weightRange: '', italic: false };
+  if (buffer.length < 12) return result;
   const tableCount = buffer.readUInt16BE(4);
   for (let index = 0; index < tableCount; index += 1) {
     const offset = 12 + index * 16;
     if (offset + 16 > buffer.length || buffer.toString('latin1', offset, offset + 4) !== 'fvar') continue;
     const tableOffset = buffer.readUInt32BE(offset + 8);
     const tableLength = buffer.readUInt32BE(offset + 12);
-    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return '';
+    if (tableOffset + Math.min(tableLength, 16) > buffer.length || tableOffset + 16 > buffer.length) return result;
     const axisOffset = buffer.readUInt16BE(tableOffset + 4);
     const axisCount = buffer.readUInt16BE(tableOffset + 8);
     const axisSize = buffer.readUInt16BE(tableOffset + 10);
-    if (axisSize < 20) return '';
+    if (axisSize < 20) return result;
     for (let axis = 0; axis < axisCount; axis += 1) {
       const axisRecord = tableOffset + axisOffset + axis * axisSize;
-      if (axisRecord + 20 > buffer.length || buffer.toString('latin1', axisRecord, axisRecord + 4) !== 'wght') continue;
+      if (axisRecord + 20 > buffer.length) continue;
+      const tag = buffer.toString('latin1', axisRecord, axisRecord + 4);
+      if (tag === 'ital') {
+        result.italic = buffer.readInt32BE(axisRecord + 12) / 65536 > 0;
+        continue;
+      }
+      if (tag !== 'wght') continue;
       const min = buffer.readInt32BE(axisRecord + 4) / 65536;
       const max = buffer.readInt32BE(axisRecord + 12) / 65536;
-      if (Number.isFinite(min) && Number.isFinite(max) && min < max) return `${Math.round(min)} ${Math.round(max)}`;
+      if (Number.isFinite(min) && Number.isFinite(max) && min < max) result.weightRange = `${Math.round(min)} ${Math.round(max)}`;
     }
   }
-  return '';
+  return result;
 };
 
 const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') => {
@@ -9130,6 +9151,7 @@ const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') =
   const fullName = pickOpenTypeName(names.fullName);
   const postScriptName = pickOpenTypeName(names.postScriptName);
   const postScriptFamily = splitPostScriptFontName(postScriptName);
+  const variableAxes = readVariableAxesFromSfnt(innerBuffer);
   return {
     family,
     name: fullName || postScriptName,
@@ -9138,11 +9160,16 @@ const readFontNameMetadataFromBuffer = async (buffer: Buffer, formatHint = '') =
     style: subfamily && !/^(regular|normal)$/i.test(subfamily) ? subfamily : '',
     postScriptName,
     postScriptFamily,
-    variableWeightRange: readVariableWeightRangeFromSfnt(innerBuffer),
+    variableWeightRange: variableAxes.weightRange,
+    variableItalicAxis: variableAxes.italic,
   };
 };
 
 const shouldResolveFontMetadata = (font: any) => {
+  // A CSS range may describe only the currently used weights, while the
+  // binary fvar table holds the complete available weight/italic instances.
+  // Always inspect ranged faces even when their family name is already good.
+  if (/^\d{2,3}\s+\d{2,3}$/.test(String(font?.weight || '').trim())) return true;
   const label = String(font?.family || font?.title || font?.name || font?.filename || '').trim();
   if (!label) return true;
   if (isJunkFontLabel(label)) return true;
@@ -9160,41 +9187,54 @@ const FONT_METADATA_CACHE = new Map<string, any | null>();
 const resolveFontMetadata = async (font: any, targetUrl: string) => {
   const url = String(font?.url || '').trim();
   if (!url || url.startsWith('data:')) return null;
-  if (FONT_METADATA_CACHE.has(url)) return FONT_METADATA_CACHE.get(url) || null;
+  // Do not retain transient network misses: a font may need its stylesheet
+  // referer, and a later deep scan should always be allowed to retry it.
+  if (FONT_METADATA_CACHE.has(url) && FONT_METADATA_CACHE.get(url)) return FONT_METADATA_CACHE.get(url) || null;
   try {
     assertPublicAssetUrl(url);
     const referer = resolveFontRefererPage(String(font?.cssSource || ''), targetUrl);
-    const response = await withTimeout(
-      axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 6500,
-        maxContentLength: 4 * 1024 * 1024,
-        httpsAgent: relaxedHttpsAgent,
-        validateStatus: (status) => status >= 200 && status < 300,
-        headers: {
-          'User-Agent': PAGE_FETCH_USER_AGENTS[0],
-          Accept: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1',
-          ...(referer ? { Referer: referer } : {}),
-        },
-      }),
-      8000,
-      `Font metadata read for ${url}`
-    );
-    const buffer = Buffer.from(response.data);
-    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, String(response.headers?.['content-type'] || font?.format || ''));
+    let buffer: Buffer;
+    let contentType = String(font?.format || '');
+    try {
+      const response = await withTimeout(
+        axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 6500,
+          maxContentLength: 4 * 1024 * 1024,
+          httpsAgent: relaxedHttpsAgent,
+          validateStatus: (status) => status >= 200 && status < 300,
+          headers: {
+            'User-Agent': PAGE_FETCH_USER_AGENTS[0],
+            Accept: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.1',
+            ...(referer ? { Referer: referer } : {}),
+          },
+        }),
+        8000,
+        `Font metadata read for ${url}`
+      );
+      buffer = Buffer.from(response.data);
+      contentType = String(response.headers?.['content-type'] || contentType);
+    } catch {
+      const fetched = await fetchRemoteFontBuffer(url, referer);
+      buffer = fetched.buffer;
+      contentType = fetched.contentType || contentType;
+    }
+    const format = detectFontFormatFromBuffer(buffer) || getFontFormatFromUrlOrType(url, contentType);
     const metadata = await readFontNameMetadataFromBuffer(buffer, format);
     const family = String(metadata?.family || metadata?.postScriptFamily || '').trim();
+    // Some commercial variable webfonts intentionally ship unusable name
+    // records (Modern Gothic is one example) while retaining a perfectly
+    // valid fvar table. Keep that axis metadata so the extractor can still
+    // expose every real weight, while leaving the page/CSS family untouched.
     const cleanMetadata =
       family && !isJunkFontLabel(family)
-        ? {
-            ...metadata,
-            family,
-          }
-        : null;
+        ? { ...metadata, family }
+        : metadata?.variableWeightRange
+          ? { ...metadata, family: '' }
+          : null;
     FONT_METADATA_CACHE.set(url, cleanMetadata);
     return cleanMetadata;
   } catch {
-    FONT_METADATA_CACHE.set(url, null);
     return null;
   }
 };
@@ -9221,6 +9261,7 @@ const enrichFontsWithMetadata = async (fonts: any[], targetUrl: string, options:
       family: metadata.family || font.family,
       style: font.style || metadata.style || undefined,
       variableWeightRange: metadata.variableWeightRange || font.variableWeightRange || '',
+      variableItalicAxis: Boolean(metadata.variableItalicAxis || font.variableItalicAxis),
       fontMetadata: {
         postScriptName: metadata.postScriptName || '',
       },
@@ -19907,7 +19948,10 @@ app.post('/api/extract', async (req, res) => {
     });
     fonts = applyBrowserFontFamilyEvidence(fonts, renderedComputedFonts);
     let extractedAssets = await dedupeExtractedAssets(images, mergedVideos, fonts, colors, targetUrl, resolvedPagePrimaryThumb, {
-      fast: true,
+      // Deep scans must resolve variable font metadata before deduplication;
+      // otherwise every weight/style instance sharing a WOFF2 URL is reduced
+      // to a single card.
+      fast: isFastCrawl,
       videosOnly,
     });
     extractedAssets = await recoverExtractWhenEmpty(targetUrl, extractedAssets);

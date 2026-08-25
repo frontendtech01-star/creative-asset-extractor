@@ -39,10 +39,11 @@ export const resolveFontAssetUrl = (font: { url?: string; cachedUrl?: string }) 
   return '';
 };
 
-export const getFontSelectionKey = (font: { url?: string; family?: string; weight?: string | number; style?: string; variationWeight?: string | number }) => {
+export const getFontSelectionKey = (font: { url?: string; family?: string; weight?: string | number; style?: string; variationWeight?: string | number; variationItalic?: boolean }) => {
   const url = String(font?.url || '').trim();
   const variation = String(font?.variationWeight ?? '').trim();
-  if (!url.startsWith('data:')) return variation ? `${url}#wght=${variation}` : url;
+  const italic = font?.variationItalic ? '#ital=1' : '';
+  if (!url.startsWith('data:')) return variation ? `${url}#wght=${variation}${italic}` : `${url}${italic}`;
   return `inline-font:${String(font?.family || '').trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url.length}`;
 };
 
