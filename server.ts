@@ -6129,6 +6129,90 @@ const isWistiaUrl = (url: string) => {
   }
 };
 
+const isUstudioUrl = (rawUrl: string) => {
+  try {
+    const host = new URL(rawUrl).hostname.replace(/^www\./, '').toLowerCase();
+    return host === 'embed.ustudio.com' || host.endsWith('.ustudio.com');
+  } catch {
+    return false;
+  }
+};
+
+const extractUstudioEmbedUrlsFromText = (text: string, baseUrl: string) => {
+  const urls = new Set<string>();
+  const normalized = String(text || '').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+  const pattern = /(?:https?:)?\\?\/\\?\/embed\.ustudio\.com\\?\/embed\\?\/([a-z0-9_-]+)\\?\/([a-z0-9_-]+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(normalized)) !== null) {
+    const embedUrl = `https://embed.ustudio.com/embed/${match[1]}/${match[2]}`;
+    urls.add(embedUrl);
+  }
+  // Retain explicit URLs even if a publisher used a URL form the expression
+  // above does not anticipate.
+  normalized.match(/https?:\/\/embed\.ustudio\.com\/embed\/[^\s"'<>]+/gi)?.forEach((raw) => {
+    const absolute = sanitizeStreamUrl(raw, baseUrl);
+    if (absolute) urls.add(absolute);
+  });
+  return Array.from(urls);
+};
+
+const extractUstudioVideos = async (embedUrls: string[]) => {
+  const uniqueUrls = Array.from(new Set(embedUrls.filter(isUstudioUrl))).slice(0, 12);
+  const results = await mapWithConcurrency(uniqueUrls, 3, async (embedUrl) => {
+    try {
+      const response = await withTimeout(
+        axios.get(embedUrl, {
+          timeout: 12000,
+          httpsAgent: relaxedHttpsAgent,
+          headers: browserLikeHeaders(embedUrl),
+        }),
+        12000,
+        `Ustudio configuration for ${embedUrl}`
+      );
+      const html = String(response.data || '');
+      const encoded = html.match(/ConfigurationLoaderNamespace\.load\(window,\s*["']([^"']+)["']/i)?.[1];
+      if (!encoded) throw new Error('Ustudio player configuration was not found.');
+      const config = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+      const video = Array.isArray(config?.videos) ? config.videos[0] : null;
+      if (!video) throw new Error('Ustudio player did not provide a video.');
+      const title = String(video.name || 'Ustudio video').trim() || 'Ustudio video';
+      const thumbnail = String((Array.isArray(video.images) ? video.images : []).find((image: any) => image?.image_url)?.image_url || '');
+      const mp4s = Array.isArray(video?.transcodes?.mp4) ? video.transcodes.mp4 : [];
+      const streams = mp4s
+        .filter((stream: any) => stream?.url && /^https?:\/\//i.test(String(stream.url)))
+        .sort((a: any, b: any) => Number(b.height || 0) - Number(a.height || 0));
+      if (streams.length === 0) throw new Error('Ustudio player did not provide a progressive MP4 stream.');
+      return streams.map((stream: any) => ({
+        url: String(stream.url),
+        sourceUrl: embedUrl,
+        provider: 'ustudio',
+        isUstudioDirect: true,
+        isDirect: true,
+        type: 'mp4',
+        title,
+        thumbnail,
+        width: Number(stream.width || 0) || undefined,
+        height: Number(stream.height || 0) || undefined,
+        resolution: stream.height ? `${stream.height}p` : 'MP4',
+        duration: Number(video.duration || 0) || undefined,
+        hasAudio: true,
+        audioAvailable: true,
+      }));
+    } catch (error: any) {
+      console.warn(`Ustudio extraction failed for ${embedUrl}:`, error?.message || error);
+      return [{
+        url: embedUrl,
+        sourceUrl: embedUrl,
+        provider: 'ustudio',
+        isUstudio: true,
+        type: 'video',
+        title: 'Ustudio video',
+      }];
+    }
+  });
+  return results.flat();
+};
+
 const buildWistiaEmbedUrl = (hashedId: string) => `https://fast.wistia.com/embed/medias/${hashedId}`;
 
 const isWistiaSwatchUrl = (rawUrl = '') => {
@@ -12331,6 +12415,17 @@ const extractStaticAssets = async (targetUrl: string, preloadedHtml = '', option
     vimeoCandidateUrls,
     wistiaCandidateIds,
   }, { fast: options.fast, videosOnly: options.videosOnly });
+  const ustudioEmbedUrls = extractUstudioEmbedUrlsFromText(html, targetUrl);
+  if (ustudioEmbedUrls.length > 0) {
+    videos.push(...await withTimeout(
+      extractUstudioVideos(ustudioEmbedUrls),
+      options.fast ? 8000 : 14000,
+      `Ustudio extraction for ${targetUrl}`
+    ).catch((error: any) => {
+      console.warn('Ustudio extraction failed:', error?.message || error);
+      return [];
+    }));
+  }
   if (!options.videosOnly) {
     fonts.push(...recoverKnownThemeFontCandidates(html, targetUrl));
   }
@@ -16583,6 +16678,7 @@ const platformProviderFromUrl = (rawUrl: string) => {
     if (host.includes('googlevideo.com')) return 'youtube';
     if (host.includes('vimeo.com')) return 'vimeo';
     if (host.includes('wistia.com') || host.includes('wistia.net')) return 'wistia';
+    if (host === 'embed.ustudio.com' || host.endsWith('.ustudio.com')) return 'ustudio';
     if (host.includes('brightcove.net')) return 'brightcove';
     if (host === 'ispot.tv' || host.endsWith('.ispot.tv')) return 'ispot';
     if (host.includes('tiktok.com')) return 'tiktok';
@@ -16651,6 +16747,9 @@ const isPlatformVideoUrl = (rawUrl: string) => {
     }
     if (host.includes('wistia.com') || host.includes('wistia.net')) {
       return /\/(?:embed\/(?:medias|iframe)|medias)\/[a-z0-9]{8,12}/i.test(path);
+    }
+    if (host === 'embed.ustudio.com' || host.endsWith('.ustudio.com')) {
+      return /^\/embed\/[^/]+\/[^/]+/i.test(path);
     }
     if (host === 'ispot.tv' || host.endsWith('.ispot.tv')) return /^\/ad\/[^/]+\/[^/]+/.test(path);
     return false;
@@ -18068,6 +18167,7 @@ const extractEmbeddedPlatformVideosOnly = async (html: string, targetUrl: string
   const vimeoUrls = Array.from(new Set(extractVimeoUrlsFromText(html, targetUrl))).slice(0, 12);
   const wistiaIds = Array.from(new Set(extractWistiaIdsFromText(html, targetUrl))).slice(0, 12);
   const brightcoveVideos = extractBrightcoveVideosFromHtml(html, targetUrl).slice(0, 12);
+  const ustudioEmbedUrls = extractUstudioEmbedUrlsFromText(html, targetUrl).slice(0, 12);
   const directVideoUrls = extractAssetsFromRawText(html, targetUrl).videos
     .filter((video) => video?.url && (isLikelyVideoAssetUrl(video.url) || isLikelyDirectVideoStreamUrl(video.url)))
     .slice(0, 12);
@@ -18105,6 +18205,14 @@ const extractEmbeddedPlatformVideosOnly = async (html: string, targetUrl: string
       brightcoveVideos,
       `Video-only Brightcove extraction for ${targetUrl}`
     ));
+  }
+
+  if (ustudioEmbedUrls.length > 0) {
+    videos.push(...await withTimeout(
+      extractUstudioVideos(ustudioEmbedUrls),
+      12000,
+      `Video-only Ustudio extraction for ${targetUrl}`
+    ).catch(() => []));
   }
 
   videos.push(...directVideoUrls);
@@ -18520,7 +18628,10 @@ app.post('/api/extract', async (req, res) => {
         35000,
         `Static recovery before browser for ${targetUrl}`
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
-      if (isStrongStaticExtractForImmediateReturn(staticRecoveryAssets, { videosOnly })) {
+      if (
+        isStrongStaticExtractForImmediateReturn(staticRecoveryAssets, { videosOnly }) ||
+        (videosOnly && Array.isArray(staticRecoveryAssets.videos) && staticRecoveryAssets.videos.length > 0)
+      ) {
         return res.json(staticRecoveryAssets);
       }
       if (isUsableStaticExtract(blockedFallbackAssets)) {
@@ -18545,7 +18656,8 @@ app.post('/api/extract', async (req, res) => {
         );
         if (
           isUsableStaticExtract(staticQuick) &&
-          (isStrongStaticExtractForImmediateReturn(staticQuick, { videosOnly }) ||
+          ((videosOnly && Array.isArray(staticQuick.videos) && staticQuick.videos.length > 0) ||
+          isStrongStaticExtractForImmediateReturn(staticQuick, { videosOnly }) ||
           !htmlNeedsRenderedExtraction(prefetchedSiteHtml) &&
           !staticExtractNeedsBrowser(prefetchedSiteHtml, staticQuick, { videosOnly }) &&
           !staticExtractHasUnresolvedEmbeds(prefetchedSiteHtml, staticQuick, { videosOnly }))
@@ -19563,6 +19675,15 @@ app.post('/api/extract', async (req, res) => {
       fonts.push(...rawRenderedAssets.fonts);
     }
     videos.push(...rawRenderedAssets.videos);
+    const ustudioVideos = await withTimeout(
+      extractUstudioVideos(extractUstudioEmbedUrlsFromText(html, targetUrl)),
+      12000,
+      `Browser Ustudio extraction for ${targetUrl}`
+    ).catch((error: any) => {
+      console.warn('Browser Ustudio extraction failed:', error?.message || error);
+      return [];
+    });
+    videos.push(...ustudioVideos);
 
     if (prefetchedSiteHtml) {
       const $prefetch = cheerio.load(prefetchedSiteHtml);
@@ -23717,6 +23838,44 @@ app.post('/api/download-zip', async (req, res) => {
     if (zipEntries.length === 0) {
       return res.status(400).json({
         error: 'No cached assets available for ZIP. Extract the page first so assets are saved locally, then download again.',
+      });
+    }
+
+    // A Fonts-only "Download All" is a batch export, not a mixed-asset ZIP.
+    // Save every converted face directly into the page's one flat Fonts folder
+    // so Finder never creates family/weight subfolders for this action.
+    const fontOnlyBatch = list.length > 0 && list.every(
+      (item: any) => item && typeof item === 'object' && item.assetType === 'font'
+    );
+    if (req.body?.save === true && fontOnlyBatch) {
+      const fontEntries = zipEntries.filter((entry) => /\.(?:woff2?|ttf|otf|eot)$/i.test(entry.name));
+      if (fontEntries.length === 0) {
+        return res.status(400).json({ error: 'No converted font files were available to save.' });
+      }
+      const savedFonts = await Promise.all(
+        fontEntries.map((entry) =>
+          saveBufferToDownloads(
+            entry.buffer,
+            path.basename(entry.name),
+            'Font download',
+            zipPageUrl,
+            'font'
+          )
+        )
+      );
+      const folderPath = savedFonts[0]?.folderPath || resolveCreativeAssetsDir(zipPageUrl, 'Fonts', {
+        sectionMode: lastExtractionSectionMode,
+      });
+      res.setHeader('X-Zip-Added-Count', String(savedFonts.length));
+      res.setHeader('X-Zip-Failed-Count', String(zipFailures.length));
+      return res.json({
+        ok: true,
+        filename: 'Fonts',
+        downloadPath: folderPath,
+        localPath: folderPath,
+        folderPath,
+        addedCount: savedFonts.length,
+        failedCount: zipFailures.length,
       });
     }
 
