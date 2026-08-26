@@ -16,3 +16,4 @@ coverage/
 .local-tools.json
 vendor/chromium/
 vendor/chromium-pack/
+release/*.dmg
