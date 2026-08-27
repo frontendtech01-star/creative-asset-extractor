@@ -82,6 +82,9 @@ import {
   clearAppSessionState,
   type MainSection,
 } from './lib/appSessions';
+import greetingIllustration from '../user.svg';
+import vdxLogo from './assets/vdx-logo.png';
+import creativeExtractorLogo from './assets/creative-extractor-logo.png';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -176,6 +179,16 @@ const clearExtractSession = () => {
 };
 
 const initialUrl = '';
+
+const formatSystemName = (value: string) => {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (!cleaned) return 'there';
+  return cleaned.split(' ').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+};
 
 const cleanUrlToken = (value: string) =>
   String(value || '').trim().replace(/[),\].;]+$/g, '');
@@ -688,6 +701,7 @@ export default function App() {
   const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false);
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [productName, setProductName] = useState('Creative Asset Extractor');
+  const [systemUserName, setSystemUserName] = useState('there');
   const [bookmarkStore, setBookmarkStore] = useState<BookmarkStore>(emptyBookmarkStore());
   const [menuOpen, setMenuOpen] = useState(false);
   const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false);
@@ -719,6 +733,17 @@ export default function App() {
     void fetchBookmarkStore()
       .then(setBookmarkStore)
       .catch(() => setBookmarkStore(emptyBookmarkStore()));
+  }, []);
+
+  React.useEffect(() => {
+    const bridge = getDesktopBridge();
+    const readSystemName = bridge?.getSystemProfile
+      ? bridge.getSystemProfile()
+      : apiFetch('/api/system-profile')
+          .then((response) => response.ok ? response.json() : null);
+    void readSystemName
+      .then((profile) => setSystemUserName(formatSystemName(profile?.username || '')))
+      .catch(() => undefined);
   }, []);
 
   React.useEffect(() => {
@@ -1763,9 +1788,9 @@ export default function App() {
   }, [bookmarkCurrentUrl, extractedUrl, focusMode, handleResetApp, loading, mainSection, url]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-blue-100 selection:text-blue-900">
-      <header className="bg-white border-b border-zinc-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+    <div className="min-h-screen bg-[#f8fafd] text-[#1f1f1f] font-sans selection:bg-blue-100 selection:text-blue-900">
+      <header className="sticky top-0 z-10 border-b border-[#e1e7ee] bg-transparent">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5">
           {focusMode ? (
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
@@ -1785,14 +1810,20 @@ export default function App() {
             </div>
           ) : (
             <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2 shrink-0">
-                <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold text-xl shrink-0">
-                  C
+              <div className="flex min-w-0 items-center gap-2.5 shrink-0">
+                <img src={vdxLogo} alt="VDX.tv" className="h-8 w-auto shrink-0" />
+                <span className="h-6 w-px shrink-0 bg-[#dadce0]" aria-hidden="true" />
+                <img
+                  src={creativeExtractorLogo}
+                  alt="Creative Asset Extractor"
+                  className="h-9 w-9 shrink-0 rounded-md object-contain mix-blend-multiply"
+                />
+                <div className="min-w-0">
+                  <h1 className="truncate text-base font-semibold tracking-tight">{productName}</h1>
+                  <p className="text-[11px] leading-4 text-[#5f6368]">v{appVersion}</p>
                 </div>
-                <h1 className="truncate text-xl font-semibold tracking-tight">{productName}</h1>
-                <span className="text-xs font-medium text-violet-700">v1.0</span>
               </div>
-              <nav className="flex flex-wrap items-center justify-end gap-1">
+              <nav className="flex flex-wrap items-center justify-end gap-1.5">
                 <button
                   type="button"
                   onClick={() => setMainNav('website-extraction')}
@@ -1836,6 +1867,13 @@ export default function App() {
                   onKeyboardShortcuts={() => setKeyboardShortcutsOpen(true)}
                   onReleaseNotesAndUpdates={() => void openReleaseNotes()}
                 />
+                <div
+                  className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0b57d0] text-xs font-semibold text-white shadow-sm ring-2 ring-white"
+                  title={`Signed in as ${systemUserName}`}
+                  aria-label={`Signed in as ${systemUserName}`}
+                >
+                  {systemUserName.charAt(0).toUpperCase() || 'U'}
+                </div>
               </nav>
             </div>
           )}
@@ -1862,6 +1900,19 @@ export default function App() {
         {mainSection === 'website-extraction' ? (
         <>
         <div className="mx-auto mb-8 max-w-5xl">
+          {!assets ? (
+            <section className="material-welcome mb-6 overflow-hidden rounded-[24px] border border-[#dbe5f0] bg-white px-5 py-4 shadow-[0_2px_8px_rgba(60,64,67,0.14)] sm:px-7 sm:py-4">
+              <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
+                <div className="greeting-illustration-shell shrink-0" aria-hidden="true">
+                  <img src={greetingIllustration} alt="" className="greeting-illustration h-20 w-20 sm:h-24 sm:w-24" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 className="greeting-title text-3xl font-semibold tracking-tight text-[#202124] sm:text-4xl">Hello, {systemUserName}!</h2>
+                  <p className="mt-2 text-sm leading-6 text-[#5f6368]">What would you like to extract today?</p>
+                </div>
+              </div>
+            </section>
+          ) : null}
           <WebsiteExtracterToolbar
             url={url}
             onUrlChange={handleUrlChange}

@@ -1,8 +1,8 @@
 version: 2.0.0
 files:
   - url: Creative-Asset-Extractor-2.0.0-arm64.dmg
-    sha512: yBWo59JZ/+TfzBOwGDcTC7CqRgP9DYk3uUWoE2YTZeytCJ4GbBVofejkSz1KOx6txVlonpycWN/G6ai6S2fypA==
-    size: 406472303
+    sha512: hDQ6jEnmsxRelyy3eS2YlZv4qnVZK5L1dCVKQK/HCTJYo6CodfXDVZaMHjX8xGO8IOGTh4jR5eOlcrFAWB+P4A==
+    size: 407924658
 path: Creative-Asset-Extractor-2.0.0-arm64.dmg
-sha512: yBWo59JZ/+TfzBOwGDcTC7CqRgP9DYk3uUWoE2YTZeytCJ4GbBVofejkSz1KOx6txVlonpycWN/G6ai6S2fypA==
-releaseDate: '2026-08-26T08:18:51.293Z'
+sha512: hDQ6jEnmsxRelyy3eS2YlZv4qnVZK5L1dCVKQK/HCTJYo6CodfXDVZaMHjX8xGO8IOGTh4jR5eOlcrFAWB+P4A==
+releaseDate: '2026-08-27T23:37:53.403Z'

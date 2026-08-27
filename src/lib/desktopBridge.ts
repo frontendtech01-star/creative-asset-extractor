@@ -7,6 +7,7 @@ export type VdxDesktopBridge = {
   isDesktop: true;
   readClipboardText: () => Promise<string>;
   writeClipboardText: (value: string) => Promise<string>;
+  getSystemProfile: () => Promise<{ username?: string }>;
   onClipboardUrl: (callback: (payload: ClipboardUrlPayload) => void) => () => void;
   getAppVersion: () => Promise<string>;
   openExternalUrl: (url: string) => Promise<boolean>;

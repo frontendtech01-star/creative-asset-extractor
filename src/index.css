@@ -39,8 +39,34 @@
   70% { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.18); transform: translateY(-1px); }
 }
 
+@keyframes greeting-enter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes greeting-float {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-4px) rotate(-1deg); }
+}
+
 .release-blink-once {
   animation: release-blink-once 1400ms ease-out 1 both;
+}
+
+.material-welcome {
+  animation: greeting-enter 280ms cubic-bezier(.2,.8,.2,1) both;
+}
+
+.greeting-title {
+  animation: greeting-enter 340ms cubic-bezier(.2,.8,.2,1) 70ms both;
+}
+
+.greeting-illustration-shell {
+  animation: greeting-float 3.4s ease-in-out infinite;
+}
+
+.greeting-illustration {
+  display: block;
 }
 
 .progress-shell {
@@ -107,5 +133,11 @@
   .media-card-enter {
     animation: none;
     transition: none;
+  }
+
+  .material-welcome,
+  .greeting-title,
+  .greeting-illustration-shell {
+    animation: none;
   }
 }

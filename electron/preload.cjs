@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('vdxDesktop', {
   isDesktop: true,
   readClipboardText: () => ipcRenderer.invoke('vdx:clipboard-read-text'),
   writeClipboardText: (value) => ipcRenderer.invoke('vdx:clipboard-write-text', value),
+  getSystemProfile: () => ipcRenderer.invoke('vdx:get-system-profile'),
   getAppVersion: () => ipcRenderer.invoke('vdx:get-app-version'),
   openExternalUrl: (url) => ipcRenderer.invoke('vdx:open-external', url),
   openFolderPath: (folderPath) => ipcRenderer.invoke('vdx:open-folder', folderPath),

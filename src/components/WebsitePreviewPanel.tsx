@@ -24,13 +24,6 @@ export function WebsiteExtracterToolbar({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-        <p className="font-medium">Full Website Extracter</p>
-        <p className="mt-1 text-blue-800/90">
-          Extract from the entire page: images (including icons), videos, fonts, and colors.
-        </p>
-      </div>
-
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="relative min-w-0 flex-1">
           <input

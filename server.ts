@@ -1301,6 +1301,11 @@ app.get('/api/bookmarks', async (_req, res) => {
   }
 });
 
+app.get('/api/system-profile', (_req, res) => {
+  const username = String(os.userInfo?.().username || process.env.USER || '').trim();
+  return res.json({ ok: true, username });
+});
+
 app.post('/api/bookmarks', async (req, res) => {
   try {
     const store = await readBookmarkStore();
@@ -18630,7 +18635,7 @@ app.post('/api/extract', async (req, res) => {
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       if (
         isStrongStaticExtractForImmediateReturn(staticRecoveryAssets, { videosOnly }) ||
-        (videosOnly && Array.isArray(staticRecoveryAssets.videos) && staticRecoveryAssets.videos.length > 0)
+        (videosOnly && Array.isArray((staticRecoveryAssets as any).videos) && (staticRecoveryAssets as any).videos.length > 0)
       ) {
         return res.json(staticRecoveryAssets);
       }
@@ -18656,7 +18661,7 @@ app.post('/api/extract', async (req, res) => {
         );
         if (
           isUsableStaticExtract(staticQuick) &&
-          ((videosOnly && Array.isArray(staticQuick.videos) && staticQuick.videos.length > 0) ||
+          ((videosOnly && Array.isArray((staticQuick as any).videos) && (staticQuick as any).videos.length > 0) ||
           isStrongStaticExtractForImmediateReturn(staticQuick, { videosOnly }) ||
           !htmlNeedsRenderedExtraction(prefetchedSiteHtml) &&
           !staticExtractNeedsBrowser(prefetchedSiteHtml, staticQuick, { videosOnly }) &&

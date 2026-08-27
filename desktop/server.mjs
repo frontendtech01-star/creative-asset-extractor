@@ -3485,6 +3485,10 @@ app.get("/api/bookmarks", async (_req, res) => {
     return res.status(500).json({ error: error?.message || "Failed to read bookmarks." });
   }
 });
+app.get("/api/system-profile", (_req, res) => {
+  const username = String(os3.userInfo?.().username || process.env.USER || "").trim();
+  return res.json({ ok: true, username });
+});
 app.post("/api/bookmarks", async (req, res) => {
   try {
     const store = await readBookmarkStore();

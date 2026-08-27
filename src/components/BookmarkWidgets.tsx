@@ -9,7 +9,6 @@ import {
   Folder,
   History,
   Keyboard,
-  Menu,
   MessageSquare,
   Plus,
   Search,
@@ -84,14 +83,15 @@ export function AppMenu({
         onClick={onToggle}
         title={releaseUpdateAvailable ? 'Menu · New release available' : 'Menu'}
         className={[
-          'inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition',
+          'relative inline-flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b57d0] focus-visible:ring-offset-2',
           releaseUpdateAvailable
-            ? 'release-blink-once border border-red-600 bg-red-600 text-white shadow-sm hover:border-red-700 hover:bg-red-700'
-            : 'border border-zinc-200 bg-white text-zinc-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white',
+            ? 'release-blink-once text-[#d93025] hover:bg-red-50'
+            : 'text-[#3c4043] hover:bg-black/5',
         ].join(' ')}
       >
-        <Menu className="h-4 w-4" />
-        Menu
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" className="h-6 w-6 fill-current">
+          <path d="M6,8c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM12,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM6,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM6,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM12,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM16,6c0,1.1 0.9,2 2,2s2,-0.9 2,-2 -0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM12,8c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2z" />
+        </svg>
       </button>
       {open ? (
         <>

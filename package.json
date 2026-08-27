@@ -195,8 +195,9 @@
         }
       ]
     },
-    "mac": {
-      "target": "dmg",
+  "mac": {
+    "icon": "src/assets/creative-extractor-logo.png",
+    "target": "dmg",
       "category": "public.app-category.video",
       "minimumSystemVersion": "10.15",
       "mergeASARs": true,
