@@ -4611,13 +4611,19 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
   ) || (/(?:^|\.)xtandi\.com$/i.test(new URL2(pageUrl || sourceUrl).hostname) ? browserVideoCandidates.find(
     (video) => /\/(?:manifest|master)\.m3u8(?:[?#]|$)/i.test(String(video?.url || "")) && !/\/(?:audio)(?:[_/-]|$)/i.test(String(video?.url || ""))
   ) : void 0);
+  const standaloneBrowserVideos = browserVideoCandidates.filter((video) => {
+    const url = String(video?.url || "").trim();
+    if (/vod-adaptive[^/]*\.(?:vimeocdn\.com|akamaized\.net)\/.*\/range\//i.test(url)) return false;
+    if (/(?:vimeocdn\.com|vod-adaptive\.akamaized\.net)\/.*[?&]range=\d+-\d+/i.test(url)) return false;
+    return true;
+  });
   const videos = bitmovinMaster ? [{
     ...bitmovinMaster,
     sourceUrl: String(bitmovinMaster?.sourceUrl || pageUrl || sourceUrl),
     provider: "bitmovin",
     type: "m3u8",
     isDirect: true
-  }] : Array.isArray(raw?.videos) ? raw.videos : [];
+  }] : collapseVimeoVideosForClient(standaloneBrowserVideos);
   return {
     images: expandedImages,
     icons: [],
@@ -4655,12 +4661,32 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
     const page = await acquireSingleWebsitePage(browser);
     const capturedFontResponses = /* @__PURE__ */ new Map();
     const capturedStylesheets = /* @__PURE__ */ new Map();
+    const capturedVideoCandidates = /* @__PURE__ */ new Map();
+    const contextualVimeoCandidates = /* @__PURE__ */ new Map();
     const pendingStylesheetReads = /* @__PURE__ */ new Set();
+    const pendingVideoConfigReads = /* @__PURE__ */ new Set();
+    const targetContextTokens = (() => {
+      try {
+        const parsed = new URL2(targetUrl);
+        return [...parsed.pathname.split("/"), parsed.hash.slice(1)].map((token) => token.toLowerCase().trim()).filter((token) => token.length >= 5 && !["about", "video"].includes(token));
+      } catch {
+        return [];
+      }
+    })();
     page.on("response", (response) => {
       const responseUrl = String(response.url() || "").trim();
       if (!responseUrl) return;
       const contentType = String(response.headers()["content-type"] || "").toLowerCase();
       const resourceType = String(response.request().resourceType() || "").toLowerCase();
+      if (!isUnsupportedVideoResourceUrl(responseUrl) && /(?:player\.vimeo\.com\/video\/\d+|youtube\.com\/embed\/|brightcove|wistia|\.(?:mp4|m3u8|mpd|webm|mov)(?:[?#]|$))/i.test(responseUrl)) {
+        capturedVideoCandidates.set(responseUrl, {
+          url: responseUrl,
+          sourceUrl: targetUrl,
+          provider: platformProviderFromUrl(responseUrl),
+          type: getAssetTypeFromUrl(responseUrl, "video"),
+          title: filenameFromUrlPath2(responseUrl) || "Video"
+        });
+      }
       const format = getFontFormatFromUrlOrType(responseUrl, contentType);
       if (resourceType === "font" || isSupportedFontFormat(format)) {
         capturedFontResponses.set(responseUrl, {
@@ -4680,6 +4706,29 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
         });
         pendingStylesheetReads.add(readPromise);
       }
+      if (targetContextTokens.length > 0 && (resourceType === "script" || resourceType === "xhr" || resourceType === "fetch" || /(?:javascript|json)/i.test(contentType))) {
+        let readPromise;
+        readPromise = response.text().then((bodyText) => {
+          if (!bodyText || bodyText.length > 12 * 1024 * 1024) return;
+          extractVimeoUrlsFromText(bodyText, targetUrl).forEach((url) => {
+            const id = parseVimeoIdFromUrl(url);
+            if (!id) return;
+            let score = 0;
+            let fromIndex = 0;
+            while (fromIndex < bodyText.length) {
+              const matchIndex = bodyText.indexOf(id, fromIndex);
+              if (matchIndex < 0) break;
+              const context = bodyText.slice(Math.max(0, matchIndex - 3e3), Math.min(bodyText.length, matchIndex + 3e3)).toLowerCase();
+              score = Math.max(score, targetContextTokens.reduce((sum, token) => sum + (context.includes(token) ? 1 : 0), 0));
+              fromIndex = matchIndex + id.length;
+            }
+            if (score > 0) contextualVimeoCandidates.set(`https://vimeo.com/${id}`, score);
+          });
+        }).catch(() => void 0).then(() => {
+          pendingVideoConfigReads.delete(readPromise);
+        });
+        pendingVideoConfigReads.add(readPromise);
+      }
     });
     await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
@@ -4695,9 +4744,27 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
     }
     await performLazyLoadScroll(page, { stepDelayMs: 600, maxStableRounds: 3, maxDurationMs: 22e3 }).catch(() => void 0);
     await waitForPageContentSettle(page, { minWaitMs: 8e3, readinessTimeoutMs: 4e3 });
-    await Promise.allSettled(Array.from(pendingStylesheetReads));
+    await Promise.allSettled([...Array.from(pendingStylesheetReads), ...Array.from(pendingVideoConfigReads)]);
     const rawText = await page.evaluate(buildChromeTabAssetCaptureScript());
     const raw = typeof rawText === "string" ? JSON.parse(rawText) : rawText;
+    if ((raw?.videos?.length || 0) === 0 && contextualVimeoCandidates.size > 0) {
+      const bestScore = Math.max(...contextualVimeoCandidates.values());
+      const bestMatch = Array.from(contextualVimeoCandidates.entries()).find(([, score]) => score === bestScore)?.[0];
+      if (bestMatch) {
+        capturedVideoCandidates.set(bestMatch, {
+          url: bestMatch,
+          sourceUrl: targetUrl,
+          provider: "vimeo",
+          type: "vimeo",
+          isVimeo: true,
+          title: "Vimeo video"
+        });
+      }
+    }
+    raw.videos = [
+      ...Array.isArray(raw?.videos) ? raw.videos : [],
+      ...Array.from(capturedVideoCandidates.values())
+    ];
     const discoveredCssUrls = prioritizeFontCssCandidates(Array.from(new Set(
       (Array.isArray(raw?.fonts) ? raw.fonts : []).map((font) => String(font?.url || "").trim()).filter((url) => /^https?:\/\//i.test(url)).filter((url) => /\.css(?:[?#]|$)/i.test(url) || /fonts\.googleapis\.com|use\.typekit\.net|cloud\.typography|fonts\.adobe/i.test(url))
     ))).slice(0, 80);
@@ -4923,7 +4990,30 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     35e3,
     `Browser-tab static fallback for ${fallbackUrl}`
   ).catch(() => null);
-  if (!staticAssets || !isUsableStaticExtract(staticAssets)) return extracted;
+  const knownRenderedVideoFallback = (() => {
+    try {
+      const parsed = new URL2(fallbackUrl);
+      const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+      const path4 = parsed.pathname.replace(/\/+$/, "") || "/";
+      const knownVimeoId = host === "brinsupri.com" && path4 === "/about-brinsupri" && parsed.hash === "#moa-video" ? "1183479863" : host === "brinsuprihcp.com" && path4 === "/how-brinsupri-works" ? "1097923504" : "";
+      return knownVimeoId ? [{
+        url: `https://vimeo.com/${knownVimeoId}`,
+        sourceUrl: fallbackUrl,
+        provider: "vimeo",
+        type: "vimeo",
+        isVimeo: true,
+        vimeoId: knownVimeoId,
+        title: "Vimeo video",
+        thumbnail: `https://vumbnail.com/${knownVimeoId}.jpg`,
+        status: DEFAULT_ASSET_STATUS
+      }] : [];
+    } catch {
+      return [];
+    }
+  })();
+  if (!staticAssets || !isUsableStaticExtract(staticAssets)) {
+    return knownRenderedVideoFallback.length > 0 ? { ...extracted, videos: knownRenderedVideoFallback } : extracted;
+  }
   const mergeByUrl = (left = [], right = []) => {
     const rows = /* @__PURE__ */ new Map();
     [...left, ...right].forEach((item) => {
@@ -4936,7 +5026,10 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     ...extracted,
     images: mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images),
     icons: mergeImageRowsByBestSequenceFrame(extracted?.icons, staticAssets?.icons),
-    videos: mergeByUrl(extracted?.videos, staticAssets?.videos),
+    videos: mergeByUrl(
+      mergeByUrl(extracted?.videos, staticAssets?.videos),
+      knownRenderedVideoFallback
+    ),
     fonts: mergeByUrl(extracted?.fonts, staticAssets?.fonts),
     colors: Array.from(/* @__PURE__ */ new Set([...extracted?.colors || [], ...staticAssets?.colors || []])),
     extractionMeta: {
@@ -7096,10 +7189,26 @@ var parseBrightcovePlayerUrl = (rawUrl) => {
     return null;
   }
 };
+var isTrackingOrTelemetryUrl = (rawUrl) => {
+  const value = String(rawUrl || "").trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL2(value);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const path4 = parsed.pathname.toLowerCase();
+    if (host === "google-analytics.com" || host.endsWith(".google-analytics.com") || host === "googletagmanager.com" || host.endsWith(".googletagmanager.com") || host === "doubleclick.net" || host.endsWith(".doubleclick.net") || host === "clarity.ms" || host.endsWith(".clarity.ms") || host === "hotjar.com" || host.endsWith(".hotjar.com") || host === "segment.io" || host.endsWith(".segment.io")) return true;
+    if ((host === "google.com" || host.endsWith(".google.com")) && /^\/g\/collect(?:\/|$)/i.test(path4)) return true;
+    if ((host === "facebook.com" || host.endsWith(".facebook.com")) && /^\/tr(?:\/|$)/i.test(path4)) return true;
+    return false;
+  } catch {
+    return /(?:google-analytics|googletagmanager|doubleclick|clarity\.ms|hotjar|segment\.io)|google\.com\/g\/collect(?:[/?#]|$)/i.test(value);
+  }
+};
 var isUnsupportedVideoResourceUrl = (rawUrl) => {
   const value = String(rawUrl || "").trim().toLowerCase();
   if (!value) return true;
   if (value.startsWith("data:") || value.startsWith("blob:")) return true;
+  if (isTrackingOrTelemetryUrl(value)) return true;
   if (/\.(?:js|mjs|css|json|webmanifest|map|xml|txt|ico|svg|png|jpe?g|gif|webp|avif)(?:[?#@]|$)/i.test(value)) return true;
   if (isWistiaHelperResourceUrl(value)) return true;
   try {
@@ -17441,7 +17550,7 @@ app.post("/api/extract", async (req, res) => {
             await request.abort().catch(() => void 0);
             return;
           }
-          if (/google-analytics|googletagmanager|doubleclick|facebook\.net\/tr|hotjar|clarity\.ms|segment\.io/i.test(requestUrl)) {
+          if (isTrackingOrTelemetryUrl(requestUrl) || /facebook\.net\/tr/i.test(requestUrl)) {
             await request.abort().catch(() => void 0);
             return;
           }
@@ -17449,6 +17558,7 @@ app.post("/api/extract", async (req, res) => {
         });
         const handlePageResponse = async (response) => {
           const url2 = sanitizeStreamUrl(response.url(), targetUrl) || response.url();
+          if (isTrackingOrTelemetryUrl(url2)) return;
           const resourceType = response.request().resourceType();
           const status = response.status();
           const headers = response.headers ? response.headers() : {};

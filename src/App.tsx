@@ -82,7 +82,7 @@ import {
   clearAppSessionState,
   type MainSection,
 } from './lib/appSessions';
-import greetingIllustration from '../user.svg';
+import greetingIllustrationSvg from '../user.svg?raw';
 import vdxLogo from './assets/vdx-logo.png';
 import creativeExtractorLogo from './assets/creative-extractor-logo.png';
 
@@ -740,11 +740,19 @@ export default function App() {
 
   React.useEffect(() => {
     const bridge = getDesktopBridge();
-    const readSystemName = bridge?.getSystemProfile
-      ? bridge.getSystemProfile()
-      : apiFetch('/api/system-profile')
-          .then((response) => response.ok ? response.json() : null);
-    void readSystemName
+    const readSystemProfile = async () => {
+      if (bridge?.getSystemProfile) {
+        try {
+          const profile = await bridge.getSystemProfile();
+          if (profile?.displayName || profile?.username) return profile;
+        } catch {
+          // Fall back to the bundled server when preload IPC is unavailable.
+        }
+      }
+      const response = await apiFetch('/api/system-profile');
+      return response.ok ? response.json() : null;
+    };
+    void readSystemProfile()
       .then((profile) => setSystemUserName(formatSystemName(profile?.displayName || profile?.username || '')))
       .catch(() => undefined);
   }, []);
@@ -1907,7 +1915,10 @@ export default function App() {
             <section className="material-welcome mb-6 overflow-hidden rounded-[24px] border border-[#dbe5f0] bg-white px-5 py-4 shadow-[0_2px_8px_rgba(60,64,67,0.14)] sm:px-7 sm:py-4">
               <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
                 <div className="greeting-illustration-shell shrink-0" aria-hidden="true">
-                  <img src={greetingIllustration} alt="" className="greeting-illustration h-20 w-20 sm:h-24 sm:w-24" />
+                  <div
+                    className="greeting-illustration h-20 w-20 sm:h-24 sm:w-24"
+                    dangerouslySetInnerHTML={{ __html: greetingIllustrationSvg }}
+                  />
                 </div>
                 <div className="min-w-0 flex-1">
                   <h2 className="greeting-title text-3xl font-semibold tracking-tight text-[#202124] sm:text-4xl">Hello, {systemUserName}!</h2>

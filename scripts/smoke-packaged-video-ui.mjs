@@ -82,6 +82,7 @@ try {
     await page.setViewport({ width: 1440, height: 1200 });
     await page.goto(serverUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.evaluate(() => {
+      localStorage.clear();
       localStorage.setItem('vdx.responsibleUseAcknowledged.v1', 'yes');
       sessionStorage.clear();
     });
@@ -94,13 +95,27 @@ try {
     await page.keyboard.press('KeyA');
     await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control');
     await page.type(input, target.url);
+    const typedUrl = await page.$eval(input, (element) => element.value);
+    if (typedUrl !== target.url) throw new Error(`URL input mismatch: expected ${target.url}, got ${typedUrl}`);
+    const profileSelected = await page.evaluate(() => {
+      const label = [...document.querySelectorAll('label')].find((item) => item.textContent?.trim() === 'Normal');
+      const checkbox = label?.querySelector('input[type="checkbox"]');
+      checkbox?.click();
+      return Boolean(checkbox);
+    });
+    if (!profileSelected) throw new Error('Normal extraction profile button missing');
     const started = await page.evaluate(() => {
       const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('Extract from Chrome'));
-      button?.click();
-      return Boolean(button);
+      if (!button || button.disabled) return false;
+      button.click();
+      return true;
     });
     if (!started) throw new Error(`Extract button missing for ${target.url}`);
 
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((item) => item.textContent?.includes('Extracting')),
+      { timeout: 30000, polling: 100 }
+    );
     await page.waitForFunction(
       () => ![...document.querySelectorAll('button')].some((item) => item.textContent?.includes('Extracting')),
       { timeout: 240000, polling: 500 }
@@ -117,13 +132,14 @@ try {
         embedded: card.getAttribute('data-video-embedded'),
         url: card.getAttribute('data-video-url'),
         hasPreview: Boolean(card.querySelector('img[alt$="video preview"]')),
-        hasDownloadButton: Boolean([...card.querySelectorAll('button')].find((button) => /Download MP4/i.test(button.textContent || ''))),
+        hasDownloadButton: Boolean([...card.querySelectorAll('button')].find((button) => /Download (?:MP4|Video)/i.test(button.textContent || ''))),
         text: card.textContent?.trim().slice(0, 300),
       })),
       body: document.body?.innerText?.slice(-2500),
+      extractionSession: localStorage.getItem('vdx.websiteExtractionSession.v1'),
     }));
     if (result.cards.length < target.minimumVideos) {
-      throw new Error(`${target.url} rendered ${result.cards.length} video cards\n${result.body}`);
+      throw new Error(`${target.url} rendered ${result.cards.length} video cards\n${result.body}\nSession: ${result.extractionSession}`);
     }
     if (target.exactVideos !== undefined && result.cards.length !== target.exactVideos) {
       throw new Error(`${target.url} rendered ${result.cards.length} video cards; expected exactly ${target.exactVideos}\n${JSON.stringify(result.cards, null, 2)}`);
@@ -132,7 +148,7 @@ try {
       throw new Error(`${target.url} did not render expected video ${target.expectedUrl}\n${JSON.stringify(result.cards, null, 2)}`);
     }
     if (target.expectedUrl && !result.cards.some((card) => card.url === target.expectedUrl && card.hasPreview && card.hasDownloadButton)) {
-      throw new Error(`${target.url} did not render the expected thumbnail and Download MP4 button\n${JSON.stringify(result.cards, null, 2)}`);
+      throw new Error(`${target.url} did not render the expected thumbnail and download button\n${JSON.stringify(result.cards, null, 2)}`);
     }
     console.log(`PASS packaged UI ${target.url} — ${result.cards.length} visible video card(s)`);
     console.log(JSON.stringify(result.cards, null, 2));

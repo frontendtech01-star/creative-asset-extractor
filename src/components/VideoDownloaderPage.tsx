@@ -10,6 +10,7 @@ import {
   isPlaceholderVideoPlatformUrl,
 } from '../lib/videoPlatform';
 import {
+  clearDownloaderJobs,
   listDownloaderJobs,
   downloaderFileUrl,
   openDownloaderFile,
@@ -486,6 +487,10 @@ export default function VideoDownloaderPage({
   useEffect(() => {
     void listDownloaderJobs()
       .then((items) => {
+        // An extracted-video auto-start owns a fresh queue. Ignore a late
+        // response from the initial job hydration so an older site download
+        // cannot reappear after the new job has started.
+        if (handledAutoStartIdRef.current !== null) return;
         const recent = items
           .filter(
             (job) =>
@@ -819,12 +824,19 @@ export default function VideoDownloaderPage({
     setJobErrors([]);
     setStartTime(nextStartTime);
     setEndTime(nextEndTime);
-    void downloadQueue(autoStartRequest.quality || 'fhd', [nextUrl], {
-      startTime: nextStartTime,
-      endTime: nextEndTime,
-      sourcePageUrl: autoStartRequest.sourcePageUrl,
-      saveToWebsiteAssets: autoStartRequest.saveToWebsiteAssets,
-    });
+    void (async () => {
+      // A download launched from the current extraction must replace any
+      // previous site's running/restored queue. This also terminates active
+      // backend processes before resolving the fresh platform URL.
+      await clearDownloaderJobs().catch(() => undefined);
+      setJobs([]);
+      await downloadQueue(autoStartRequest.quality || 'fhd', [nextUrl], {
+        startTime: nextStartTime,
+        endTime: nextEndTime,
+        sourcePageUrl: autoStartRequest.sourcePageUrl,
+        saveToWebsiteAssets: autoStartRequest.saveToWebsiteAssets,
+      });
+    })();
   }, [autoStartRequest]);
 
   useEffect(() => {

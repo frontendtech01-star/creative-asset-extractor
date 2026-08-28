@@ -193,8 +193,21 @@ try {
       pass(`bundled server started at ${serverUrl}`);
 
       const health = await fetch(`${serverUrl}/`, { headers: { 'X-VDX-Local-Request': '1' } });
+      const frontendHtml = await health.text();
       if (health.ok) pass('server serves frontend');
       else fail(`frontend HTTP ${health.status}`);
+
+      const frontendScript = frontendHtml.match(/<script[^>]+src=["']([^"']+)["']/i)?.[1] || '';
+      const frontendBundle = frontendScript
+        ? await fetch(new URL(frontendScript, serverUrl), { headers: { 'X-VDX-Local-Request': '1' } }).then((response) => response.text())
+        : '';
+      if (frontendBundle.includes('viewBox="0 0 500 500"')) pass('inline greeting SVG packaged');
+      else fail('inline greeting SVG missing from packaged frontend');
+
+      const profileRes = await fetch(`${serverUrl}/api/system-profile`, { headers: { 'X-VDX-Local-Request': '1' } });
+      const profile = await profileRes.json().catch(() => ({}));
+      if (profileRes.ok && (profile?.displayName || profile?.username)) pass('system profile name available');
+      else fail(`system profile name unavailable: HTTP ${profileRes.status}`);
 
       const brightcoveUrl = String(process.env.QC_BRIGHTCOVE_URL || '').trim();
       if (brightcoveUrl) {

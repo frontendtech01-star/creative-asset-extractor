@@ -237,6 +237,21 @@ export const resolveDefaultExtractionMode = (rawUrl: string): 'direct' | 'full' 
 export const isGoogleVideoPlaybackUrl = (rawUrl: string) =>
   /googlevideo\.com\/videoplayback|\/videoplayback\?/i.test(String(rawUrl || ''));
 
+export const isTrackingOrTelemetryVideoUrl = (rawUrl: string) => {
+  const value = String(rawUrl || '').trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (/^(?:google-analytics\.com|googletagmanager\.com|doubleclick\.net|clarity\.ms|hotjar\.com|segment\.io)$/.test(host)) return true;
+    if (/\.(?:google-analytics\.com|googletagmanager\.com|doubleclick\.net|clarity\.ms|hotjar\.com|segment\.io)$/.test(host)) return true;
+    return (host === 'google.com' || host.endsWith('.google.com')) && /^\/g\/collect(?:\/|$)/i.test(path);
+  } catch {
+    return /(?:google-analytics|googletagmanager|doubleclick|clarity\.ms|hotjar|segment\.io)|google\.com\/g\/collect(?:[/?#]|$)/i.test(value);
+  }
+};
+
 export const isCopyableStreamMediaUrl = (rawUrl: string) => {
   const candidate = String(rawUrl || '').trim();
   if (!candidate) return false;
@@ -481,6 +496,7 @@ export const isUsableExtractedVideo = (item: any, seedUrl = '') => {
     String(item?.pageUrl || '').trim(),
     String(seedUrl || '').trim(),
   ].filter(Boolean);
+  if (contextCandidates.some(isTrackingOrTelemetryVideoUrl)) return false;
   const itemType = String(item?.mimeType || item?.contentType || item?.type || '').toLowerCase();
   const titleLooksLikeImage = /\.(?:svg|png|jpe?g|gif|webp|avif)(?:\s+\d+)?$/i.test(
     String(item?.title || item?.name || item?.label || '').trim()
@@ -873,6 +889,7 @@ export const getVisibleVideoCards = (videos: any[], seedUrl = '') => {
     .filter(Boolean)
     .filter((item: any) => {
       const url = String(item.url || '');
+      if (isTrackingOrTelemetryVideoUrl(url)) return false;
       if (isTransportStreamSegmentUrl(url)) return false;
       if (isBrightcoveNoiseUrl(url) && !canonicalBrightcovePlayerUrlFromItem(item, seedUrl)) return false;
       if (isFalseVimeoUtilityUrl(url)) return false;

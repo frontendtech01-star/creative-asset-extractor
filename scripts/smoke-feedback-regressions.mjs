@@ -165,6 +165,8 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'handledAutoStartIdRef');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, "downloadQueue(autoStartRequest.quality || 'fhd'");
+  assertIncludes('Fresh extracted-video queue clears stale jobs', videoDownloaderPage, 'await clearDownloaderJobs()');
+  assertIncludes('Late downloader hydration cannot restore stale jobs', videoDownloaderPage, 'if (handledAutoStartIdRef.current !== null) return');
   if (videoDownloaderPage.includes("window.confirm('Delete all downloaded videos and extracted platform folders?')") || videoDownloaderPage.includes('Clear Downloads')) {
     fail('Video Clear Downloads UI must stay removed');
   }
@@ -506,6 +508,26 @@ const checkBrightcoveTrackerLinksCanonicalized = async () => {
   ok('Brightcove tracker cards canonicalize to clean player links');
 };
 
+const checkAnalyticsVideoFalsePositive = async () => {
+  const visibleVideos = await import('../src/lib/visibleVideos.ts');
+  const analyticsUrl = 'https://www.google.com/g/collect?v=2&tid=G-XE75ZM91CX&dl=https%3A%2F%2Fwww.brinsupri.com%2Fabout-brinsupri%2F%23moa-video&en=vimeo_play';
+  const falseCard = {
+    url: analyticsUrl,
+    sourceUrl: 'https://www.brinsupri.com/about-brinsupri/#moa-video',
+    title: 'collect',
+    provider: 'vimeo',
+    type: 'video',
+    isDirect: true,
+  };
+  if (visibleVideos.isUsableExtractedVideo(falseCard, falseCard.sourceUrl)) {
+    fail('Google Analytics collect request must not be usable as a video');
+  }
+  if (visibleVideos.getVisibleVideoCards([falseCard], falseCard.sourceUrl).length !== 0) {
+    fail('Google Analytics collect request must not create a visible video card');
+  }
+  ok('analytics requests containing Vimeo event data are rejected as video cards');
+};
+
 const main = async () => {
   if (process.env.SMOKE_STATIC_ONLY === '1') {
     await checkStaticFeedbackContracts();
@@ -524,6 +546,7 @@ const main = async () => {
   await checkMislabeledSvgDownloads();
   await checkWistiaJunkPlayersRemoved();
   await checkBrightcoveTrackerLinksCanonicalized();
+  await checkAnalyticsVideoFalsePositive();
   await runCommand('node', ['scripts/smoke-video-ui.mjs'], { SMOKE_BASE_URL: BASE });
   console.log('\nPASS: feedback regressions are covered');
 };
