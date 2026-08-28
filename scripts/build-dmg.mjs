@@ -45,6 +45,7 @@ await run(electronBuilder, ['--mac', 'dmg', archArg, '--publish', 'never'], {
 });
 
 const candidates = [
+  `Creative.Asset.Extractor-${packageVersion}-${packArch}.dmg`,
   `Creative Asset Extractor-${packageVersion}-${packArch}.dmg`,
   `Creative Asset Extractor-${packageVersion}-universal.dmg`,
   `Creative Asset Extractor-${packageVersion}.dmg`,
