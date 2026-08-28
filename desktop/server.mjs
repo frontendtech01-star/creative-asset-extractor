@@ -3485,9 +3485,14 @@ app.get("/api/bookmarks", async (_req, res) => {
     return res.status(500).json({ error: error?.message || "Failed to read bookmarks." });
   }
 });
-app.get("/api/system-profile", (_req, res) => {
+app.get("/api/system-profile", async (_req, res) => {
   const username = String(os3.userInfo?.().username || process.env.USER || "").trim();
-  return res.json({ ok: true, username });
+  let displayName = username;
+  if (process.platform === "darwin" && username) {
+    const result = await execFileAsync2("/usr/bin/id", ["-F", username], { encoding: "utf8" }).catch(() => null);
+    displayName = String(result?.stdout || "").trim() || username;
+  }
+  return res.json({ ok: true, username, displayName });
 });
 app.post("/api/bookmarks", async (req, res) => {
   try {

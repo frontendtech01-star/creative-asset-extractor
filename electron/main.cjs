@@ -2,6 +2,7 @@ const { app, BrowserWindow, shell, clipboard, ipcMain } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { execFileSync } = require('node:child_process');
 
 let serverHandle = null;
 let trustedAppOrigin = null;
@@ -169,9 +170,18 @@ ipcMain.handle('vdx:clipboard-write-text', (_event, value) => {
   clipboard.writeText(String(value || ''));
   return clipboard.readText();
 });
-ipcMain.handle('vdx:get-system-profile', () => ({
-  username: String(os.userInfo?.().username || process.env.USER || '').trim(),
-}));
+ipcMain.handle('vdx:get-system-profile', () => {
+  const username = String(os.userInfo?.().username || process.env.USER || '').trim();
+  let displayName = username;
+  if (process.platform === 'darwin' && username) {
+    try {
+      displayName = String(execFileSync('/usr/bin/id', ['-F', username], { encoding: 'utf8' })).trim() || username;
+    } catch {
+      // The username is still a useful fallback if macOS does not expose a real name.
+    }
+  }
+  return { username, displayName };
+});
 ipcMain.handle('vdx:get-app-version', () => app.getVersion());
 ipcMain.handle('vdx:open-external', async (_event, url) => {
   const target = String(url || '').trim();

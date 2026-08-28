@@ -190,6 +190,9 @@ const formatSystemName = (value: string) => {
   return cleaned.split(' ').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 };
 
+const formatDisplayedVersion = (value: string) =>
+  String(value || '').trim().replace(/^v/i, '').replace(/^(\d+\.\d+)\.0$/, '$1');
+
 const cleanUrlToken = (value: string) =>
   String(value || '').trim().replace(/[),\].;]+$/g, '');
 
@@ -742,7 +745,7 @@ export default function App() {
       : apiFetch('/api/system-profile')
           .then((response) => response.ok ? response.json() : null);
     void readSystemName
-      .then((profile) => setSystemUserName(formatSystemName(profile?.username || '')))
+      .then((profile) => setSystemUserName(formatSystemName(profile?.displayName || profile?.username || '')))
       .catch(() => undefined);
   }, []);
 
@@ -1820,7 +1823,7 @@ export default function App() {
                 />
                 <div className="min-w-0">
                   <h1 className="truncate text-base font-semibold tracking-tight">{productName}</h1>
-                  <p className="text-[11px] leading-4 text-[#5f6368]">v{appVersion}</p>
+                  <p className="text-[11px] leading-4 text-[#5f6368]">v{formatDisplayedVersion(appVersion)}</p>
                 </div>
               </div>
               <nav className="flex flex-wrap items-center justify-end gap-1.5">
