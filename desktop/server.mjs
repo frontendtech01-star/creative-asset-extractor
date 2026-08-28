@@ -5216,12 +5216,12 @@ var resolveGithubRepoConfig = () => {
   };
 };
 var normalizeReleaseTag = (version) => {
-  const trimmed = String(version || "").trim();
-  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
+  const publicVersion = normalizeAssetVersion(version);
+  return `v${publicVersion}`;
 };
 var normalizeAssetVersion = (version) => {
   const cleanVersion = String(version || "").replace(/^v/i, "");
-  return /^\d+\.\d+$/.test(cleanVersion) ? `${cleanVersion}.0` : cleanVersion;
+  return cleanVersion.replace(/^(\d+\.\d+)\.0$/, "$1");
 };
 var buildDmgAssetName = (productName, version) => {
   const cleanVersion = normalizeAssetVersion(version);

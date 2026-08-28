@@ -3262,13 +3262,13 @@ const resolveGithubRepoConfig = () => {
 };
 
 const normalizeReleaseTag = (version: string) => {
-  const trimmed = String(version || '').trim();
-  return trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
+  const publicVersion = normalizeAssetVersion(version);
+  return `v${publicVersion}`;
 };
 
 const normalizeAssetVersion = (version: string) => {
   const cleanVersion = String(version || '').replace(/^v/i, '');
-  return /^\d+\.\d+$/.test(cleanVersion) ? `${cleanVersion}.0` : cleanVersion;
+  return cleanVersion.replace(/^(\d+\.\d+)\.0$/, '$1');
 };
 
 const buildDmgAssetName = (productName: string, version: string) => {

@@ -59,6 +59,7 @@
   "build": {
     "appId": "com.creativeassetextractor.desktop",
     "productName": "Creative Asset Extractor",
+    "buildVersion": "2.0",
     "directories": {
       "output": "release"
     },
@@ -197,7 +198,8 @@
     },
   "mac": {
     "icon": "src/assets/creative-extractor-logo.png",
-    "artifactName": "Creative.Asset.Extractor-${version}-${arch}.${ext}",
+    "artifactName": "Creative.Asset.Extractor-${buildVersion}-${arch}.${ext}",
+    "bundleShortVersion": "2.0",
     "target": "dmg",
       "category": "public.app-category.video",
       "minimumSystemVersion": "10.15",
