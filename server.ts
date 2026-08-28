@@ -3267,8 +3267,7 @@ const normalizeReleaseTag = (version: string) => {
 };
 
 const normalizeAssetVersion = (version: string) => {
-  const cleanVersion = String(version || '').replace(/^v/i, '');
-  return cleanVersion.replace(/^(\d+\.\d+)\.0$/, '$1');
+  return String(version || '').replace(/^v/i, '');
 };
 
 const buildDmgAssetName = (productName: string, version: string) => {

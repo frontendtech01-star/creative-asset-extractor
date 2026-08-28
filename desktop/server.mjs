@@ -5220,8 +5220,7 @@ var normalizeReleaseTag = (version) => {
   return `v${publicVersion}`;
 };
 var normalizeAssetVersion = (version) => {
-  const cleanVersion = String(version || "").replace(/^v/i, "");
-  return cleanVersion.replace(/^(\d+\.\d+)\.0$/, "$1");
+  return String(version || "").replace(/^v/i, "");
 };
 var buildDmgAssetName = (productName, version) => {
   const cleanVersion = normalizeAssetVersion(version);

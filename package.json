@@ -59,7 +59,7 @@
   "build": {
     "appId": "com.creativeassetextractor.desktop",
     "productName": "Creative Asset Extractor",
-    "buildVersion": "2.0",
+    "buildVersion": "2.0.0",
     "directories": {
       "output": "release"
     },
