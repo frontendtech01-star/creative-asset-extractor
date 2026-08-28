@@ -28,6 +28,16 @@ const packArch = ['universal', 'arm64', 'x64'].includes(requestedArch)
     ? 'arm64'
     : 'x64';
 const archArg = packArch === 'universal' ? '--universal' : `--${packArch}`;
+const productName = String(packageJson.build?.productName || packageJson.productName || 'Creative Asset Extractor');
+const mountedDmgVolume = path.join('/Volumes', `${productName} ${publicVersion}-${packArch}`);
+
+try {
+  await fs.access(mountedDmgVolume);
+  console.log(`Detaching mounted installer volume: ${mountedDmgVolume}`);
+  await run('hdiutil', ['detach', '-force', mountedDmgVolume], { stdio: 'inherit', cwd: projectRoot });
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+}
 
 const releaseEntries = await fs.readdir(releaseDir).catch(() => []);
 for (const name of releaseEntries) {
