@@ -1792,7 +1792,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f8fafd] text-[#1f1f1f] font-sans selection:bg-blue-100 selection:text-blue-900">
-      <header className="sticky top-0 z-10 border-b border-[#e1e7ee] bg-transparent">
+      <header className="sticky top-0 z-10 border-b border-[#e1e7ee] bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5">
           {focusMode ? (
             <div className="flex items-center justify-between gap-3">
