@@ -4526,9 +4526,17 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     source: font?.source || "Network",
     originalFilename: filenameFromUrlPath2(String(font?.url || ""))
   })).concat(cssFonts);
-  const imageRows = Array.isArray(raw?.images) ? raw.images : [];
+  const rawImageRows = (Array.isArray(raw?.images) ? raw.images : []).filter((image) => {
+    const url = String(image?.url || "").trim();
+    return Boolean(url) && !isJunkImageUrl(url);
+  });
+  const imageRows = await mapWithConcurrency(rawImageRows, 8, async (image) => {
+    if (String(image?.dataUrl || "").startsWith("data:image/")) return image;
+    if (!isSuspiciousBrowserImageCandidate(image)) return image;
+    return await isRemoteImageUrlAvailable(String(image.url), pageUrl || sourceUrl) ? image : null;
+  }).then((rows) => rows.filter(Boolean));
   const images = await Promise.all(
-    imageRows.filter((image) => String(image?.url || "").trim()).map(async (image, index) => {
+    imageRows.map(async (image, index) => {
       const url = String(image.url || "").trim();
       let type = String(image.type || "").trim() || getAssetTypeFromUrl(url, "png");
       const filename = String(image.filename || "").trim() || `browser-image-${index + 1}.${type}`;
@@ -5022,9 +5030,16 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     });
     return Array.from(rows.values());
   };
+  const mergedImages = mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images);
+  const cleanedMergedImages = await mapWithConcurrency(mergedImages, 8, async (image) => {
+    const url = String(image?.url || "").trim();
+    if (!url || isJunkImageUrl(url)) return null;
+    if (!isSuspiciousBrowserImageCandidate(image)) return image;
+    return await isRemoteImageUrlAvailable(url, fallbackUrl) ? image : null;
+  }).then((rows) => rows.filter(Boolean));
   return {
     ...extracted,
-    images: mergeImageRowsByBestSequenceFrame(extracted?.images, staticAssets?.images),
+    images: cleanedMergedImages,
     icons: mergeImageRowsByBestSequenceFrame(extracted?.icons, staticAssets?.icons),
     videos: mergeByUrl(
       mergeByUrl(extracted?.videos, staticAssets?.videos),
@@ -10644,7 +10659,18 @@ var isBotWallImageUrl = (url) => /robot-suspicion|loader\.svg|captcha|cf-chl|cha
 var isTrackingPixelImageUrl = (url) => {
   const lowered = String(url || "").toLowerCase();
   if (!lowered) return false;
-  return /(?:^|[./-])(?:pixel|beacon|tracker|tracking|analytics|collect|rum-collector|clarity)(?:[./?_-]|$)/i.test(lowered) || /\/(?:1p|px|pixel|beacon)\.(?:gif|png|jpe?g|webp)(?:$|[?#])/i.test(lowered) || /(?:pingdom\.net|clarity\.ms|doubleclick\.net|googletagmanager\.com|google-analytics\.com|facebook\.com\/tr|unbxdapi\.com\/v2\/1p\.jpg)/i.test(lowered);
+  return /(?:^|[./-])(?:pixel|beacon|tracker|tracking|analytics|collect|rum-collector|clarity)(?:[./?_-]|$)/i.test(lowered) || /\/(?:1p|px|pixel|beacon)\.(?:gif|png|jpe?g|webp)(?:$|[?#])/i.test(lowered) || /(?:pingdom\.net|clarity\.ms|doubleclick\.net|googletagmanager\.com|google-analytics\.com|visualwebsiteoptimizer\.com|facebook\.com\/tr|unbxdapi\.com\/v2\/1p\.jpg)/i.test(lowered) || /in\.rxengage\.app\/rxdefine\.js\/dialog\/close\.svg(?:[?#]|$)/i.test(lowered) || /storage\.googleapis\.com\/admin-pep-production-cdn-bucket\/.*\/sizesmall_cd01\.png(?:[?#]|$)/i.test(lowered);
+};
+var isSuspiciousBrowserImageCandidate = (image) => {
+  const url = String(image?.url || "").trim();
+  if (!/^https?:\/\//i.test(url)) return false;
+  let leaf = "";
+  try {
+    leaf = decodeURIComponent(new URL2(url).pathname.split("/").pop() || "").toLowerCase();
+  } catch {
+    leaf = filenameFromUrlPath2(url).toLowerCase();
+  }
+  return /\.(?:max|full|two-thirds|one-half|one-third|one-sixth)\.(?:png|jpe?g|webp|gif|avif)$/i.test(leaf) || /^(?:close\.svg|sizesmall_cd01\.png)$/i.test(leaf);
 };
 var isJpeg2000ImageVariantUrl = (url) => {
   const lowered = String(url || "").toLowerCase();
