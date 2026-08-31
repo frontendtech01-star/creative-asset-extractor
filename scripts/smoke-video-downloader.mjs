@@ -13,8 +13,13 @@
  *   SMOKE_FACEBOOK_VIDEO_URL=...
  *   SMOKE_FACEBOOK_REEL_URL=...
  */
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+
 const BASE = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const DOWNLOAD = process.env.SMOKE_DOWNLOAD === '1';
+const ONLY = String(process.env.SMOKE_ONLY || '').trim().toLowerCase();
 const headers = { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' };
 
 const platforms = [
@@ -40,7 +45,7 @@ const platforms = [
   { id: 'instagram-post', url: process.env.SMOKE_INSTAGRAM_POST_URL || '', optional: true },
   { id: 'facebook-video', url: process.env.SMOKE_FACEBOOK_VIDEO_URL || '', optional: true },
   { id: 'facebook-reel', url: process.env.SMOKE_FACEBOOK_REEL_URL || '', optional: true },
-];
+].filter((platform) => !ONLY || platform.id === ONLY);
 
 const fail = (message) => {
   console.error(`FAIL: ${message}`);
@@ -110,14 +115,32 @@ const download = async (platform, video) => {
     fail(`${platform.id} download: ${job.error || job.status || 'invalid result'}`);
   }
   const file = await fetch(`${BASE}/api/downloader/file?path=${encodeURIComponent(job.result.relativePath)}`, {
-    method: 'HEAD',
     headers: { 'X-VDX-Local-Request': '1' },
   });
   if (!file.ok) fail(`${platform.id} completed file link returned ${file.status}`);
+  await file.body?.cancel();
+  if (quality !== 'audio') {
+    const ffprobe = [
+      process.env.SMOKE_FFPROBE_PATH,
+      path.resolve('vendor/bin-pack/ffprobe'),
+      'ffprobe',
+    ].find((candidate) => candidate && (candidate === 'ffprobe' || existsSync(candidate)));
+    const probe = spawnSync(ffprobe, [
+      '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', job.result.filePath,
+    ], { encoding: 'utf8' });
+    const streams = JSON.parse(probe.stdout || '{}')?.streams || [];
+    if (probe.status !== 0 || !streams.some((stream) => stream.codec_type === 'video')) {
+      fail(`${platform.id} final file has no decodable video stream`);
+    }
+    if (!streams.some((stream) => stream.codec_type === 'audio')) {
+      fail(`${platform.id} final file has no audio stream`);
+    }
+  }
   console.log(`OK download ${platform.id}: ${job.result.displayPath} (${Math.round(job.result.size / 1024 / 1024)} MB)`);
 };
 
 const main = async () => {
+  if (ONLY && platforms.length === 0) fail(`Unknown SMOKE_ONLY platform: ${ONLY}`);
   const health = await fetch(`${BASE}/`, { headers: { 'X-VDX-Local-Request': '1' } }).catch(() => null);
   if (!health?.ok) fail(`Server not reachable at ${BASE}`);
   console.log(`Video Downloader QC -> ${BASE} (${DOWNLOAD ? 'inspect + download' : 'inspect only'})\n`);

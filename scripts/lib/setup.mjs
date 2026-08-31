@@ -11,6 +11,8 @@ const require = createRequire(import.meta.url);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const toolConfigPath = path.join(projectRoot, '.local-tools.json');
 const vendorDir = path.join(projectRoot, 'vendor');
+const youtubePotProviderDir = path.join(vendorDir, 'youtube-pot-pack', 'provider');
+const youtubePotRuntimeArchive = path.join(vendorDir, 'youtube-pot-pack', 'provider-runtime.tar.gz');
 
 const log = (message) => console.log(message);
 
@@ -37,6 +39,15 @@ const run = (command, args, options = {}) =>
       else reject(new Error(output.trim() || `${command} exited with code ${code}`));
     });
   });
+
+const ensureYoutubePotRuntime = async () => {
+  const entrypoint = path.join(youtubePotProviderDir, 'build', 'generate_once.js');
+  const dependencies = path.join(youtubePotProviderDir, 'node_modules');
+  if (existsSync(entrypoint) && existsSync(dependencies)) return;
+  if (!existsSync(youtubePotRuntimeArchive)) return;
+  await fs.mkdir(youtubePotProviderDir, { recursive: true });
+  await run('tar', ['-xzf', youtubePotRuntimeArchive, '-C', youtubePotProviderDir]);
+};
 
 const npmCommand = () => (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
@@ -197,6 +208,7 @@ const resolveAria2 = async () => {
 export async function ensureSetup({ repair = true } = {}) {
   log('Preparing video engine...');
   await fs.mkdir(vendorDir, { recursive: true });
+  await ensureYoutubePotRuntime();
 
   const [ffmpegPath, ytdlpPath, aria2Path] = await Promise.all([
     resolveFfmpeg(repair),

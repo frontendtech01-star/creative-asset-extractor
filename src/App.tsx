@@ -83,6 +83,7 @@ import {
   type MainSection,
 } from './lib/appSessions';
 import greetingIllustrationSvg from '../user.svg?raw';
+import helloWordmarkSvg from './assets/hello-wordmark.svg?raw';
 import vdxLogo from './assets/vdx-logo.png';
 import creativeExtractorLogo from './assets/creative-extractor-logo.png';
 
@@ -1798,6 +1799,14 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [bookmarkCurrentUrl, extractedUrl, focusMode, handleResetApp, loading, mainSection, url]);
 
+  const greetingNameWords = systemUserName.trim().split(/\s+/).filter(Boolean);
+  const greetingCommaDelay = 900;
+  const greetingNameStart = 1100;
+  const greetingNameStep = 300;
+  const greetingSubtitleDelay = greetingNameStart + Math.max(greetingNameWords.length, 1) * greetingNameStep;
+  const greetingSubtitleWords = 'What would you like to extract today?'.split(' ');
+  const greetingSubtitleStep = 140;
+
   return (
     <div className="min-h-screen bg-[#f8fafd] text-[#1f1f1f] font-sans selection:bg-blue-100 selection:text-blue-900">
       <header className="sticky top-0 z-10 border-b border-[#e1e7ee] bg-white">
@@ -1911,22 +1920,53 @@ export default function App() {
         {mainSection === 'website-extraction' ? (
         <>
         <div className="mx-auto mb-8 max-w-5xl">
-          {!assets ? (
-            <section className="material-welcome mb-6 overflow-hidden rounded-[24px] border border-[#dbe5f0] bg-white px-5 py-4 shadow-[0_2px_8px_rgba(60,64,67,0.14)] sm:px-7 sm:py-4">
-              <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
+            <section className="material-welcome mb-6 overflow-hidden rounded-[24px] border border-[#dbe5f0] bg-white px-5 py-[7px] shadow-[0_2px_8px_rgba(60,64,67,0.14)] sm:h-[144px] sm:overflow-visible sm:px-7 sm:py-0">
+              <div className="flex flex-col items-center gap-4 text-center sm:h-full sm:flex-row sm:text-left">
                 <div className="greeting-illustration-shell shrink-0" aria-hidden="true">
                   <div
-                    className="greeting-illustration h-20 w-20 sm:h-24 sm:w-24"
+                    className="greeting-illustration h-[138px] w-[138px] sm:h-[165px] sm:w-[165px]"
                     dangerouslySetInnerHTML={{ __html: greetingIllustrationSvg }}
                   />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h2 className="greeting-title text-3xl font-semibold tracking-tight text-[#202124] sm:text-4xl">Hello, {systemUserName}!</h2>
-                  <p className="mt-2 text-sm leading-6 text-[#5f6368]">What would you like to extract today?</p>
+                  <h2 className="greeting-title flex flex-wrap items-baseline text-3xl font-semibold tracking-tight text-[#202124] sm:text-4xl" aria-label={`Hello, ${systemUserName}!`}>
+                    <span className="greeting-hello-draw" aria-hidden="true">
+                      <span className="greeting-hello-wordmark" dangerouslySetInnerHTML={{ __html: helloWordmarkSvg }} />
+                    </span>
+                    <span className="greeting-name" aria-hidden="true">
+                      <span
+                        className="greeting-comma"
+                        style={{ animationDelay: `${greetingCommaDelay}ms` }}
+                      >,</span>
+                      {(greetingNameWords.length ? greetingNameWords : ['there']).map((word, index, words) => (
+                        <span
+                          className="greeting-name-word"
+                          key={`${word}-${index}`}
+                          style={{ animationDelay: `${greetingNameStart + index * greetingNameStep}ms` }}
+                        >
+                          {` ${word}`}{index === words.length - 1 ? '!' : ''}
+                        </span>
+                      ))}
+                    </span>
+                  </h2>
+                  <p
+                    className="greeting-subtitle mt-2 text-sm leading-6 text-[#5f6368]"
+                    aria-label="What would you like to extract today?"
+                  >
+                    {greetingSubtitleWords.map((word, index) => (
+                      <span
+                        aria-hidden="true"
+                        className="greeting-subtitle-word"
+                        key={`${word}-${index}`}
+                        style={{ animationDelay: `${greetingSubtitleDelay + index * greetingSubtitleStep}ms` }}
+                      >
+                        {index === 0 ? word : ` ${word}`}
+                      </span>
+                    ))}
+                  </p>
                 </div>
               </div>
             </section>
-          ) : null}
           <WebsiteExtracterToolbar
             url={url}
             onUrlChange={handleUrlChange}

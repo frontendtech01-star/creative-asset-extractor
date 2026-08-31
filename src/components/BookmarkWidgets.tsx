@@ -96,7 +96,7 @@ export function AppMenu({
       {open ? (
         <>
           <button type="button" aria-label="Close menu" className="fixed inset-0 z-20 cursor-default" onClick={onClose} />
-          <div className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-xl border border-zinc-200 bg-white py-2 text-sm shadow-2xl">
+          <div className="absolute right-0 top-[calc(100%+0.625rem)] z-30 w-64 overflow-hidden rounded-b-xl border border-zinc-200 border-t-0 bg-white py-2 text-sm shadow-2xl">
             {items.map(({ label, handler, icon: Icon, highlight }) => (
               <button
                 key={label}

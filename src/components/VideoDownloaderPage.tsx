@@ -171,7 +171,7 @@ const jobProgressWidth = (job: DownloaderJob) => {
 
 const platformLabel = (id: string) => VIDEO_PLATFORMS.find((entry) => entry.id === id)?.label || id;
 
-const YOUTUBE_FALLBACK_URL = 'https://yt5s.in/en271/';
+const YOUTUBE_FALLBACK_URL = 'https://yt5s.in/en274/';
 
 const isYouTubeUrl = (value: string) => {
   try {

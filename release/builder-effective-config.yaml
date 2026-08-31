@@ -3,6 +3,7 @@ directories:
   buildResources: build
 appId: com.creativeassetextractor.desktop
 productName: Creative Asset Extractor
+buildVersion: 2.0.0
 beforePack: scripts/electron-before-pack.cjs
 afterPack: scripts/electron-after-pack.cjs
 files:
@@ -101,6 +102,10 @@ extraResources:
     to: bin
     filter:
       - '**/*'
+  - from: vendor/youtube-pot-pack
+    to: bin/youtube-pot
+    filter:
+      - '**/*'
 win:
   target:
     - target: nsis
@@ -118,6 +123,9 @@ dmg:
       type: link
       path: /Applications
 mac:
+  icon: src/assets/creative-extractor-logo.png
+  artifactName: Creative.Asset.Extractor-${buildVersion}-${arch}.${ext}
+  bundleShortVersion: '2.0'
   target: dmg
   category: public.app-category.video
   minimumSystemVersion: '10.15'

@@ -206,7 +206,7 @@ export default function VideoDownloaderCard({
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-2">
+        <div className={`mt-4 grid gap-2 ${audioAvailable ? 'sm:grid-cols-2' : ''}`}>
           <button
             type="button"
             disabled={busy}
@@ -216,6 +216,17 @@ export default function VideoDownloaderCard({
             {busy && job?.quality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Download Video
           </button>
+          {audioAvailable ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runDownload('audio')}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-semibold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy && job?.quality === 'audio' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Download Audio
+            </button>
+          ) : null}
         </div>
       </div>
     </article>

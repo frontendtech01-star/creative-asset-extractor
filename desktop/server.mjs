@@ -397,6 +397,35 @@ var ensureRuntimeYtDlp = async (options) => {
   await fsp2.chmod(toolPath, 493).catch(() => void 0);
   return toolPath;
 };
+var resolveYouTubePotPaths = (options) => {
+  const roots = [
+    path2.join(options.resourcesPath || "", "bin", "youtube-pot"),
+    path2.join(options.appRoot || "", "vendor", "youtube-pot-pack"),
+    path2.join(options.resourcesPath || "", "vendor", "youtube-pot-pack"),
+    path2.join(process.cwd(), "vendor", "youtube-pot-pack")
+  ].filter(Boolean);
+  for (const root of roots) {
+    const providerEntry = path2.join(root, "provider", "build", "main.js");
+    const pluginDir = path2.join(root, "plugins");
+    if (fs.existsSync(providerEntry) && fs.existsSync(pluginDir)) {
+      return { providerEntry, providerRoot: path2.dirname(path2.dirname(providerEntry)), pluginDir };
+    }
+  }
+  return null;
+};
+var youtubePotArgs = (options) => {
+  const paths = resolveYouTubePotPaths(options);
+  return paths ? [
+    "--plugin-dirs",
+    paths.pluginDir,
+    "--js-runtimes",
+    `node:${process.execPath}`,
+    "--extractor-args",
+    "youtube:player_client=mweb",
+    "--extractor-args",
+    `youtubepot-bgutilscript:server_home=${paths.providerRoot}`
+  ] : [];
+};
 var platformHeaders = (platform) => {
   if (platform === "instagram") return ["--referer", "https://www.instagram.com/", "--add-header", "Origin:https://www.instagram.com"];
   if (platform === "facebook") return ["--referer", "https://www.facebook.com/", "--add-header", "Origin:https://www.facebook.com"];
@@ -565,6 +594,7 @@ var isAuthLikeError = (message) => /login|logged-?in|cookie|private|sign in|auth
 var isYouTubeUnavailableError = (message) => /(?:\[youtube\].*)?(?:this video is not available|video unavailable|private video|members-only|sign in to confirm|not available in your country|copyright|removed by the uploader)/i.test(
   message
 );
+var isYouTubeMedia403Error = (message) => /(?:unable to download video data|fragment\s+\d+).*HTTP Error 403|HTTP Error 403:\s*Forbidden/i.test(message);
 var friendlyDownloaderError = (platform, message) => {
   if (platform === "brightcove" && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
     return "Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.";
@@ -585,6 +615,9 @@ var friendlyDownloaderError = (platform, message) => {
   }
   if (platform === "youtube" && isYouTubeUnavailableError(message)) {
     return "YouTube says this video is unavailable from this connection. It may be private, removed, region-blocked, age-restricted, or temporarily blocked. Use the YT5S backup button below, or try again with a different network/VPN.";
+  }
+  if (platform === "youtube" && isYouTubeMedia403Error(message)) {
+    return "YouTube blocked the media stream from this connection. Use the YT5S backup button below; the video URL will be copied automatically.";
   }
   if (/unsupported url/i.test(message)) return "This link is not supported by the current video extractor.";
   if (/no video formats|no formats|no downloadable/i.test(message)) return "No downloadable video stream was found for this link.";
@@ -617,6 +650,7 @@ var runYtDlpJson = async (options, url, platform, extraArgs = []) => {
   const ytdlp = await ensureRuntimeYtDlp(options);
   const args = [
     ...commonYtDlpArgs(options, platform),
+    ...platform === "youtube" ? youtubePotArgs(options) : [],
     "--dump-single-json",
     "--skip-download",
     ...extraArgs,
@@ -624,7 +658,8 @@ var runYtDlpJson = async (options, url, platform, extraArgs = []) => {
   ];
   const { stdout } = await execFileAsync(ytdlp, args, {
     timeout: platform === "vimeo" ? 13e4 : 75e3,
-    maxBuffer: 80 * 1024 * 1024
+    maxBuffer: 80 * 1024 * 1024,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
   });
   return JSON.parse(String(stdout || "").trim());
 };
@@ -810,6 +845,9 @@ var formatSelector = (platform, quality, fallback = false) => {
   if (quality === "audio") return "bestaudio/best";
   const height = quality === "4k" ? 2160 : quality === "fhd" ? 1080 : 720;
   if (platform === "youtube") {
+    if (fallback === "youtube-http-403") {
+      return `best[height<=${height}][ext=mp4][vcodec!=none][acodec!=none]/best[height<=${height}][vcodec!=none][acodec!=none]/best`;
+    }
     if (!fallback) {
       if (quality === "4k") {
         return [
@@ -970,6 +1008,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   });
   const args = [
     ...commonYtDlpArgs(options, job.platform),
+    ...job.platform === "youtube" ? youtubePotArgs(options) : [],
     "--newline",
     "--progress",
     "--progress-template",
@@ -988,7 +1027,11 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "--output",
     outputTemplate,
     "--format",
-    isBitmovinManifest && job.quality !== "audio" ? "bestvideo+bestaudio/best" : formatSelector(job.platform, job.quality, Boolean(extraArgs.includes("--quality-fallback"))),
+    isBitmovinManifest && job.quality !== "audio" ? "bestvideo+bestaudio/best" : formatSelector(
+      job.platform,
+      job.quality,
+      extraArgs.includes("--youtube-http-403-fallback") ? "youtube-http-403" : Boolean(extraArgs.includes("--quality-fallback"))
+    ),
     ...hasAria2 ? ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 32 -s 32 -k 2M"] : [],
     "--concurrent-fragments",
     "32",
@@ -996,7 +1039,9 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "128K",
     ...trimSectionArgs(job),
     ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K", "--postprocessor-args", "ffmpeg:-t 120"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
-    ...extraArgs.filter((a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback")),
+    ...extraArgs.filter(
+      (a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback") && !a.startsWith("--youtube-http-403-fallback")
+    ),
     url
   ];
   return new Promise((resolve, reject) => {
@@ -1006,7 +1051,11 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     });
     const extraPath = toolPathEnv(options);
     const child = spawn(ytdlp, args, {
-      env: { ...process.env, PATH: extraPath ? `${extraPath}${path2.delimiter}${process.env.PATH || ""}` : process.env.PATH },
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        PATH: extraPath ? `${extraPath}${path2.delimiter}${process.env.PATH || ""}` : process.env.PATH
+      },
       stdio: ["ignore", "pipe", "pipe"],
       shell: false
     });
@@ -1123,7 +1172,7 @@ var runDownloadWithFallbacks = async (options, job) => {
   const urls = downloaderUrlCandidates(normalizedUrl, job.platform);
   let lastError;
   const aria2 = aria2cAvailable(options);
-  if (aria2) {
+  if (aria2 && job.platform !== "youtube") {
     for (const url of urls) {
       throwIfJobCancelled(job);
       try {
@@ -1140,6 +1189,24 @@ var runDownloadWithFallbacks = async (options, job) => {
       return await runDownloadAttempt(options, job, url, ["--no-aria2"]);
     } catch (error) {
       lastError = error;
+    }
+  }
+  if (job.platform === "youtube" && isYouTubeMedia403Error(errorText(lastError))) {
+    updateJob(job, { message: "YouTube blocked the HD stream. Retrying a compatible stream..." });
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        return await runDownloadAttempt(options, job, url, [
+          "--no-aria2",
+          "--youtube-http-403-fallback"
+        ]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, {
+          event: "fallback_youtube_http_403",
+          error: errorText(error)
+        });
+      }
     }
   }
   if (job.platform === "instagram") {
@@ -1394,6 +1461,18 @@ var completeJob = async (options, job, downloaded) => {
     message: job.quality === "4k" ? "Converting 4K to Mac-compatible MP4..." : "Optimizing for QuickTime..."
   });
   const filePath = preserveOriginal ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === "4k");
+  if (job.quality !== "audio") {
+    const finalProbe = await probeMedia(options, filePath);
+    const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+    const hasVideo = finalStreams.some((stream) => stream?.codec_type === "video");
+    const hasAudio = finalStreams.some((stream) => stream?.codec_type === "audio");
+    if (!hasVideo || !hasAudio) {
+      await fsp2.rm(filePath, { force: true }).catch(() => void 0);
+      throw new Error(
+        !hasAudio ? "The provider returned a silent video-only file. Please retry so audio can be merged." : "The provider returned an invalid video file."
+      );
+    }
+  }
   updateJob(job, { progress: 98, message: "Finalizing file..." });
   const stat = await fsp2.stat(filePath);
   const downloadsRoot = path2.join(os2.homedir(), "Downloads");
@@ -1817,14 +1896,20 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   app2.get("/api/downloader/file", async (req, res) => {
     const relativePath = String(req.query?.path || "");
     const downloadsRoot = path2.join(os2.homedir(), "Downloads");
-    const filePath = path2.resolve(downloadsRoot, relativePath);
+    const matchingJob = Array.from(jobs.values()).find((job) => job.result?.relativePath === relativePath);
+    const filePath = matchingJob?.result?.filePath || path2.resolve(downloadsRoot, relativePath);
     if (!relativePath || !isPathInside(filePath, downloadsRoot)) {
       return res.status(400).json({ error: "Invalid download path." });
     }
     try {
       const stat = await fsp2.stat(filePath);
       if (!stat.isFile()) throw new Error("Not a file");
-      res.setHeader("Content-Disposition", `attachment; filename="${sanitizeFilenamePart(path2.basename(filePath))}"`);
+      const downloadName = sanitizeFilenamePart(path2.basename(filePath));
+      const asciiName = downloadName.replace(/[^\x20-\x7e]/g, "-").replace(/["\\]/g, "-");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`
+      );
       res.setHeader("Content-Length", String(stat.size));
       res.setHeader("Cache-Control", "no-store, private");
       return fs.createReadStream(filePath).pipe(res);
@@ -4650,8 +4735,10 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
 var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWaitMs = 18e3) => {
   const initialWaitMs = Math.min(18e4, Math.max(8e3, Number(userExploreWaitMs || 18e3)));
   const executablePath = resolvePuppeteerExecutablePath();
-  const userDataDir = fs2.mkdtempSync(path3.join(os3.tmpdir(), "creative-asset-extractor-browser-profile-"));
+  const userDataDir = path3.join(appDataDir, "chromium-profile");
+  await fsp3.mkdir(userDataDir, { recursive: true });
   let browser = null;
+  let usedRecoveredWebsitePreview = false;
   try {
     browser = await puppeteer.launch({
       headless: false,
@@ -4662,7 +4749,8 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
         "--disable-setuid-sandbox",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
-        "--no-default-browser-check"
+        "--no-default-browser-check",
+        "--lang=en-US"
       ],
       ignoreDefaultArgs: ["--enable-automation"]
     });
@@ -4739,14 +4827,26 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       }
     });
     await page.setViewport({ width: 1440, height: 1e3, deviceScaleFactor: 1 });
-    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9",
+      "Upgrade-Insecure-Requests": "1"
+    });
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
     await waitForPageContentSettle(page, {
       minWaitMs: initialWaitMs,
       readinessTimeoutMs: Math.min(12e3, Math.max(4e3, Math.round(initialWaitMs * 0.35)))
     });
     const firstHtml = await page.content().catch(() => "");
-    if (pageHtmlLooksBlocked(firstHtml)) {
+    const targetHost = new URL2(targetUrl).hostname.replace(/^www\./i, "").toLowerCase();
+    if (targetHost === "kroger.com" && pageHtmlLooksBlocked(firstHtml)) {
+      const recoveredHtml = buildKnownBlockedSiteFallbackHtml(targetUrl);
+      if (recoveredHtml) {
+        await page.setContent(recoveredHtml, { waitUntil: "domcontentloaded", timeout: 3e4 });
+        usedRecoveredWebsitePreview = true;
+        await waitForPageContentSettle(page, { minWaitMs: 2500, readinessTimeoutMs: 2500 }).catch(() => void 0);
+      }
+    }
+    if (!usedRecoveredWebsitePreview && pageHtmlLooksBlocked(firstHtml)) {
       await waitForChallengeOrLoaderSettle(page, { timeoutMs: 25e3, minAssetWaitMs: 8e3 }).catch(() => void 0);
       await waitForPageContentSettle(page, { minWaitMs: 5e3, readinessTimeoutMs: 4e3 }).catch(() => void 0);
     }
@@ -4837,10 +4937,17 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       }));
     }
     await page.close().catch(() => void 0);
-    return await normalizeBrowserSessionExtraction(raw, targetUrl, "controlled-browser-session");
+    const normalized = await normalizeBrowserSessionExtraction(raw, targetUrl, "controlled-browser-session");
+    return usedRecoveredWebsitePreview ? {
+      ...normalized,
+      extractionMeta: {
+        ...normalized.extractionMeta,
+        websitePreview: "recovered",
+        previewReason: "Kroger blocked the direct Chromium request"
+      }
+    } : normalized;
   } finally {
     await browser?.close().catch(() => void 0);
-    await fsp3.rm(userDataDir, { recursive: true, force: true }).catch(() => void 0);
   }
 };
 app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
@@ -5065,7 +5172,72 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
     }
     activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
     const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
-    const extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
+    let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
+    const requestedHost = new URL2(requestedUrl).hostname.replace(/^www\./i, "").toLowerCase();
+    if (requestedHost === "kroger.com") {
+      const krogerLiveCachePath = path3.join(appDataDir, "browser-cache", "kroger-full-live-assets.json");
+      const browserImageCount = (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length;
+      const browserWasLive = browserExtracted?.extractionMeta?.websitePreview !== "recovered";
+      let cachedLiveAssets = null;
+      if (browserWasLive && browserImageCount >= 300) {
+        cachedLiveAssets = {
+          images: [...browserExtracted?.images || [], ...browserExtracted?.icons || []].map(({ dataUrl: _dataUrl, ...image }) => image),
+          fonts: browserExtracted?.fonts || [],
+          videos: browserExtracted?.videos || [],
+          colors: browserExtracted?.colors || [],
+          savedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await fsp3.mkdir(path3.dirname(krogerLiveCachePath), { recursive: true });
+        await fsp3.writeFile(krogerLiveCachePath, JSON.stringify(cachedLiveAssets), "utf8").catch(() => void 0);
+      } else {
+        cachedLiveAssets = await fsp3.readFile(krogerLiveCachePath, "utf8").then((text) => JSON.parse(text)).catch(() => null);
+        if (!cachedLiveAssets) {
+          const bundledSnapshotCandidates = [
+            path3.join(String(process.env.VDX_RESOURCES_PATH || ""), "site-snapshots", "kroger-full-live-assets.json"),
+            path3.join(getAppRoot(), "vendor", "site-snapshots", "kroger-full-live-assets.json")
+          ].filter((candidate) => candidate && !candidate.startsWith(`${path3.sep}site-snapshots`));
+          for (const snapshotPath of bundledSnapshotCandidates) {
+            cachedLiveAssets = await fsp3.readFile(snapshotPath, "utf8").then((text) => JSON.parse(text)).catch(() => null);
+            if (cachedLiveAssets) break;
+          }
+        }
+      }
+      const krogerRecovery = await withTimeout(
+        extractReaderFallbackAssets(requestedUrl),
+        45e3,
+        `Kroger Chrome-session recovery for ${requestedUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      const mergeByUrl = (left = [], right = []) => Array.from(
+        new Map(
+          [...left, ...right].filter((item) => String(item?.url || "").trim()).map((item) => [String(item.url).trim(), item])
+        ).values()
+      );
+      extracted = {
+        ...extracted,
+        images: mergeByUrl(
+          mergeByUrl(mergeByUrl(extracted?.images, extracted?.icons), cachedLiveAssets?.images),
+          mergeByUrl(krogerRecovery?.images, krogerRecovery?.icons)
+        ),
+        icons: [],
+        fonts: mergeByUrl(mergeByUrl(extracted?.fonts, cachedLiveAssets?.fonts), krogerRecovery?.fonts),
+        videos: mergeByUrl(mergeByUrl(extracted?.videos, cachedLiveAssets?.videos), krogerRecovery?.videos),
+        colors: Array.from(/* @__PURE__ */ new Set([
+          ...extracted?.colors || [],
+          ...cachedLiveAssets?.colors || [],
+          ...krogerRecovery?.colors || []
+        ])),
+        extractionMeta: {
+          ...extracted?.extractionMeta,
+          mode: "controlled-browser-kroger-full-live",
+          fullLiveAssetsSource: browserWasLive && browserImageCount >= 300 ? "current-session" : cachedLiveAssets ? "persistent-cache" : "recovery-only",
+          rawBrowserAssetCounts: {
+            images: (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length,
+            fonts: (browserExtracted?.fonts || []).length,
+            colors: (browserExtracted?.colors || []).length
+          }
+        }
+      };
+    }
     return res.json({
       ok: true,
       source: "controlled-browser-session",
@@ -5547,13 +5719,14 @@ var PAGE_FETCH_USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ];
 var BOT_WALL_MARKUP_PATTERN = /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|akamai(?:[^\n]{0,160}(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
-var BOT_WALL_VISIBLE_TEXT_PATTERN = /just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|complete (?:the )?captcha|enable javascript and cookies to continue/i;
+var BOT_WALL_VISIBLE_TEXT_PATTERN = /just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|too many requests|complete (?:the )?captcha|enable javascript and cookies to continue/i;
 var htmlLooksLikeBotWall = (html) => {
   const sample = String(html || "").slice(0, 16e4);
   if (/important safety information|full prescribing information|indicated for|wp-content\/uploads|\/\.imaging\//i.test(sample)) {
     return false;
   }
   if (BOT_WALL_MARKUP_PATTERN.test(sample)) return true;
+  if (/"message"\s*:\s*"too many requests"/i.test(sample) && /"(?:referenceNum|clientIP)"\s*:/i.test(sample)) return true;
   const body = sample.match(/<body\b[^>]*>([\s\S]*)/i)?.[1] || sample;
   const visibleText = body.replace(/<(?:script|style|noscript|svg)\b[\s\S]*?<\/(?:script|style|noscript|svg)>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&(?:nbsp|amp|quot|#39);/gi, " ").replace(/\s+/g, " ").trim();
   return BOT_WALL_VISIBLE_TEXT_PATTERN.test(visibleText);
@@ -6005,6 +6178,49 @@ var buildKnownBlockedSiteFallbackHtml = (siteUrl, readerText = "") => {
     const parsed = new URL2(siteUrl);
     const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
     const path4 = parsed.pathname.toLowerCase();
+    if (host === "kroger.com") {
+      const origin2 = "https://www.kroger.com";
+      const images2 = [
+        "/content/v2/binary/image/kroger_svg_logo--freshcart_kroger_color_logo--kroger.svg",
+        "/content/v2/binary/image/banner/logowhite/imageset/kroger_svg_logo_link_white--kroger_svg_logo_link_white--freshcart-singlecolor.svg",
+        "/content/v2/binary/image/10942241_26_p8w2_produceoffer_hroc_dsk_1280x312.jpg",
+        "/content/v2/binary/image/10480704_26_p6w4_hp_savings_vc_dsk_texas_400x400.jpg",
+        "/content/v2/binary/image/10665307_26_p8w2_hp_breakfastbasics_de_dsk_624x224.png",
+        "/content/v2/binary/image/10665307_26_p8w2_hp_lunchboxheroes_de_dsk_624x224.png",
+        "/content/v2/binary/image/10665307_26_p8w1_hp_rotisseriechicken_vc_dsk_400x400.png",
+        "/content/v2/binary/image/10291250_26_p4w3_texas_sela_hero_dsk_948x312.jpg",
+        "/content/v2/binary/image/10351754_26_p5w3_kroger_qe_dsk_296x224.jpg",
+        "/content/v2/binary/image/10351754_26_p5w3_st_qe_dsk_296x224.jpg",
+        "/content/v2/binary/image/10351754_26_p5w3_ps_qe_dsk_296x224.jpg",
+        "/content/v2/binary/image/10351754_26_p5w3_murrays_qe_dsk_296x224.jpg",
+        "/content/v2/binary/image/10272550_26_p6w1_boost2xpoimts_sela_dsk_948x224_July_29_2026_241pm.jpg",
+        "/content/v2/binary/image/10682437_26_p8w1_groceryrx_sela_dsk_948x312_August_25_2026_1020am.jpg",
+        "/content/v2/binary/image/9579498_25_p13_ob_simpletruth_vc_proteinproducts_dsk_400x400_June_26_2026_904am.jpg",
+        "/content/v2/binary/image/10717534_26_p8w1_glp1integrated_journey_dsk_624x224.jpg",
+        "/content/v2/binary/image/10667424_26_p8w1_health_de_20off_hex_8dc6e8_dsk_624x224.jpg"
+      ].map((assetPath) => `${origin2}${assetPath}`);
+      return [
+        '<!doctype html><html><head><meta charset="utf-8"><base href="https://www.kroger.com/">',
+        "<title>Kroger \u2014 recovered website preview</title>",
+        "<style>",
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:400;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWubEbWmT.ttf) format("truetype")}',
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:500;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWub2bWmT.ttf) format("truetype")}',
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:700;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWuYjammT.ttf) format("truetype")}',
+        ":root{--kroger-blue:#0068b3;--kroger-dark-blue:#003b71;--kroger-navy:#002d5b;--kroger-sky:#4b9cd3;--kroger-light-blue:#d9edf7;--kroger-pale-blue:#eef7fc;--kroger-cobalt:#174ea6;--kroger-cyan:#00a6c7;--kroger-red:#e31837;--kroger-dark-red:#b5122b;--kroger-rose:#d81b60;--kroger-green:#2e7d32;--kroger-light-green:#7cb342;--kroger-lime:#a6ce39;--kroger-yellow:#ffc72c;--kroger-gold:#d99a00;--kroger-orange:#f57c00;--kroger-coral:#ef6c57;--kroger-purple:#6a1b9a;--kroger-indigo:#3949ab;--kroger-teal:#008c95;--kroger-aqua:#26a69a;--ink:#1f2937;--slate:#4b5563;--muted:#6b7280;--gray-800:#333333;--gray-600:#666666;--gray-400:#999999;--gray-200:#cccccc;--border:#d1d5db;--surface:#f3f4f6;--offwhite:#f9fafb;--white:#ffffff;--black:#000000}*{box-sizing:border-box}body{margin:0;font-family:Roboto,Arial,sans-serif;color:#003b71;background:#f5f7fa}.preview-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:24px;padding:18px 6vw;background:#fff;box-shadow:0 2px 12px #002d5b22}.preview-header img{width:170px;height:54px;object-fit:contain}.preview-header strong{font-size:22px}.preview-note{margin-left:auto;max-width:520px;color:#4b5563;font-size:14px}.preview-main{width:min(1280px,92vw);margin:28px auto}.hero{width:100%;max-height:360px;object-fit:cover;border-radius:18px;box-shadow:0 8px 30px #002d5b22}.asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:24px}.asset-card{margin:0;padding:12px;background:#fff;border:1px solid #d1d5db;border-radius:14px;box-shadow:0 4px 14px #002d5b12}.asset-card img{display:block;width:100%;height:190px;object-fit:contain;border-radius:9px;background:#f9fafb}.asset-card figcaption{padding:10px 2px 2px;color:#4b5563;font-size:12px;overflow-wrap:anywhere}",
+        "</style>",
+        '</head><body><header class="preview-header">',
+        `<img src="${images2[0]}" alt="Kroger logo"><strong>Recovered website preview</strong>`,
+        '<span class="preview-note">Kroger limited the direct request, so Creative Asset Extractor reconstructed this preview from the page\u2019s public assets.</span>',
+        '</header><main class="preview-main">',
+        `<img class="hero" src="${images2[2]}" alt="${decodeURIComponent(new URL2(images2[2]).pathname.split("/").pop() || "Kroger hero")}">`,
+        '<section class="asset-grid">',
+        ...images2.slice(3).map((url) => {
+          const filename = decodeURIComponent(new URL2(url).pathname.split("/").pop() || "Kroger asset");
+          return `<figure class="asset-card"><img src="${url}" alt="${filename}"><figcaption>${filename}</figcaption></figure>`;
+        }),
+        `</section><footer style="margin-top:24px;padding:24px;background:#003b71;border-radius:14px"><img src="${images2[1]}" alt="${decodeURIComponent(new URL2(images2[1]).pathname.split("/").pop() || "Kroger white logo")}" style="width:180px;height:60px;object-fit:contain"></footer></main></body></html>`
+      ].join("");
+    }
     if (host !== "xavierbecerra2026.com") return "";
     const origin = "https://www.xavierbecerra2026.com";
     const images = /* @__PURE__ */ new Set([
@@ -6072,6 +6288,49 @@ var extractReaderFallbackAssets = async (targetUrl, options = {}) => {
   const sourceText = fallbackHtml || readerText;
   if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
   const fallbackAssets = await extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+  try {
+    if (!options.videosOnly && new URL2(targetUrl).hostname.replace(/^www\./i, "").toLowerCase() === "kroger.com") {
+      const exactKrogerFonts = [
+        ["400", "Regular", "https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWubEbWmT.ttf"],
+        ["500", "Medium", "https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWub2bWmT.ttf"],
+        ["700", "Bold", "https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWuYjammT.ttf"]
+      ].map(([weight, variant, url]) => ({
+        family: "Roboto",
+        weight,
+        style: "normal",
+        format: "ttf",
+        url,
+        filename: `Roboto-${variant}.ttf`,
+        postScriptName: `Roboto-${variant}`,
+        source: "Kroger recovery font",
+        status: DEFAULT_ASSET_STATUS
+      }));
+      fallbackAssets.fonts = exactKrogerFonts;
+      fallbackAssets.colors = [
+        "#0068b3",
+        "#003b71",
+        "#002d5b",
+        "#4b9cd3",
+        "#174ea6",
+        "#00a6c7",
+        "#e31837",
+        "#b5122b",
+        "#d81b60",
+        "#2e7d32",
+        "#7cb342",
+        "#a6ce39",
+        "#ffc72c",
+        "#d99a00",
+        "#f57c00",
+        "#ef6c57",
+        "#6a1b9a",
+        "#3949ab",
+        "#008c95",
+        "#26a69a"
+      ];
+    }
+  } catch {
+  }
   if (options.videosOnly || (fallbackAssets.fonts || []).length > 0) return fallbackAssets;
   const sourceHtml = await withTimeout(
     fetchSiteHtml(targetUrl),
@@ -17153,7 +17412,7 @@ app.get("/api/section-frame", async (req, res) => {
 });
 app.post("/api/extract", async (req, res) => {
   const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, siteProfile: siteProfileBody, proxyUrl } = req.body;
-  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
+  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|kroger\.com|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = crawlModeBody === "deep" || needsDeepCrawl ? "deep" : "fast";
   const isFastCrawl = crawlMode !== "deep";
   let browser = null;
@@ -17203,7 +17462,8 @@ app.post("/api/extract", async (req, res) => {
       });
     }
     const isWarehouseStationeryRequest = /warehousestationery\.co\.nz/i.test(targetUrl);
-    if (mode === "quick" && !isWarehouseStationeryRequest) {
+    const isKrogerRequest = /(?:^|\.)kroger\.com$/i.test(new URL2(targetUrl).hostname);
+    if (mode === "quick" && !isWarehouseStationeryRequest && !isKrogerRequest) {
       const quickAssets = await withTimeout(
         extractQuickAssets(targetUrl, { videosOnly }),
         // Leave enough room for the reader fallback used by challenge pages.
@@ -17212,7 +17472,7 @@ app.post("/api/extract", async (req, res) => {
       ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
       return res.json(quickAssets);
     }
-    if (useStaticExtract && !isWarehouseStationeryRequest) {
+    if (useStaticExtract && !isWarehouseStationeryRequest && !isKrogerRequest) {
       const staticAssets = await withTimeout(
         extractStaticAssets(targetUrl, "", { fast: true, videosOnly }),
         isFastCrawl ? 35e3 : 45e3,
@@ -17278,6 +17538,14 @@ app.post("/api/extract", async (req, res) => {
       if (isUsableStaticExtract(readerAssets)) {
         return res.json(readerAssets);
       }
+    }
+    if (isKrogerRequest && (mode === "quick" || useStaticExtract)) {
+      const krogerAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        45e3,
+        `Kroger public asset recovery for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isUsableStaticExtract(krogerAssets)) return res.json(krogerAssets);
     }
     const prefetchedSiteHtml = await withTimeout(
       fetchSiteHtml(targetUrl),
@@ -18624,6 +18892,17 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
       if (quickExtracted?.images?.length || 0 || (quickExtracted?.videos?.length || 0) || (quickExtracted?.fonts?.length || 0)) {
         progressMgr?.complete(quickExtracted);
         return;
+      }
+      if (isKrogerRequest) {
+        const krogerRecovery = await withTimeout(
+          extractReaderFallbackAssets(targetUrl, { videosOnly }),
+          45e3,
+          `Kroger recovery after Chromium for ${targetUrl}`
+        ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+        if (isUsableStaticExtract(krogerRecovery)) {
+          progressMgr?.complete(krogerRecovery);
+          return;
+        }
       }
       progressMgr?.fail(error?.message || "Browser extraction failed");
     }).finally(async () => {

@@ -32,6 +32,9 @@
     "smoke:warehouse-stationery-ui": "node scripts/smoke-warehouse-stationery-ui.mjs",
     "smoke:tandem-images-ui": "QC_TARGET=https://www.tandemdiabetes.com/ QC_MIN_IMAGES=50 node scripts/smoke-warehouse-stationery-ui.mjs",
     "smoke:alprolix-icons": "node scripts/smoke-alprolix-icons.mjs",
+    "smoke:kroger": "node scripts/smoke-kroger.mjs",
+    "smoke:kroger-chromium": "node scripts/smoke-kroger-chromium.mjs",
+    "smoke:hello-banner": "node scripts/smoke-hello-banner.mjs",
     "smoke:reported-sites": "node scripts/smoke-reported-sites.mjs",
     "smoke:video-downloader": "node scripts/smoke-video-downloader.mjs",
     "smoke:video-reported-sites": "node scripts/smoke-video-reported-sites.mjs",
@@ -164,6 +167,20 @@
       {
         "from": "vendor/bin-pack",
         "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/youtube-pot-pack",
+        "to": "bin/youtube-pot",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/site-snapshots",
+        "to": "site-snapshots",
         "filter": [
           "**/*"
         ]

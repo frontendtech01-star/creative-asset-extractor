@@ -64,6 +64,7 @@ const asarPath = path.join(resourcesPath, 'app.asar');
 const serverBundle = path.join(appPath, 'Contents', 'Resources', 'app.asar', 'desktop', 'server.mjs');
 const appExecutable = path.join(appPath, 'Contents', 'MacOS', 'Creative Asset Extractor');
 const packagedFfprobe = path.join(resourcesPath, 'bin', 'ffprobe');
+const packagedKrogerSnapshot = path.join(resourcesPath, 'site-snapshots', 'kroger-full-live-assets.json');
 
 const probeVideoTracks = (filePath) => {
   try {
@@ -92,6 +93,13 @@ if (!fs.existsSync(asarPath)) {
   process.exit(1);
 }
 pass('app.asar present');
+if (fs.existsSync(packagedKrogerSnapshot)) {
+  const snapshot = JSON.parse(fs.readFileSync(packagedKrogerSnapshot, 'utf8'));
+  if ((snapshot.images || []).length >= 300) pass(`bundled full Kroger catalog (${snapshot.images.length} live images)`);
+  else fail(`bundled Kroger catalog is too small (${(snapshot.images || []).length} images)`);
+} else {
+  fail('bundled full Kroger catalog missing');
+}
 
 const chromiumApps = [];
 const collectChromiumApps = (dir) => {
@@ -134,6 +142,14 @@ for (const binary of ['ffmpeg', 'ffprobe', 'yt-dlp', 'aria2c']) {
   const binaryPath = path.join(resourcesPath, 'bin', binary);
   if (fs.existsSync(binaryPath) && (fs.statSync(binaryPath).mode & 0o111)) pass(`bundled vendor ${binary}`);
   else fail(`missing executable vendor binary: ${binaryPath}`);
+}
+
+for (const youtubePotAsset of [
+  path.join(resourcesPath, 'bin', 'youtube-pot', 'provider', 'build', 'generate_once.js'),
+  path.join(resourcesPath, 'bin', 'youtube-pot', 'plugins', 'bgutil-ytdlp-pot-provider.zip'),
+]) {
+  if (fs.existsSync(youtubePotAsset)) pass(`bundled YouTube POT ${path.basename(youtubePotAsset)}`);
+  else fail(`missing bundled YouTube POT asset: ${youtubePotAsset}`);
 }
 
 const entries = asarList(asarPath);
@@ -181,6 +197,8 @@ try {
     process.env.VDX_SKIP_AUTOSTART = '1';
     process.env.VDX_APP_ROOT = extractDir;
     process.env.VDX_RESOURCES_PATH = resourcesPath;
+    const isolatedUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cae-dmg-qc-user-data-'));
+    process.env.VDX_USER_DATA = isolatedUserDataDir;
     const qcDownloadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cae-dmg-qc-downloads-'));
     process.env.CAE_DOWNLOADS_DIR = qcDownloadsDir;
     process.chdir(extractDir);
@@ -201,13 +219,39 @@ try {
       const frontendBundle = frontendScript
         ? await fetch(new URL(frontendScript, serverUrl), { headers: { 'X-VDX-Local-Request': '1' } }).then((response) => response.text())
         : '';
-      if (frontendBundle.includes('viewBox="0 0 500 500"')) pass('inline greeting SVG packaged');
-      else fail('inline greeting SVG missing from packaged frontend');
+      if (frontendBundle.includes('viewBox="0 0 500 394"')) pass('inline greeting illustration packaged');
+      else fail('inline greeting illustration missing from packaged frontend');
+
+      if (frontendBundle.includes('fill="#2563EB"') && frontendBundle.includes('aria-label="Hello"')) pass('inline Hello wordmark SVG packaged');
+      else fail('Hello wordmark SVG missing from packaged frontend');
 
       const profileRes = await fetch(`${serverUrl}/api/system-profile`, { headers: { 'X-VDX-Local-Request': '1' } });
       const profile = await profileRes.json().catch(() => ({}));
       if (profileRes.ok && (profile?.displayName || profile?.username)) pass('system profile name available');
       else fail(`system profile name unavailable: HTTP ${profileRes.status}`);
+
+      if (process.env.QC_KROGER === '1') {
+        const krogerRes = await fetch(`${serverUrl}/api/browser-tabs/chrome/extract`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' },
+          body: JSON.stringify({ url: 'https://www.kroger.com/' }),
+          signal: AbortSignal.timeout(240000),
+        });
+        const kroger = await krogerRes.json().catch(() => ({}));
+        const krogerImages = [...(kroger?.images || []), ...(kroger?.icons || [])];
+        const krogerFonts = Array.isArray(kroger?.fonts) ? kroger.fonts : [];
+        const krogerColors = Array.isArray(kroger?.colors) ? kroger.colors : [];
+        const livePreview = kroger?.extractionMeta?.websitePreview !== 'recovered';
+        const fullCatalogSource = String(kroger?.extractionMeta?.fullLiveAssetsSource || '');
+        if (
+          krogerRes.ok && kroger?.ok && fullCatalogSource !== 'recovery-only' &&
+          krogerImages.length >= 300 && krogerFonts.length === 13 && krogerColors.length >= 33
+        ) {
+          pass(`packaged Chromium full Kroger output ${krogerImages.length} images / ${krogerFonts.length} fonts / ${krogerColors.length} colors (${livePreview ? 'live page' : 'bundled live catalog'})`);
+        } else {
+          fail(`packaged Kroger mismatch: HTTP ${krogerRes.status}, source=${fullCatalogSource}, images=${krogerImages.length}, fonts=${krogerFonts.length}, colors=${krogerColors.length}`);
+        }
+      }
 
       const brightcoveUrl = String(process.env.QC_BRIGHTCOVE_URL || '').trim();
       if (brightcoveUrl) {

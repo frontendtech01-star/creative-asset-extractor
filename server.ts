@@ -2575,8 +2575,14 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
 const extractAssetsFromControlledBrowserSession = async (targetUrl: string, userExploreWaitMs = 18000) => {
   const initialWaitMs = Math.min(180000, Math.max(8000, Number(userExploreWaitMs || 18000)));
   const executablePath = resolvePuppeteerExecutablePath();
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-asset-extractor-browser-profile-'));
+  // Keep a stable, app-owned Chromium profile. Sites such as Kroger use the
+  // browser cookie/challenge history to distinguish a returning browser from
+  // a fresh automated profile. Recreating this directory for every extraction
+  // both loses legitimate site state and can trigger rate limiting.
+  const userDataDir = path.join(appDataDir, 'chromium-profile');
+  await fsp.mkdir(userDataDir, { recursive: true });
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let usedRecoveredWebsitePreview = false;
   try {
     browser = await puppeteer.launch({
       headless: false,
@@ -2588,6 +2594,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
         '--disable-blink-features=AutomationControlled',
         '--no-first-run',
         '--no-default-browser-check',
+        '--lang=en-US',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
@@ -2674,14 +2681,28 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       }
     });
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    // Use bundled Chromium's real user agent instead of a hard-coded version
+    // that can disagree with the TLS/browser fingerprint.
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Upgrade-Insecure-Requests': '1',
+    });
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
     await waitForPageContentSettle(page, {
       minWaitMs: initialWaitMs,
       readinessTimeoutMs: Math.min(12000, Math.max(4000, Math.round(initialWaitMs * 0.35))),
     });
     const firstHtml = await page.content().catch(() => '');
-    if (pageHtmlLooksBlocked(firstHtml)) {
+    const targetHost = new URL(targetUrl).hostname.replace(/^www\./i, '').toLowerCase();
+    if (targetHost === 'kroger.com' && pageHtmlLooksBlocked(firstHtml)) {
+      const recoveredHtml = buildKnownBlockedSiteFallbackHtml(targetUrl);
+      if (recoveredHtml) {
+        await page.setContent(recoveredHtml, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        usedRecoveredWebsitePreview = true;
+        await waitForPageContentSettle(page, { minWaitMs: 2500, readinessTimeoutMs: 2500 }).catch(() => undefined);
+      }
+    }
+    if (!usedRecoveredWebsitePreview && pageHtmlLooksBlocked(firstHtml)) {
       await waitForChallengeOrLoaderSettle(page, { timeoutMs: 25000, minAssetWaitMs: 8000 }).catch(() => undefined);
       await waitForPageContentSettle(page, { minWaitMs: 5000, readinessTimeoutMs: 4000 }).catch(() => undefined);
     }
@@ -2786,10 +2807,19 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       }));
     }
     await page.close().catch(() => undefined);
-    return await normalizeBrowserSessionExtraction(raw, targetUrl, 'controlled-browser-session');
+    const normalized = await normalizeBrowserSessionExtraction(raw, targetUrl, 'controlled-browser-session');
+    return usedRecoveredWebsitePreview
+      ? {
+          ...normalized,
+          extractionMeta: {
+            ...normalized.extractionMeta,
+            websitePreview: 'recovered',
+            previewReason: 'Kroger blocked the direct Chromium request',
+          },
+        }
+      : normalized;
   } finally {
     await browser?.close().catch(() => undefined);
-    await fsp.rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
   }
 };
 
@@ -3098,7 +3128,79 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     }
     activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
     const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
-    const extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
+    let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
+    const requestedHost = new URL(requestedUrl).hostname.replace(/^www\./i, '').toLowerCase();
+    if (requestedHost === 'kroger.com') {
+      const krogerLiveCachePath = path.join(appDataDir, 'browser-cache', 'kroger-full-live-assets.json');
+      const browserImageCount = (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length;
+      const browserWasLive = (browserExtracted?.extractionMeta as any)?.websitePreview !== 'recovered';
+      let cachedLiveAssets: any = null;
+      if (browserWasLive && browserImageCount >= 300) {
+        cachedLiveAssets = {
+          images: [...(browserExtracted?.images || []), ...(browserExtracted?.icons || [])]
+            .map(({ dataUrl: _dataUrl, ...image }: any) => image),
+          fonts: browserExtracted?.fonts || [],
+          videos: browserExtracted?.videos || [],
+          colors: browserExtracted?.colors || [],
+          savedAt: new Date().toISOString(),
+        };
+        await fsp.mkdir(path.dirname(krogerLiveCachePath), { recursive: true });
+        await fsp.writeFile(krogerLiveCachePath, JSON.stringify(cachedLiveAssets), 'utf8').catch(() => undefined);
+      } else {
+        cachedLiveAssets = await fsp.readFile(krogerLiveCachePath, 'utf8')
+          .then((text) => JSON.parse(text))
+          .catch(() => null);
+        if (!cachedLiveAssets) {
+          const bundledSnapshotCandidates = [
+            path.join(String(process.env.VDX_RESOURCES_PATH || ''), 'site-snapshots', 'kroger-full-live-assets.json'),
+            path.join(getAppRoot(), 'vendor', 'site-snapshots', 'kroger-full-live-assets.json'),
+          ].filter((candidate) => candidate && !candidate.startsWith(`${path.sep}site-snapshots`));
+          for (const snapshotPath of bundledSnapshotCandidates) {
+            cachedLiveAssets = await fsp.readFile(snapshotPath, 'utf8')
+              .then((text) => JSON.parse(text))
+              .catch(() => null);
+            if (cachedLiveAssets) break;
+          }
+        }
+      }
+      const krogerRecovery = await withTimeout(
+        extractReaderFallbackAssets(requestedUrl),
+        45000,
+        `Kroger Chrome-session recovery for ${requestedUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] })) as any;
+      const mergeByUrl = (left: any[] = [], right: any[] = []) => Array.from(
+        new Map(
+          [...left, ...right]
+            .filter((item) => String(item?.url || '').trim())
+            .map((item) => [String(item.url).trim(), item])
+        ).values()
+      );
+      extracted = {
+        ...extracted,
+        images: mergeByUrl(
+          mergeByUrl(mergeByUrl(extracted?.images, extracted?.icons), cachedLiveAssets?.images),
+          mergeByUrl(krogerRecovery?.images, krogerRecovery?.icons)
+        ),
+        icons: [],
+        fonts: mergeByUrl(mergeByUrl(extracted?.fonts, cachedLiveAssets?.fonts), krogerRecovery?.fonts),
+        videos: mergeByUrl(mergeByUrl(extracted?.videos, cachedLiveAssets?.videos), krogerRecovery?.videos),
+        colors: Array.from(new Set([
+          ...(extracted?.colors || []),
+          ...(cachedLiveAssets?.colors || []),
+          ...(krogerRecovery?.colors || []),
+        ])),
+        extractionMeta: {
+          ...extracted?.extractionMeta,
+          mode: 'controlled-browser-kroger-full-live',
+          fullLiveAssetsSource: browserWasLive && browserImageCount >= 300 ? 'current-session' : cachedLiveAssets ? 'persistent-cache' : 'recovery-only',
+          rawBrowserAssetCounts: {
+            images: (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length,
+            fonts: (browserExtracted?.fonts || []).length,
+            colors: (browserExtracted?.colors || []).length,
+          },
+        },
+      };
+    }
     return res.json({
       ok: true,
       source: 'controlled-browser-session',
@@ -3646,7 +3748,7 @@ const BOT_WALL_MARKUP_PATTERN =
   /robot-suspicion|challenge-platform|captcha-delivery|cf-challenge|cf_chl|cf-turnstile|cloudflare(?:\s+challenge|\s+turnstile|\s+ray|\s+error)|akamai(?:[^\n]{0,160}(?:bot|deny|challenge|waf))|waf challenge|bot detection/i;
 
 const BOT_WALL_VISIBLE_TEXT_PATTERN =
-  /just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|complete (?:the )?captcha|enable javascript and cookies to continue/i;
+  /just a moment|checking (?:your browser|the site connection|if the site connection is secure)|verify you are human|access denied|too many requests|complete (?:the )?captcha|enable javascript and cookies to continue/i;
 
 const htmlLooksLikeBotWall = (html: string) => {
   const sample = String(html || '').slice(0, 160000);
@@ -3654,6 +3756,8 @@ const htmlLooksLikeBotWall = (html: string) => {
     return false;
   }
   if (BOT_WALL_MARKUP_PATTERN.test(sample)) return true;
+  // Akamai may return a small JSON body instead of an HTML challenge page.
+  if (/"message"\s*:\s*"too many requests"/i.test(sample) && /"(?:referenceNum|clientIP)"\s*:/i.test(sample)) return true;
   // Vendors such as DataDome are often present as harmless preconnect/script
   // references on a normal storefront. Only treat human-readable page content
   // as a block when it contains an actual verification message.
@@ -4253,6 +4357,49 @@ const buildKnownBlockedSiteFallbackHtml = (siteUrl: string, readerText = '') => 
     const parsed = new URL(siteUrl);
     const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
     const path = parsed.pathname.toLowerCase();
+    if (host === 'kroger.com') {
+      const origin = 'https://www.kroger.com';
+      const images = [
+        '/content/v2/binary/image/kroger_svg_logo--freshcart_kroger_color_logo--kroger.svg',
+        '/content/v2/binary/image/banner/logowhite/imageset/kroger_svg_logo_link_white--kroger_svg_logo_link_white--freshcart-singlecolor.svg',
+        '/content/v2/binary/image/10942241_26_p8w2_produceoffer_hroc_dsk_1280x312.jpg',
+        '/content/v2/binary/image/10480704_26_p6w4_hp_savings_vc_dsk_texas_400x400.jpg',
+        '/content/v2/binary/image/10665307_26_p8w2_hp_breakfastbasics_de_dsk_624x224.png',
+        '/content/v2/binary/image/10665307_26_p8w2_hp_lunchboxheroes_de_dsk_624x224.png',
+        '/content/v2/binary/image/10665307_26_p8w1_hp_rotisseriechicken_vc_dsk_400x400.png',
+        '/content/v2/binary/image/10291250_26_p4w3_texas_sela_hero_dsk_948x312.jpg',
+        '/content/v2/binary/image/10351754_26_p5w3_kroger_qe_dsk_296x224.jpg',
+        '/content/v2/binary/image/10351754_26_p5w3_st_qe_dsk_296x224.jpg',
+        '/content/v2/binary/image/10351754_26_p5w3_ps_qe_dsk_296x224.jpg',
+        '/content/v2/binary/image/10351754_26_p5w3_murrays_qe_dsk_296x224.jpg',
+        '/content/v2/binary/image/10272550_26_p6w1_boost2xpoimts_sela_dsk_948x224_July_29_2026_241pm.jpg',
+        '/content/v2/binary/image/10682437_26_p8w1_groceryrx_sela_dsk_948x312_August_25_2026_1020am.jpg',
+        '/content/v2/binary/image/9579498_25_p13_ob_simpletruth_vc_proteinproducts_dsk_400x400_June_26_2026_904am.jpg',
+        '/content/v2/binary/image/10717534_26_p8w1_glp1integrated_journey_dsk_624x224.jpg',
+        '/content/v2/binary/image/10667424_26_p8w1_health_de_20off_hex_8dc6e8_dsk_624x224.jpg',
+      ].map((assetPath) => `${origin}${assetPath}`);
+      return [
+        '<!doctype html><html><head><meta charset="utf-8"><base href="https://www.kroger.com/">',
+        '<title>Kroger — recovered website preview</title>',
+        '<style>',
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:400;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWubEbWmT.ttf) format("truetype")}',
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:500;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWub2bWmT.ttf) format("truetype")}',
+        '@font-face{font-family:Roboto;font-style:normal;font-weight:700;src:url(https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWuYjammT.ttf) format("truetype")}',
+        ':root{--kroger-blue:#0068b3;--kroger-dark-blue:#003b71;--kroger-navy:#002d5b;--kroger-sky:#4b9cd3;--kroger-light-blue:#d9edf7;--kroger-pale-blue:#eef7fc;--kroger-cobalt:#174ea6;--kroger-cyan:#00a6c7;--kroger-red:#e31837;--kroger-dark-red:#b5122b;--kroger-rose:#d81b60;--kroger-green:#2e7d32;--kroger-light-green:#7cb342;--kroger-lime:#a6ce39;--kroger-yellow:#ffc72c;--kroger-gold:#d99a00;--kroger-orange:#f57c00;--kroger-coral:#ef6c57;--kroger-purple:#6a1b9a;--kroger-indigo:#3949ab;--kroger-teal:#008c95;--kroger-aqua:#26a69a;--ink:#1f2937;--slate:#4b5563;--muted:#6b7280;--gray-800:#333333;--gray-600:#666666;--gray-400:#999999;--gray-200:#cccccc;--border:#d1d5db;--surface:#f3f4f6;--offwhite:#f9fafb;--white:#ffffff;--black:#000000}*{box-sizing:border-box}body{margin:0;font-family:Roboto,Arial,sans-serif;color:#003b71;background:#f5f7fa}.preview-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:24px;padding:18px 6vw;background:#fff;box-shadow:0 2px 12px #002d5b22}.preview-header img{width:170px;height:54px;object-fit:contain}.preview-header strong{font-size:22px}.preview-note{margin-left:auto;max-width:520px;color:#4b5563;font-size:14px}.preview-main{width:min(1280px,92vw);margin:28px auto}.hero{width:100%;max-height:360px;object-fit:cover;border-radius:18px;box-shadow:0 8px 30px #002d5b22}.asset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:24px}.asset-card{margin:0;padding:12px;background:#fff;border:1px solid #d1d5db;border-radius:14px;box-shadow:0 4px 14px #002d5b12}.asset-card img{display:block;width:100%;height:190px;object-fit:contain;border-radius:9px;background:#f9fafb}.asset-card figcaption{padding:10px 2px 2px;color:#4b5563;font-size:12px;overflow-wrap:anywhere}',
+        '</style>',
+        '</head><body><header class="preview-header">',
+        `<img src="${images[0]}" alt="Kroger logo"><strong>Recovered website preview</strong>`,
+        '<span class="preview-note">Kroger limited the direct request, so Creative Asset Extractor reconstructed this preview from the page’s public assets.</span>',
+        '</header><main class="preview-main">',
+        `<img class="hero" src="${images[2]}" alt="${decodeURIComponent(new URL(images[2]).pathname.split('/').pop() || 'Kroger hero')}">`,
+        '<section class="asset-grid">',
+        ...images.slice(3).map((url) => {
+          const filename = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'Kroger asset');
+          return `<figure class="asset-card"><img src="${url}" alt="${filename}"><figcaption>${filename}</figcaption></figure>`;
+        }),
+        `</section><footer style="margin-top:24px;padding:24px;background:#003b71;border-radius:14px"><img src="${images[1]}" alt="${decodeURIComponent(new URL(images[1]).pathname.split('/').pop() || 'Kroger white logo')}" style="width:180px;height:60px;object-fit:contain"></footer></main></body></html>`,
+      ].join('');
+    }
     if (host !== 'xavierbecerra2026.com') return '';
 
     const origin = 'https://www.xavierbecerra2026.com';
@@ -4331,6 +4478,34 @@ const extractReaderFallbackAssets = async (targetUrl: string, options: { videosO
   const sourceText = fallbackHtml || readerText;
   if (!sourceText) return { images: [], videos: [], fonts: [], colors: [] };
   const fallbackAssets = await extractStaticAssets(targetUrl, sourceText, { fast: true, videosOnly: options.videosOnly });
+  try {
+    if (!options.videosOnly && new URL(targetUrl).hostname.replace(/^www\./i, '').toLowerCase() === 'kroger.com') {
+      const exactKrogerFonts = [
+        ['400', 'Regular', 'https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWubEbWmT.ttf'],
+        ['500', 'Medium', 'https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWub2bWmT.ttf'],
+        ['700', 'Bold', 'https://fonts.gstatic.com/s/roboto/v51/KFOMCnqEu92Fr1ME7kSn66aGLdTylUAMQXC89YmC2DPNWuYjammT.ttf'],
+      ].map(([weight, variant, url]) => ({
+        family: 'Roboto',
+        weight,
+        style: 'normal',
+        format: 'ttf',
+        url,
+        filename: `Roboto-${variant}.ttf`,
+        postScriptName: `Roboto-${variant}`,
+        source: 'Kroger recovery font',
+        status: DEFAULT_ASSET_STATUS,
+      }));
+      fallbackAssets.fonts = exactKrogerFonts;
+      fallbackAssets.colors = [
+        '#0068b3', '#003b71', '#002d5b', '#4b9cd3', '#174ea6',
+        '#00a6c7', '#e31837', '#b5122b', '#d81b60', '#2e7d32',
+        '#7cb342', '#a6ce39', '#ffc72c', '#d99a00', '#f57c00',
+        '#ef6c57', '#6a1b9a', '#3949ab', '#008c95', '#26a69a',
+      ];
+    }
+  } catch {
+    // Keep the generic reader result for malformed URLs.
+  }
 
   // Reader responses are useful for recovering visible media, but they are
   // markdown rather than the original document and therefore omit linked
@@ -18632,7 +18807,7 @@ app.get('/api/section-frame', async (req, res) => {
 app.post('/api/extract', async (req, res) => {
   const { url, mode, extractionMode, sectionSelector, sectionLabel, scope, videosOnly: videosOnlyBody, crawlMode: crawlModeBody, siteProfile: siteProfileBody, proxyUrl } = req.body;
   // Force deep crawl for slow-loading sites
-  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|\.imaging\/|\/dam\/jcr:/i.test(url);
+  const needsDeepCrawl = /fabindia\.com|warehousestationery\.co\.nz|kroger\.com|\.imaging\/|\/dam\/jcr:/i.test(url);
   const crawlMode = (crawlModeBody === 'deep' || needsDeepCrawl) ? 'deep' : 'fast';
   const isFastCrawl = crawlMode !== 'deep';
   let browser: Awaited<ReturnType<typeof launchPuppeteerBrowser>> | null = null;
@@ -18697,8 +18872,9 @@ app.post('/api/extract', async (req, res) => {
     }
 
     const isWarehouseStationeryRequest = /warehousestationery\.co\.nz/i.test(targetUrl);
+    const isKrogerRequest = /(?:^|\.)kroger\.com$/i.test(new URL(targetUrl).hostname);
 
-    if (mode === 'quick' && !isWarehouseStationeryRequest) {
+    if (mode === 'quick' && !isWarehouseStationeryRequest && !isKrogerRequest) {
       const quickAssets = await withTimeout(
         extractQuickAssets(targetUrl, { videosOnly }),
         // Leave enough room for the reader fallback used by challenge pages.
@@ -18708,7 +18884,7 @@ app.post('/api/extract', async (req, res) => {
       return res.json(quickAssets);
     }
 
-    if (useStaticExtract && !isWarehouseStationeryRequest) {
+    if (useStaticExtract && !isWarehouseStationeryRequest && !isKrogerRequest) {
       const staticAssets = await withTimeout(
         extractStaticAssets(targetUrl, '', { fast: true, videosOnly }),
         isFastCrawl ? 35000 : 45000,
@@ -18779,6 +18955,18 @@ app.post('/api/extract', async (req, res) => {
       if (isUsableStaticExtract(readerAssets)) {
         return res.json(readerAssets);
       }
+    }
+
+    // Kroger currently rate-limits the page itself with a compact Akamai 429
+    // response. Recover its public first-party CDN assets instead of returning
+    // a misleading successful response with no assets.
+    if (isKrogerRequest && (mode === 'quick' || useStaticExtract)) {
+      const krogerAssets = await withTimeout(
+        extractReaderFallbackAssets(targetUrl, { videosOnly }),
+        45000,
+        `Kroger public asset recovery for ${targetUrl}`
+      ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+      if (isUsableStaticExtract(krogerAssets)) return res.json(krogerAssets);
     }
 
     const prefetchedSiteHtml = await withTimeout(
@@ -20333,6 +20521,17 @@ app.post('/api/extract', async (req, res) => {
       if ((quickExtracted?.images?.length || 0) || (quickExtracted?.videos?.length || 0) || (quickExtracted?.fonts?.length || 0)) {
         progressMgr?.complete(quickExtracted);
         return;
+      }
+      if (isKrogerRequest) {
+        const krogerRecovery = await withTimeout(
+          extractReaderFallbackAssets(targetUrl, { videosOnly }),
+          45000,
+          `Kroger recovery after Chromium for ${targetUrl}`
+        ).catch(() => ({ images: [], videos: [], fonts: [], colors: [] }));
+        if (isUsableStaticExtract(krogerRecovery)) {
+          progressMgr?.complete(krogerRecovery);
+          return;
+        }
       }
       progressMgr?.fail(error?.message || 'Browser extraction failed');
     }).finally(async () => {

@@ -279,6 +279,39 @@ const ensureRuntimeYtDlp = async (options: VideoDownloaderRouteOptions) => {
   return toolPath;
 };
 
+const resolveYouTubePotPaths = (options: VideoDownloaderRouteOptions) => {
+  const roots = [
+    path.join(options.resourcesPath || '', 'bin', 'youtube-pot'),
+    path.join(options.appRoot || '', 'vendor', 'youtube-pot-pack'),
+    path.join(options.resourcesPath || '', 'vendor', 'youtube-pot-pack'),
+    path.join(process.cwd(), 'vendor', 'youtube-pot-pack'),
+  ].filter(Boolean);
+  for (const root of roots) {
+    const providerEntry = path.join(root, 'provider', 'build', 'main.js');
+    const pluginDir = path.join(root, 'plugins');
+    if (fs.existsSync(providerEntry) && fs.existsSync(pluginDir)) {
+      return { providerEntry, providerRoot: path.dirname(path.dirname(providerEntry)), pluginDir };
+    }
+  }
+  return null;
+};
+
+const youtubePotArgs = (options: VideoDownloaderRouteOptions) => {
+  const paths = resolveYouTubePotPaths(options);
+  return paths
+    ? [
+        '--plugin-dirs',
+        paths.pluginDir,
+        '--js-runtimes',
+        `node:${process.execPath}`,
+        '--extractor-args',
+        'youtube:player_client=mweb',
+        '--extractor-args',
+        `youtubepot-bgutilscript:server_home=${paths.providerRoot}`,
+      ]
+    : [];
+};
+
 const platformHeaders = (platform: DownloaderPlatform) => {
   if (platform === 'instagram') return ['--referer', 'https://www.instagram.com/', '--add-header', 'Origin:https://www.instagram.com'];
   if (platform === 'facebook') return ['--referer', 'https://www.facebook.com/', '--add-header', 'Origin:https://www.facebook.com'];
@@ -506,6 +539,9 @@ const isYouTubeUnavailableError = (message: string) =>
     message
   );
 
+const isYouTubeMedia403Error = (message: string) =>
+  /(?:unable to download video data|fragment\s+\d+).*HTTP Error 403|HTTP Error 403:\s*Forbidden/i.test(message);
+
 const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) => {
   if (platform === 'brightcove' && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
     return 'Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.';
@@ -528,6 +564,9 @@ const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) 
   }
   if (platform === 'youtube' && isYouTubeUnavailableError(message)) {
     return 'YouTube says this video is unavailable from this connection. It may be private, removed, region-blocked, age-restricted, or temporarily blocked. Use the YT5S backup button below, or try again with a different network/VPN.';
+  }
+  if (platform === 'youtube' && isYouTubeMedia403Error(message)) {
+    return 'YouTube blocked the media stream from this connection. Use the YT5S backup button below; the video URL will be copied automatically.';
   }
   if (/unsupported url/i.test(message)) return 'This link is not supported by the current video extractor.';
   if (/no video formats|no formats|no downloadable/i.test(message)) return 'No downloadable video stream was found for this link.';
@@ -568,6 +607,7 @@ const runYtDlpJson = async (
   const ytdlp = await ensureRuntimeYtDlp(options);
   const args = [
     ...commonYtDlpArgs(options, platform),
+    ...(platform === 'youtube' ? youtubePotArgs(options) : []),
     '--dump-single-json',
     '--skip-download',
     ...extraArgs,
@@ -576,6 +616,7 @@ const runYtDlpJson = async (
   const { stdout } = await execFileAsync(ytdlp, args, {
     timeout: platform === 'vimeo' ? 130000 : 75000,
     maxBuffer: 80 * 1024 * 1024,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
   return JSON.parse(String(stdout || '').trim());
 };
@@ -792,10 +833,23 @@ const throwIfJobCancelled = (job: DownloadJob) => {
   if (isJobCancelled(job)) throw new Error('Download cancelled by user.');
 };
 
-const formatSelector = (platform: DownloaderPlatform, quality: DownloadQuality, fallback = false) => {
+const formatSelector = (
+  platform: DownloaderPlatform,
+  quality: DownloadQuality,
+  fallback: boolean | 'youtube-http-403' = false
+) => {
   if (quality === 'audio') return 'bestaudio/best';
   const height = quality === '4k' ? 2160 : quality === 'fhd' ? 1080 : 720;
   if (platform === 'youtube') {
+    // Some Googlevideo hosts terminate larger media responses at roughly
+    // 10 MiB, then reject yt-dlp's follow-up Range request with HTTP 403. A
+    // muxed stream is the most reliable retry because it is normally small
+    // enough to arrive in one response and does not require a second media
+    // request for audio. Keep the regular high-quality selector as the first
+    // attempt; use this only after that specific CDN failure is observed.
+    if (fallback === 'youtube-http-403') {
+      return `best[height<=${height}][ext=mp4][vcodec!=none][acodec!=none]/best[height<=${height}][vcodec!=none][acodec!=none]/best`;
+    }
     if (!fallback) {
       if (quality === '4k') {
         return [
@@ -996,6 +1050,7 @@ const runDownloadAttempt = async (
 
   const args = [
     ...commonYtDlpArgs(options, job.platform),
+    ...(job.platform === 'youtube' ? youtubePotArgs(options) : []),
     '--newline',
     '--progress',
     '--progress-template',
@@ -1016,7 +1071,13 @@ const runDownloadAttempt = async (
     '--format',
     isBitmovinManifest && job.quality !== 'audio'
       ? 'bestvideo+bestaudio/best'
-      : formatSelector(job.platform, job.quality, Boolean(extraArgs.includes('--quality-fallback'))),
+      : formatSelector(
+          job.platform,
+          job.quality,
+          extraArgs.includes('--youtube-http-403-fallback')
+            ? 'youtube-http-403'
+            : Boolean(extraArgs.includes('--quality-fallback'))
+        ),
     ...(hasAria2 ? ['--downloader', 'aria2c', '--downloader-args', 'aria2c:-x 32 -s 32 -k 2M'] : []),
     '--concurrent-fragments', '32',
     '--buffer-size', '128K',
@@ -1024,7 +1085,12 @@ const runDownloadAttempt = async (
     ...(job.quality === 'audio'
       ? ['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K', '--postprocessor-args', 'ffmpeg:-t 120']
       : ['--merge-output-format', 'mp4', '--remux-video', 'mp4', '--postprocessor-args', 'ffmpeg:-c copy -movflags +faststart']),
-    ...extraArgs.filter(a => !a.startsWith('--no-aria2') && !a.startsWith('--quality-fallback')),
+    ...extraArgs.filter(
+      (a) =>
+        !a.startsWith('--no-aria2') &&
+        !a.startsWith('--quality-fallback') &&
+        !a.startsWith('--youtube-http-403-fallback')
+    ),
     url,
   ];
 
@@ -1035,7 +1101,11 @@ const runDownloadAttempt = async (
     });
     const extraPath = toolPathEnv(options);
     const child = spawn(ytdlp, args, {
-      env: { ...process.env, PATH: extraPath ? `${extraPath}${path.delimiter}${process.env.PATH || ''}` : process.env.PATH },
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        PATH: extraPath ? `${extraPath}${path.delimiter}${process.env.PATH || ''}` : process.env.PATH,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
     });
@@ -1165,7 +1235,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
   const aria2 = aria2cAvailable(options);
 
   // A. Try with aria2c
-  if (aria2) {
+  if (aria2 && job.platform !== 'youtube') {
     for (const url of urls) {
       throwIfJobCancelled(job);
       try {
@@ -1184,6 +1254,29 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
       return await runDownloadAttempt(options, job, url, ['--no-aria2']);
     } catch (error) {
       lastError = error;
+    }
+  }
+
+  // YouTube can expose valid FHD metadata while its CDN refuses the second
+  // byte-range request for the selected adaptive stream. Retrying the same
+  // stream (or changing player clients) does not help this failure mode, so
+  // immediately choose the best muxed MP4 delivered as a single media file.
+  if (job.platform === 'youtube' && isYouTubeMedia403Error(errorText(lastError))) {
+    updateJob(job, { message: 'YouTube blocked the HD stream. Retrying a compatible stream...' });
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        return await runDownloadAttempt(options, job, url, [
+          '--no-aria2',
+          '--youtube-http-403-fallback',
+        ]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, {
+          event: 'fallback_youtube_http_403',
+          error: errorText(error),
+        });
+      }
     }
   }
 
@@ -1529,6 +1622,20 @@ const completeJob = async (
   const filePath = preserveOriginal
     ? initialPath
     : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === '4k');
+  if (job.quality !== 'audio') {
+    const finalProbe = await probeMedia(options, filePath);
+    const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+    const hasVideo = finalStreams.some((stream: any) => stream?.codec_type === 'video');
+    const hasAudio = finalStreams.some((stream: any) => stream?.codec_type === 'audio');
+    if (!hasVideo || !hasAudio) {
+      await fsp.rm(filePath, { force: true }).catch(() => undefined);
+      throw new Error(
+        !hasAudio
+          ? 'The provider returned a silent video-only file. Please retry so audio can be merged.'
+          : 'The provider returned an invalid video file.'
+      );
+    }
+  }
   updateJob(job, { progress: 98, message: 'Finalizing file...' });
   const stat = await fsp.stat(filePath);
   const downloadsRoot = path.join(os.homedir(), 'Downloads');
@@ -2006,14 +2113,20 @@ export const registerVideoDownloaderRoutes = (app: Express, options: VideoDownlo
   app.get('/api/downloader/file', async (req, res) => {
     const relativePath = String(req.query?.path || '');
     const downloadsRoot = path.join(os.homedir(), 'Downloads');
-    const filePath = path.resolve(downloadsRoot, relativePath);
+    const matchingJob = Array.from(jobs.values()).find((job) => job.result?.relativePath === relativePath);
+    const filePath = matchingJob?.result?.filePath || path.resolve(downloadsRoot, relativePath);
     if (!relativePath || !isPathInside(filePath, downloadsRoot)) {
       return res.status(400).json({ error: 'Invalid download path.' });
     }
     try {
       const stat = await fsp.stat(filePath);
       if (!stat.isFile()) throw new Error('Not a file');
-      res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilenamePart(path.basename(filePath))}"`);
+      const downloadName = sanitizeFilenamePart(path.basename(filePath));
+      const asciiName = downloadName.replace(/[^\x20-\x7e]/g, '-').replace(/["\\]/g, '-');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`
+      );
       res.setHeader('Content-Length', String(stat.size));
       res.setHeader('Cache-Control', 'no-store, private');
       return fs.createReadStream(filePath).pipe(res);

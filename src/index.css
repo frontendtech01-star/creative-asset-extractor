@@ -58,7 +58,88 @@
 }
 
 .greeting-title {
-  animation: greeting-enter 340ms cubic-bezier(.2,.8,.2,1) 70ms both;
+  animation: greeting-enter 300ms cubic-bezier(.2,.8,.2,1) 80ms both;
+}
+
+.greeting-hello-wordmark {
+  clip-path: inset(0 100% 0 0);
+  display: block;
+  height: 100%;
+  width: 100%;
+  animation: greeting-pencil-reveal 720ms cubic-bezier(.22,.72,.22,1) 180ms forwards;
+}
+
+.greeting-hello-wordmark svg {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.greeting-hello-draw {
+  align-self: baseline;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 1em;
+  width: 3.03em;
+}
+
+@keyframes greeting-pencil-reveal {
+  0% { clip-path: inset(0 100% 0 0); }
+  18% { clip-path: inset(0 80% 0 0); }
+  43% { clip-path: inset(0 57% 0 0); }
+  68% { clip-path: inset(0 31% 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+
+.greeting-name {
+  align-self: baseline;
+  font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  font-size: 0.88em;
+  line-height: 1;
+  margin-left: -0.14em;
+}
+
+.greeting-comma {
+  animation: greeting-comma-in 200ms ease-out forwards;
+  display: inline-block;
+  opacity: 0;
+}
+
+@keyframes greeting-comma-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.greeting-name-word {
+  animation: greeting-mask-in 300ms cubic-bezier(.2,.8,.2,1) forwards;
+  clip-path: inset(0 100% 0 0);
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(0.18em);
+  white-space: pre;
+}
+
+.greeting-subtitle-word {
+  animation: greeting-mask-in 140ms cubic-bezier(.2,.8,.2,1) forwards;
+  clip-path: inset(0 100% 0 0);
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(0.18em);
+  white-space: pre;
+}
+
+@keyframes greeting-mask-in {
+  0% {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0;
+    transform: translateY(0.18em);
+  }
+  35% { opacity: 1; }
+  100% {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .greeting-illustration-shell {
@@ -137,7 +218,25 @@
 
   .material-welcome,
   .greeting-title,
-  .greeting-illustration-shell {
+  .greeting-subtitle,
+  .greeting-illustration-shell,
+  .greeting-hello-wordmark,
+  .greeting-name-word,
+  .greeting-comma,
+  .greeting-subtitle-word {
     animation: none;
   }
+
+  .greeting-hello-wordmark {
+    clip-path: none;
+  }
+
+  .greeting-name-word,
+  .greeting-comma,
+  .greeting-subtitle-word {
+    clip-path: none;
+    opacity: 1;
+    transform: none;
+  }
+
 }
