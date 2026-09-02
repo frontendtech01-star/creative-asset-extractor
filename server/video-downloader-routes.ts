@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import archiver from 'archiver';
 import { resolveCreativeAssetsDir, resolvePlatformVideoAssetsDir } from '../src/lib/projectDownloadsPaths';
+import { classifyVideoFailure, retryLayersForFailure } from './video-download-fallbacks';
 
 const execFileAsync = promisify(execFile);
 
@@ -116,7 +117,7 @@ export type VideoDownloaderRouteOptions = {
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'tiktok', 'ispot', 'brightcove', 'direct'] as const;
+const SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'instagram', 'facebook', 'x', 'tiktok', 'ispot', 'brightcove', 'direct', 'unknown'] as const;
 const jobs = new Map<string, DownloadJob>();
 const pendingJobs: string[] = [];
 const cancelledJobs = new Set<string>();
@@ -253,9 +254,6 @@ const validateDownloaderUrl = (rawUrl: string, validateUrl?: (url: string) => un
   }
   validateUrl?.(parsed.href);
   const platform = detectDownloaderPlatform(parsed.href);
-  if (platform === 'unknown') {
-    throw new Error('Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, Brightcove, and iSpot.tv.');
-  }
   return { url: normalizeDownloaderUrl(parsed.href, platform), platform };
 };
 
@@ -334,6 +332,10 @@ const commonYtDlpArgs = (options: VideoDownloaderRouteOptions, platform: Downloa
     '--retries',
     '3',
     '--extractor-retries',
+    '3',
+    '--fragment-retries',
+    '5',
+    '--file-access-retries',
     '3',
     '--user-agent',
     USER_AGENT,
@@ -543,6 +545,9 @@ const isYouTubeMedia403Error = (message: string) =>
   /(?:unable to download video data|fragment\s+\d+).*HTTP Error 403|HTTP Error 403:\s*Forbidden/i.test(message);
 
 const friendlyDownloaderError = (platform: DownloaderPlatform, message: string) => {
+  if (classifyVideoFailure(message) === 'drm') {
+    return 'This stream is DRM-protected and cannot be downloaded.';
+  }
   if (platform === 'brightcove' && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
     return 'Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.';
   }
@@ -1257,6 +1262,59 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
     }
   }
 
+  // Retry only the recovery layers that match the observed failure. This
+  // avoids repeatedly issuing an identical request when the provider has
+  // already told us whether the problem is throttling, fragments, formats,
+  // authentication, or a browser challenge.
+  const failureKind = classifyVideoFailure(errorText(lastError));
+  const recoveryLayers = retryLayersForFailure(failureKind);
+  void writeLog(job.id, { event: 'failure_classified', failure_kind: failureKind, recovery_layers: recoveryLayers });
+
+  if (failureKind === 'drm') {
+    throw new Error('This stream is DRM-protected and cannot be downloaded.');
+  }
+
+  if (recoveryLayers.includes('refresh-extractor')) {
+    updateJob(job, { message: 'Refreshing expired video information...' });
+    await updateYtDlp(options);
+  }
+
+  if (recoveryLayers.includes('backoff')) {
+    updateJob(job, { message: 'Provider is busy. Retrying the request...' });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
+  if (recoveryLayers.includes('impersonation')) {
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: 'Retrying with browser-compatible networking...' });
+        return await runDownloadAttempt(options, job, url, ['--no-aria2', '--impersonate', 'chrome']);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: 'fallback_impersonation', error: errorText(error) });
+      }
+    }
+  }
+
+  if (recoveryLayers.includes('conservative-fragments')) {
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: 'Retrying with a conservative stream connection...' });
+        return await runDownloadAttempt(options, job, url, [
+          '--no-aria2',
+          '--concurrent-fragments', '1',
+          '--fragment-retries', '10',
+          '--retry-sleep', 'fragment:linear=1::3',
+        ]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: 'fallback_conservative_fragments', error: errorText(error) });
+      }
+    }
+  }
+
   // YouTube can expose valid FHD metadata while its CDN refuses the second
   // byte-range request for the selected adaptive stream. Retrying the same
   // stream (or changing player clients) does not help this failure mode, so
@@ -1303,7 +1361,7 @@ const runDownloadWithFallbacks = async (options: VideoDownloaderRouteOptions, jo
   }
 
   // D. Try with cookies if auth-like error
-  if (isAuthLikeError(errorText(lastError))) {
+  if (recoveryLayers.includes('cookies') || isAuthLikeError(errorText(lastError))) {
     updateJob(job, { message: job.cookiesFilePath ? 'Trying with cookies.txt...' : 'Cookies.txt required for this source...' });
     for (const cookies of cookieAttempts(job.platform, job.cookiesFilePath)) {
       for (const url of urls) {

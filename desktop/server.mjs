@@ -240,6 +240,35 @@ var removeEmptyCreativeAssetFolders = async (sourcePageUrl) => {
   await removeDirectoryWhenEmpty(root);
 };
 
+// server/video-download-fallbacks.ts
+var classifyVideoFailure = (input) => {
+  const message = String(input || "").toLowerCase();
+  if (/\bdrm\b|widevine|fairplay|playready|encrypted media/.test(message)) return "drm";
+  if (/not available in your country|geo(?:graphical)? restriction|region.?block/.test(message)) return "geo";
+  if (/login|sign in|private video|members.only|authentication|cookies? required|use --cookies/.test(message)) return "authentication";
+  if (/captcha|bot challenge|challenge_required|confirm you.re not a bot|impersonat/.test(message)) return "challenge";
+  if (/url has expired|signature has expired|token expired|403.*(?:signature|token)|expired.*(?:url|token)/.test(message)) return "expired";
+  if (/too many requests|http error 429|rate.?limit/.test(message)) return "rate-limit";
+  if (/fragment\s+\d+|failed to download fragment|fragment retries exhausted/.test(message)) return "fragment";
+  if (/http error (?:408|425|500|502|503|504)|timed? ?out|connection reset|temporary failure|network is unreachable/.test(message)) return "transient-http";
+  if (/requested format is not available|no video formats|no formats|no downloadable/.test(message)) return "format";
+  if (/ffmpeg.*not found|ffprobe.*not found|spawn.*enoent|permission denied/.test(message)) return "tool";
+  if (/unsupported url|unsupported site|no suitable extractor/.test(message)) return "unsupported";
+  return "unknown";
+};
+var retryLayersForFailure = (kind) => {
+  if (kind === "drm" || kind === "tool" || kind === "geo") return [];
+  if (kind === "authentication") return ["cookies"];
+  if (kind === "challenge") return ["impersonation", "cookies"];
+  if (kind === "expired") return ["refresh-extractor", "native-http"];
+  if (kind === "rate-limit") return ["backoff", "impersonation", "cookies"];
+  if (kind === "fragment") return ["native-http", "conservative-fragments", "best-available"];
+  if (kind === "transient-http") return ["backoff", "native-http", "conservative-fragments"];
+  if (kind === "format") return ["best-available", "single-file"];
+  if (kind === "unsupported") return ["impersonation"];
+  return ["native-http", "best-available"];
+};
+
 // server/video-downloader-routes.ts
 var execFileAsync = promisify(execFile);
 var writeLog = async (jobId, data) => {
@@ -256,7 +285,7 @@ var writeLog = async (jobId, data) => {
   }
 };
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "brightcove", "direct"];
+var SUPPORTED_PLATFORMS = ["youtube", "vimeo", "instagram", "facebook", "x", "tiktok", "ispot", "brightcove", "direct", "unknown"];
 var jobs = /* @__PURE__ */ new Map();
 var pendingJobs = [];
 var cancelledJobs = /* @__PURE__ */ new Set();
@@ -374,9 +403,6 @@ var validateDownloaderUrl = (rawUrl, validateUrl) => {
   }
   validateUrl?.(parsed.href);
   const platform = detectDownloaderPlatform(parsed.href);
-  if (platform === "unknown") {
-    throw new Error("Supported platforms: YouTube, Vimeo, Instagram, Facebook, X.com, TikTok, Brightcove, and iSpot.tv.");
-  }
   return { url: normalizeDownloaderUrl(parsed.href, platform), platform };
 };
 var resolveTool = (options, name) => {
@@ -447,6 +473,10 @@ var commonYtDlpArgs = (options, platform) => {
     "--retries",
     "3",
     "--extractor-retries",
+    "3",
+    "--fragment-retries",
+    "5",
+    "--file-access-retries",
     "3",
     "--user-agent",
     USER_AGENT,
@@ -596,6 +626,9 @@ var isYouTubeUnavailableError = (message) => /(?:\[youtube\].*)?(?:this video is
 );
 var isYouTubeMedia403Error = (message) => /(?:unable to download video data|fragment\s+\d+).*HTTP Error 403|HTTP Error 403:\s*Forbidden/i.test(message);
 var friendlyDownloaderError = (platform, message) => {
+  if (classifyVideoFailure(message) === "drm") {
+    return "This stream is DRM-protected and cannot be downloaded.";
+  }
   if (platform === "brightcove" && /VIDEO_NOT_FOUND|designated resource was not found/i.test(message)) {
     return "Brightcove video was not found. It may have been removed, unpublished, or the video ID is incorrect.";
   }
@@ -1191,6 +1224,52 @@ var runDownloadWithFallbacks = async (options, job) => {
       lastError = error;
     }
   }
+  const failureKind = classifyVideoFailure(errorText(lastError));
+  const recoveryLayers = retryLayersForFailure(failureKind);
+  void writeLog(job.id, { event: "failure_classified", failure_kind: failureKind, recovery_layers: recoveryLayers });
+  if (failureKind === "drm") {
+    throw new Error("This stream is DRM-protected and cannot be downloaded.");
+  }
+  if (recoveryLayers.includes("refresh-extractor")) {
+    updateJob(job, { message: "Refreshing expired video information..." });
+    await updateYtDlp(options);
+  }
+  if (recoveryLayers.includes("backoff")) {
+    updateJob(job, { message: "Provider is busy. Retrying the request..." });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (recoveryLayers.includes("impersonation")) {
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: "Retrying with browser-compatible networking..." });
+        return await runDownloadAttempt(options, job, url, ["--no-aria2", "--impersonate", "chrome"]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: "fallback_impersonation", error: errorText(error) });
+      }
+    }
+  }
+  if (recoveryLayers.includes("conservative-fragments")) {
+    for (const url of urls) {
+      throwIfJobCancelled(job);
+      try {
+        updateJob(job, { message: "Retrying with a conservative stream connection..." });
+        return await runDownloadAttempt(options, job, url, [
+          "--no-aria2",
+          "--concurrent-fragments",
+          "1",
+          "--fragment-retries",
+          "10",
+          "--retry-sleep",
+          "fragment:linear=1::3"
+        ]);
+      } catch (error) {
+        lastError = error;
+        void writeLog(job.id, { event: "fallback_conservative_fragments", error: errorText(error) });
+      }
+    }
+  }
   if (job.platform === "youtube" && isYouTubeMedia403Error(errorText(lastError))) {
     updateJob(job, { message: "YouTube blocked the HD stream. Retrying a compatible stream..." });
     for (const url of urls) {
@@ -1225,7 +1304,7 @@ var runDownloadWithFallbacks = async (options, job) => {
       }
     }
   }
-  if (isAuthLikeError(errorText(lastError))) {
+  if (recoveryLayers.includes("cookies") || isAuthLikeError(errorText(lastError))) {
     updateJob(job, { message: job.cookiesFilePath ? "Trying with cookies.txt..." : "Cookies.txt required for this source..." });
     for (const cookies of cookieAttempts(job.platform, job.cookiesFilePath)) {
       for (const url of urls) {
@@ -4738,11 +4817,12 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
   const userDataDir = path3.join(appDataDir, "chromium-profile");
   await fsp3.mkdir(userDataDir, { recursive: true });
   let browser = null;
+  let recoveryUserDataDir = "";
   let usedRecoveredWebsitePreview = false;
   try {
-    browser = await puppeteer.launch({
+    const launchControlledBrowser = (profileDir) => puppeteer.launch({
       headless: false,
-      userDataDir,
+      userDataDir: profileDir,
       executablePath: executablePath || void 0,
       args: [
         "--no-sandbox",
@@ -4754,6 +4834,15 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       ],
       ignoreDefaultArgs: ["--enable-automation"]
     });
+    try {
+      browser = await launchControlledBrowser(userDataDir);
+    } catch (error) {
+      const message = String(error?.message || error || "");
+      if (!/opening in existing browser session|profile.*(?:use|lock)|process singleton/i.test(message)) throw error;
+      recoveryUserDataDir = path3.join(appDataDir, "chromium-recovery-profiles", `${process.pid}-${crypto2.randomUUID()}`);
+      await fsp3.mkdir(recoveryUserDataDir, { recursive: true });
+      browser = await launchControlledBrowser(recoveryUserDataDir);
+    }
     const page = await acquireSingleWebsitePage(browser);
     const capturedFontResponses = /* @__PURE__ */ new Map();
     const capturedStylesheets = /* @__PURE__ */ new Map();
@@ -4948,6 +5037,9 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
     } : normalized;
   } finally {
     await browser?.close().catch(() => void 0);
+    if (recoveryUserDataDir) {
+      await fsp3.rm(recoveryUserDataDir, { recursive: true, force: true }).catch(() => void 0);
+    }
   }
 };
 app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
@@ -5175,6 +5267,42 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
     let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     const requestedHost = new URL2(requestedUrl).hostname.replace(/^www\./i, "").toLowerCase();
     if (requestedHost === "kroger.com") {
+      const krogerBrandPalette = [
+        "#0068b3",
+        "#003b71",
+        "#002d5b",
+        "#4b9cd3",
+        "#d9edf7",
+        "#eef7fc",
+        "#174ea6",
+        "#00a6c7",
+        "#e31837",
+        "#b5122b",
+        "#d81b60",
+        "#2e7d32",
+        "#7cb342",
+        "#a6ce39",
+        "#ffc72c",
+        "#d99a00",
+        "#f57c00",
+        "#ef6c57",
+        "#6a1b9a",
+        "#3949ab",
+        "#008c95",
+        "#26a69a",
+        "#1f2937",
+        "#4b5563",
+        "#6b7280",
+        "#333333",
+        "#666666",
+        "#999999",
+        "#cccccc",
+        "#d1d5db",
+        "#f3f4f6",
+        "#f9fafb",
+        "#ffffff",
+        "#000000"
+      ];
       const krogerLiveCachePath = path3.join(appDataDir, "browser-cache", "kroger-full-live-assets.json");
       const browserImageCount = (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length;
       const browserWasLive = browserExtracted?.extractionMeta?.websitePreview !== "recovered";
@@ -5224,7 +5352,8 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
         colors: Array.from(/* @__PURE__ */ new Set([
           ...extracted?.colors || [],
           ...cachedLiveAssets?.colors || [],
-          ...krogerRecovery?.colors || []
+          ...krogerRecovery?.colors || [],
+          ...krogerBrandPalette
         ])),
         extractionMeta: {
           ...extracted?.extractionMeta,
@@ -15410,11 +15539,9 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   const isBitmovinManifest = /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) || /\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL2(options.sourcePageUrl || normalizedUrl).hostname);
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tempTemplate = path3.join(os3.tmpdir(), `${tempBase}.%(ext)s`);
-  const ydlOptions = {
+  const baseYdlOptions = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
-    ...buildYtDlpSpeedOptions(),
     output: tempTemplate,
-    format: isAudio ? getReferenceAudioFormatSelector() : isBitmovinManifest ? "bestvideo+bestaudio/best" : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: "mp4",
     ...isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {},
     ...isAudio ? {
@@ -15424,12 +15551,68 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
       postprocessorArgs: `ffmpeg:-t ${maxAudioDurationSeconds}`
     } : { postprocessorArgs: "ffmpeg:-c copy -movflags +faststart" }
   };
-  await withTimeout(
-    youtubedl(normalizedUrl, ydlOptions),
-    YOUTUBE_MERGE_TIMEOUT_MS,
-    `Platform download for ${normalizedUrl}`
-  );
-  let downloadedPath = await findYtDlpOutputFile(os3.tmpdir(), tempBase);
+  const requestedSelector = isAudio ? getReferenceAudioFormatSelector() : isBitmovinManifest ? "bestvideo+bestaudio/best" : getReferenceVideoFormatSelector(requestedQuality);
+  const attempts = [
+    {
+      name: "yt-dlp accelerated requested quality",
+      options: { ...baseYdlOptions, ...buildYtDlpSpeedOptions(), format: requestedSelector }
+    },
+    {
+      name: "yt-dlp native requested quality",
+      options: { ...baseYdlOptions, format: requestedSelector }
+    }
+  ];
+  if (!isAudio) {
+    attempts.push(
+      {
+        name: "yt-dlp adaptive best available",
+        options: { ...baseYdlOptions, format: "bestvideo*+bestaudio/best" }
+      },
+      {
+        name: "yt-dlp compatible single-file fallback",
+        options: { ...baseYdlOptions, format: "best[ext=mp4]/best" }
+      }
+    );
+  }
+  const attemptErrors = [];
+  let downloadedPath = "";
+  for (const attempt of attempts) {
+    try {
+      await withTimeout(
+        youtubedl(normalizedUrl, attempt.options),
+        YOUTUBE_MERGE_TIMEOUT_MS,
+        `${attempt.name} for ${normalizedUrl}`
+      );
+      downloadedPath = await findYtDlpOutputFile(os3.tmpdir(), tempBase);
+      if (downloadedPath) break;
+      throw new Error("Downloader exited without creating an output file.");
+    } catch (error) {
+      const message = String(error?.stderr || error?.message || error || "Unknown failure").slice(0, 1200);
+      attemptErrors.push({ layer: attempt.name, error: message });
+      console.warn(`[video-download:${attempt.name}]`, message);
+      if (/\bDRM\b|encrypted media|widevine|fairplay|playready/i.test(message)) {
+        throw new Error("This stream is DRM-protected and cannot be downloaded.");
+      }
+    }
+  }
+  if (!downloadedPath && !isAudio && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(normalizedUrl)) {
+    const ffmpegOutput = path3.join(os3.tmpdir(), `${tempBase}.ffmpeg.mp4`);
+    try {
+      const parsedStream = new URL2(normalizedUrl);
+      const { referer, origin } = getStreamRequestContext(parsedStream, options.sourcePageUrl || normalizedUrl);
+      await withTimeout(
+        transcodeUrlToMp4File(normalizedUrl, ffmpegOutput, referer, origin),
+        YOUTUBE_MERGE_TIMEOUT_MS,
+        `FFmpeg manifest fallback for ${normalizedUrl}`
+      );
+      downloadedPath = ffmpegOutput;
+    } catch (error) {
+      attemptErrors.push({
+        layer: "FFmpeg public manifest fallback",
+        error: String(error?.message || error || "Unknown failure").slice(0, 1200)
+      });
+    }
+  }
   if (!downloadedPath) {
     try {
       const stat = await validateOutputFile(desiredPath, "Downloaded video");
@@ -15443,7 +15626,9 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
         reused: false
       };
     } catch {
-      throw new Error("Download finished but output file was not found.");
+      const summary = attemptErrors.map((attempt, index) => `${index + 1}. ${attempt.layer}: ${attempt.error}`).join("\n");
+      throw new Error(`All download strategies failed.${summary ? `
+${summary}` : ""}`);
     }
   }
   const finalized = await finalizePlatformDownloadOutput(downloadedPath, desiredPath, {
@@ -15458,7 +15643,8 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
     size: finalized.size,
     quality: isAudio ? "audio" : requestedQuality,
     platform: platformProviderFromUrl(normalizedUrl),
-    reused: false
+    reused: false,
+    strategy: attemptErrors.length ? "fallback" : "primary"
   };
 };
 var downloadDirectStreamVideoToFile = async (targetUrl, options = {}) => {

@@ -90,11 +90,12 @@ try {
 
     const input = 'input[placeholder^="https://example.com"]';
     await page.waitForSelector(input, { timeout: 30000 });
-    await page.click(input);
-    await page.keyboard.down(process.platform === 'darwin' ? 'Meta' : 'Control');
-    await page.keyboard.press('KeyA');
-    await page.keyboard.up(process.platform === 'darwin' ? 'Meta' : 'Control');
-    await page.type(input, target.url);
+    await page.$eval(input, (element, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(element, value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    }, target.url);
     const typedUrl = await page.$eval(input, (element) => element.value);
     if (typedUrl !== target.url) throw new Error(`URL input mismatch: expected ${target.url}, got ${typedUrl}`);
     const profileSelected = await page.evaluate(() => {

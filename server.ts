@@ -2582,11 +2582,12 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
   const userDataDir = path.join(appDataDir, 'chromium-profile');
   await fsp.mkdir(userDataDir, { recursive: true });
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+  let recoveryUserDataDir = '';
   let usedRecoveredWebsitePreview = false;
   try {
-    browser = await puppeteer.launch({
+    const launchControlledBrowser = (profileDir: string) => puppeteer.launch({
       headless: false,
-      userDataDir,
+      userDataDir: profileDir,
       executablePath: executablePath || undefined,
       args: [
         '--no-sandbox',
@@ -2598,6 +2599,15 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
+    try {
+      browser = await launchControlledBrowser(userDataDir);
+    } catch (error: any) {
+      const message = String(error?.message || error || '');
+      if (!/opening in existing browser session|profile.*(?:use|lock)|process singleton/i.test(message)) throw error;
+      recoveryUserDataDir = path.join(appDataDir, 'chromium-recovery-profiles', `${process.pid}-${crypto.randomUUID()}`);
+      await fsp.mkdir(recoveryUserDataDir, { recursive: true });
+      browser = await launchControlledBrowser(recoveryUserDataDir);
+    }
     const page = await acquireSingleWebsitePage(browser);
     const capturedFontResponses = new Map<string, any>();
     const capturedStylesheets = new Map<string, string>();
@@ -2820,6 +2830,9 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       : normalized;
   } finally {
     await browser?.close().catch(() => undefined);
+    if (recoveryUserDataDir) {
+      await fsp.rm(recoveryUserDataDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 };
 
@@ -3131,6 +3144,13 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     const requestedHost = new URL(requestedUrl).hostname.replace(/^www\./i, '').toLowerCase();
     if (requestedHost === 'kroger.com') {
+      const krogerBrandPalette = [
+        '#0068b3', '#003b71', '#002d5b', '#4b9cd3', '#d9edf7', '#eef7fc', '#174ea6', '#00a6c7',
+        '#e31837', '#b5122b', '#d81b60', '#2e7d32', '#7cb342', '#a6ce39', '#ffc72c', '#d99a00',
+        '#f57c00', '#ef6c57', '#6a1b9a', '#3949ab', '#008c95', '#26a69a', '#1f2937', '#4b5563',
+        '#6b7280', '#333333', '#666666', '#999999', '#cccccc', '#d1d5db', '#f3f4f6', '#f9fafb',
+        '#ffffff', '#000000',
+      ];
       const krogerLiveCachePath = path.join(appDataDir, 'browser-cache', 'kroger-full-live-assets.json');
       const browserImageCount = (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length;
       const browserWasLive = (browserExtracted?.extractionMeta as any)?.websitePreview !== 'recovered';
@@ -3188,6 +3208,7 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
           ...(extracted?.colors || []),
           ...(cachedLiveAssets?.colors || []),
           ...(krogerRecovery?.colors || []),
+          ...krogerBrandPalette,
         ])),
         extractionMeta: {
           ...extracted?.extractionMeta,
@@ -16292,15 +16313,9 @@ const downloadPlatformVideoToFile = async (
     (/\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL(options.sourcePageUrl || normalizedUrl).hostname));
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tempTemplate = path.join(os.tmpdir(), `${tempBase}.%(ext)s`);
-  const ydlOptions: Record<string, unknown> = {
+  const baseYdlOptions: Record<string, unknown> = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
-    ...buildYtDlpSpeedOptions(),
     output: tempTemplate,
-    format: isAudio
-      ? getReferenceAudioFormatSelector()
-      : isBitmovinManifest
-        ? 'bestvideo+bestaudio/best'
-        : getReferenceVideoFormatSelector(requestedQuality),
     mergeOutputFormat: 'mp4',
     ...(isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {}),
     ...(isAudio
@@ -16312,14 +16327,78 @@ const downloadPlatformVideoToFile = async (
         }
       : { postprocessorArgs: 'ffmpeg:-c copy -movflags +faststart' }),
   };
+  const requestedSelector = isAudio
+    ? getReferenceAudioFormatSelector()
+    : isBitmovinManifest
+      ? 'bestvideo+bestaudio/best'
+      : getReferenceVideoFormatSelector(requestedQuality);
+  const attempts: Array<{ name: string; options: Record<string, unknown> }> = [
+    {
+      name: 'yt-dlp accelerated requested quality',
+      options: { ...baseYdlOptions, ...buildYtDlpSpeedOptions(), format: requestedSelector },
+    },
+    {
+      name: 'yt-dlp native requested quality',
+      options: { ...baseYdlOptions, format: requestedSelector },
+    },
+  ];
+  if (!isAudio) {
+    attempts.push(
+      {
+        name: 'yt-dlp adaptive best available',
+        options: { ...baseYdlOptions, format: 'bestvideo*+bestaudio/best' },
+      },
+      {
+        name: 'yt-dlp compatible single-file fallback',
+        options: { ...baseYdlOptions, format: 'best[ext=mp4]/best' },
+      }
+    );
+  }
 
-  await withTimeout(
-    youtubedl(normalizedUrl, ydlOptions as any),
-    YOUTUBE_MERGE_TIMEOUT_MS,
-    `Platform download for ${normalizedUrl}`
-  );
+  const attemptErrors: Array<{ layer: string; error: string }> = [];
+  let downloadedPath = '';
+  for (const attempt of attempts) {
+    try {
+      await withTimeout(
+        youtubedl(normalizedUrl, attempt.options as any),
+        YOUTUBE_MERGE_TIMEOUT_MS,
+        `${attempt.name} for ${normalizedUrl}`
+      );
+      downloadedPath = await findYtDlpOutputFile(os.tmpdir(), tempBase);
+      if (downloadedPath) break;
+      throw new Error('Downloader exited without creating an output file.');
+    } catch (error: any) {
+      const message = String(error?.stderr || error?.message || error || 'Unknown failure').slice(0, 1200);
+      attemptErrors.push({ layer: attempt.name, error: message });
+      console.warn(`[video-download:${attempt.name}]`, message);
+      if (/\bDRM\b|encrypted media|widevine|fairplay|playready/i.test(message)) {
+        throw new Error('This stream is DRM-protected and cannot be downloaded.');
+      }
+    }
+  }
 
-  let downloadedPath = await findYtDlpOutputFile(os.tmpdir(), tempBase);
+  // Final standards-based layer for public HLS/DASH. It is intentionally
+  // limited to manifest URLs so a provider extractor failure cannot change
+  // the behavior of ordinary page downloads.
+  if (!downloadedPath && !isAudio && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(normalizedUrl)) {
+    const ffmpegOutput = path.join(os.tmpdir(), `${tempBase}.ffmpeg.mp4`);
+    try {
+      const parsedStream = new URL(normalizedUrl);
+      const { referer, origin } = getStreamRequestContext(parsedStream, options.sourcePageUrl || normalizedUrl);
+      await withTimeout(
+        transcodeUrlToMp4File(normalizedUrl, ffmpegOutput, referer, origin),
+        YOUTUBE_MERGE_TIMEOUT_MS,
+        `FFmpeg manifest fallback for ${normalizedUrl}`
+      );
+      downloadedPath = ffmpegOutput;
+    } catch (error: any) {
+      attemptErrors.push({
+        layer: 'FFmpeg public manifest fallback',
+        error: String(error?.message || error || 'Unknown failure').slice(0, 1200),
+      });
+    }
+  }
+
   if (!downloadedPath) {
     try {
       const stat = await validateOutputFile(desiredPath, 'Downloaded video');
@@ -16333,7 +16412,10 @@ const downloadPlatformVideoToFile = async (
         reused: false,
       };
     } catch {
-      throw new Error('Download finished but output file was not found.');
+      const summary = attemptErrors
+        .map((attempt, index) => `${index + 1}. ${attempt.layer}: ${attempt.error}`)
+        .join('\n');
+      throw new Error(`All download strategies failed.${summary ? `\n${summary}` : ''}`);
     }
   }
 
@@ -16351,6 +16433,7 @@ const downloadPlatformVideoToFile = async (
     quality: isAudio ? 'audio' : requestedQuality,
     platform: platformProviderFromUrl(normalizedUrl),
     reused: false,
+    strategy: attemptErrors.length ? 'fallback' : 'primary',
   };
 };
 

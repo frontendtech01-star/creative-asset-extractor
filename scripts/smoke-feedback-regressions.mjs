@@ -170,10 +170,14 @@ const checkStaticFeedbackContracts = async () => {
   if (videoDownloaderPage.includes("window.confirm('Delete all downloaded videos and extracted platform folders?')") || videoDownloaderPage.includes('Clear Downloads')) {
     fail('Video Clear Downloads UI must stay removed');
   }
-  assertIncludes('YouTube backup link', videoDownloaderPage, 'https://yt5s.in/en271/');
+  assertIncludes('YouTube backup link', videoDownloaderPage, 'https://yt5s.in/en274/');
   assertIncludes('YouTube backup link', videoDownloaderPage, 'Open YT5S backup');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'isYouTubeUnavailableError');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'YouTube says this video is unavailable from this connection');
+  assertIncludes('Layered platform download fallback', server, "name: 'yt-dlp native requested quality'");
+  assertIncludes('Layered platform download fallback', server, "name: 'yt-dlp adaptive best available'");
+  assertIncludes('Layered platform download fallback', server, "layer: 'FFmpeg public manifest fallback'");
+  assertIncludes('DRM refusal remains explicit', server, 'This stream is DRM-protected and cannot be downloaded.');
   assertIncludes('Downloader job stores friendly error', videoDownloaderRoutes, 'error: friendly');
   assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'youtubeClientRetryAttempts');
   assertIncludes('YouTube false-unavailable retry', videoDownloaderRoutes, 'fallback_youtube_client');
