@@ -174,6 +174,9 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('YouTube backup link', videoDownloaderPage, 'Open YT5S backup');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'isYouTubeUnavailableError');
   assertIncludes('YouTube unavailable friendly error', videoDownloaderRoutes, 'YouTube says this video is unavailable from this connection');
+  if (videoDownloaderPage.includes('<AutocompletePanel')) {
+    fail('Video URL autocomplete banner must stay removed because it covers the Fetch Video button');
+  }
   assertIncludes('Layered platform download fallback', server, "name: 'yt-dlp native requested quality'");
   assertIncludes('Layered platform download fallback', server, "name: 'yt-dlp adaptive best available'");
   assertIncludes('Layered platform download fallback', server, "layer: 'FFmpeg public manifest fallback'");

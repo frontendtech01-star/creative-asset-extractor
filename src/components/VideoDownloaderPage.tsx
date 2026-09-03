@@ -33,7 +33,6 @@ import { buildFontDisplayName, getFontFamilyFolderName, prettifyFontFamilyLabel 
 import { FriendlyError } from './ProgressExperience';
 import ValidatedVideoThumb from './ValidatedVideoThumb';
 import {
-  AutocompletePanel,
   BookmarkStarButton,
   PinnedBookmarks,
   RecentRows,
@@ -895,15 +894,6 @@ export default function VideoDownloaderPage({
                 placeholder="Paste video, m3u8, or browser blob URL (one per line)"
                 className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 title="Download Video (Enter)"
-              />
-              <AutocompletePanel
-                query={urlInput}
-                store={bookmarkStore}
-                category="video"
-                onPick={(nextUrl) => {
-                  setUrlInput(nextUrl);
-                  setJobErrors([]);
-                }}
               />
               </div>
               <p className="text-xs text-zinc-500">{SUPPORTED_VIDEO_HELP}</p>
