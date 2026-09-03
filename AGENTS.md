@@ -44,6 +44,13 @@ For a release or DMG change, use this mandatory order:
 3. Run `npm run smoke:all:packaged` against the exact generated app bundle.
 4. Upload or publish artifacts only when all three commands pass.
 
+For every v2 macOS refresh, preserve and replace both existing public release assets; never rename or remove them:
+
+- `v2.0`: `Creative.Asset.Extractor-2.0-arm64.dmg`
+- `v2.0.0`: `Creative.Asset.Extractor-2.0.0-arm64.dmg`
+
+`npm run dmg` creates `release/Creative.Asset.Extractor-2.0.0-arm64.dmg`. Upload that file directly to `v2.0.0`, and copy it to `release/Creative.Asset.Extractor-2.0-arm64.dmg` for `v2.0`. Replace assets with `gh release upload <tag> <file> --clobber` so bookmarked download URLs remain valid. Upload `latest-mac.yml` to each release with its `url` and `path` fields matching that release's DMG filename. Verify the remote asset size and SHA-256 digest after upload.
+
 For Xtandi/Bitmovin changes specifically, `smoke:xtandi-videos` must return the route-specific master manifest, `smoke:xtandi-video-ui` must show one direct video card with its thumbnail and `Download MP4` handoff, and `smoke:packaged-xtandi-video` must repeat those UI assertions from the packaged bundle. Also verify one real Image/Video Downloader job completes as a playable MP4 with video and audio; do not accept manifest extraction alone as sufficient.
 
 Network-dependent and GUI tests require a reachable live site. Source tests use the one local server managed by `smoke-all.mjs`; packaged tests start their own bundled server and use their documented `QC_*` variables. The aggregate runner continues after individual failures, prints a complete failure summary, and exits nonzero if anything failed. It deliberately covers each behavior once instead of rerunning the duplicate `smoke:reported-sites` wrapper. A live-site outage or bot challenge must be reported separately from a product regression and must not be silently treated as a pass.
