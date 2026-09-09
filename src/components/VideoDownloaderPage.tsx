@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, ExternalLink, FolderOpen, Link as LinkIcon, Loader2, Pause, Play, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, ExternalLink, FolderOpen, Headphones, Link as LinkIcon, Loader2, Pause, Play, XCircle } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { writeVideoDownloaderSession } from '../lib/appSessions';
 import {
@@ -190,6 +190,44 @@ const isInstagramUrl = (value: string) => {
   }
 };
 
+const isFacebookUrl = (value: string) => /(?:facebook\.com|fb\.watch)/i.test(String(value || ''));
+const isVimeoUrl = (value: string) => /(?:vimeo\.com|vimeocdn\.com)/i.test(String(value || ''));
+
+const copyUrlAndOpen = (url: string, fallbackUrl: string) => {
+  void navigator.clipboard?.writeText(url).catch(() => undefined);
+  window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+};
+
+function DownloadFallbackLinks({ url, audio = false, compact = false }: { url: string; audio?: boolean; compact?: boolean }) {
+  const links: Array<{ label: string; href: string }> = [];
+  if (isYouTubeUrl(url)) links.push({ label: 'Open YT5S backup', href: YOUTUBE_FALLBACK_URL });
+  if (isFacebookUrl(url) || isInstagramUrl(url)) links.push({ label: 'Open Cobalt backup', href: 'https://cobalt.tools/' });
+  if (isVimeoUrl(url)) links.push({ label: 'Open Toolzu backup', href: 'https://toolzu.com/downloader/vimeo/' });
+  if (!isYouTubeUrl(url) && !isFacebookUrl(url) && !isInstagramUrl(url) && !isVimeoUrl(url)) {
+    links.push({ label: 'Open FetchV backup', href: 'https://fetchv.net/' });
+  }
+  if (audio && isYouTubeUrl(url)) {
+    links.push({ label: 'Open YouTube to MP3 backup', href: 'https://strydomwebdevelopment.co.za/' });
+  }
+  if (!links.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {links.map((link) => (
+        <button
+          key={link.href}
+          type="button"
+          onClick={() => copyUrlAndOpen(url, link.href)}
+          className={`inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white font-semibold text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 ${compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-sm'}`}
+          title="Copies the media URL before opening the backup downloader"
+        >
+          <ExternalLink className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+          {link.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 const isInstagramCookieError = (message: string) =>
   /instagram.*cookies\.txt|cookies\.txt.*instagram|instagram requires cookies/i.test(message);
 
@@ -268,10 +306,10 @@ function DownloadJobCard({
         {job.eta && !isComplete ? <span>ETA {job.eta}</span> : null}
       </div>
 
-      {isError && isYouTubeUrl(job.url) ? (
+      {isError ? (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <YouTubeFallbackLink url={job.url} compact />
-          <span className="text-xs text-amber-800">If YouTube blocks this video, the URL is copied before opening the backup page.</span>
+          <DownloadFallbackLinks url={job.url} audio={job.quality === 'audio'} compact />
+          <span className="text-xs text-amber-800">The URL is copied before opening the backup page.</span>
         </div>
       ) : null}
 
@@ -813,6 +851,94 @@ export default function VideoDownloaderPage({
     }
   };
 
+  const fetchAudioQueue = async () => {
+    const urls = inputUrls;
+    if (!urls.length) {
+      setJobErrors([{ url: '', error: 'Paste at least one public video URL.' }]);
+      return;
+    }
+    const validationErrors = validateUrls(urls);
+    if (validationErrors.length) {
+      setJobErrors(validationErrors);
+      return;
+    }
+
+    setBusy(true);
+    setActiveQuality('audio');
+    setJobErrors([]);
+    setJobs([]);
+    const activeDetectedPlatform = urls.length === 1 ? detectVideoPlatform(urls[0]) : null;
+    void logActivity({
+      kind: 'url_entered',
+      url: urls[0],
+      platform: activeDetectedPlatform || undefined,
+      message: urls.length === 1 ? 'Audio fetch started' : `${urls.length} audio fetches started`,
+    });
+    void Promise.all(urls.map((item) => recordBookmarkHistory(item, 'video', titleFromUrl(item)))).catch(() => undefined);
+
+    try {
+      const resolvedSingle =
+        urls.length === 1 && isBlobVideoUrl(urls[0])
+          ? await resolveBrowserBlobVideo(urls[0])
+          : null;
+      const resolvedUrl = resolvedSingle?.url || urls[0];
+      const started =
+        urls.length === 1
+          ? {
+              jobs: [
+                await startDownloaderJob({
+                  url: resolvedUrl,
+                  quality: 'audio',
+                  title: resolvedSingle?.title,
+                  startTime,
+                  endTime,
+                  cookiesFilePath: cookiesFilePath.trim(),
+                  sourcePageUrl: resolvedSingle?.sourcePageUrl,
+                }),
+              ],
+              errors: [] as Array<{ url: string; error: string }>,
+            }
+          : await startBulkDownloaderJobs(urls, 'audio', {
+              startTime,
+              endTime,
+              cookiesFilePath: cookiesFilePath.trim(),
+            });
+      const createdJobs = started.jobs || [];
+      setJobErrors(started.errors || []);
+      setJobs(createdJobs);
+
+      if (!createdJobs.length) {
+        setJobErrors(started.errors?.length ? started.errors : [{ url: '', error: 'No audio downloads could be started.' }]);
+        return;
+      }
+
+      const completed = await Promise.all(
+        createdJobs.map((initial) =>
+          waitForDownloaderJob(initial, (updated) => {
+            setJobs((current) => mergeJobs(current, [updated]));
+          })
+        )
+      );
+      setJobs((current) => mergeJobs(current, completed));
+      const failed = completed.find((job) => job.status === 'error');
+      if (failed && urls.length === 1) throw new Error(failed.error || 'Audio fetch failed.');
+      if (!failed && !completed.some((job) => job.status === 'cancelled')) setUrlInput('');
+    } catch (error: any) {
+      const message = error?.message || 'Audio fetch failed.';
+      setJobErrors([{ url: urls.length === 1 ? urls[0] : '', error: message }]);
+      void reportOperationFailure({
+        operation: 'audio_extraction_failure',
+        error: message,
+        videoUrl: urls[0],
+        platform: activeDetectedPlatform || undefined,
+        openFeedback: false,
+      });
+    } finally {
+      setBusy(false);
+      setActiveQuality(null);
+    }
+  };
+
   useEffect(() => {
     if (!autoStartRequest?.url || handledAutoStartIdRef.current === autoStartRequest.id) return;
     handledAutoStartIdRef.current = autoStartRequest.id;
@@ -898,15 +1024,27 @@ export default function VideoDownloaderPage({
               </div>
               <p className="text-xs text-zinc-500">{SUPPORTED_VIDEO_HELP}</p>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <button
-                  type="submit"
-                  aria-pressed={busy && activeQuality === 'fhd'}
-                  disabled={busy || inputUrls.length === 0}
-                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
-                >
-                  {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  {busy && activeQuality === 'fhd' ? 'Fetching Video...' : inputUrls.length > 1 ? 'Fetch Videos' : 'Fetch Video'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="submit"
+                    aria-pressed={busy && activeQuality === 'fhd'}
+                    disabled={busy || inputUrls.length === 0}
+                    className={`inline-flex min-h-11 items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed ${busy && activeQuality === 'fhd' ? 'bg-blue-800 ring-2 ring-blue-300' : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'}`}
+                  >
+                    {busy && activeQuality === 'fhd' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {busy && activeQuality === 'fhd' ? 'Fetching Video...' : inputUrls.length > 1 ? 'Fetch Videos' : 'Fetch Video'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={busy && activeQuality === 'audio'}
+                    disabled={busy || inputUrls.length === 0}
+                    onClick={() => void fetchAudioQueue()}
+                    className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-5 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${busy && activeQuality === 'audio' ? 'border-violet-400 bg-violet-100 text-violet-900 ring-2 ring-violet-200' : 'border-violet-200 bg-violet-50 text-violet-800 hover:bg-violet-100'}`}
+                  >
+                    {busy && activeQuality === 'audio' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Headphones className="h-4 w-4" />}
+                    {busy && activeQuality === 'audio' ? 'Fetching Audio...' : inputUrls.length > 1 ? 'Fetch Audios' : 'Fetch Audio'}
+                  </button>
+                </div>
                 <BookmarkStarButton
                   url={inputUrls[0] || urlInput}
                   category="video"
@@ -1002,13 +1140,13 @@ export default function VideoDownloaderPage({
                       message={item.url ? `${item.url}: ${item.error}` : item.error}
                       onReportIssue={() => requestOpenFeedback()}
                     />
-                    {isYouTubeUrl(item.url) ? (
+                    {item.url ? (
                       <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-sm font-medium text-blue-950">
-                            YouTube blocked this download here. Open the backup page and paste the copied URL.
+                            This provider blocked the download here. Open a backup page and paste the copied URL.
                           </p>
-                          <YouTubeFallbackLink url={item.url} />
+                          <DownloadFallbackLinks url={item.url} audio={activeQuality === 'audio'} />
                         </div>
                       </div>
                     ) : null}

@@ -391,7 +391,12 @@ export default function ImageExtractor({
         const frameInfo = getImageSequenceFrame(img);
         const sequenceLabel = getImageSequenceLabel(img);
         return (
-          <div key={key || idx} className={`group relative bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all ${isSelected ? 'border-indigo-600 ring-2 ring-indigo-600/20' : 'border-zinc-200'}`}>
+          <div
+            key={key || idx}
+            data-testid="image-card"
+            data-image-url={key}
+            className={`group relative bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all ${isSelected ? 'border-indigo-600 ring-2 ring-indigo-600/20' : 'border-zinc-200'}`}
+          >
             <div className="aspect-square bg-zinc-100 relative">
               <LazyCachedImageThumb
                 img={img}

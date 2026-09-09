@@ -1,4 +1,7 @@
+import { extractKalturaVideosFromHtml } from './server/kaltura';
 import express from 'express';
+import { countryProxyStatus, resolveCountryProxy } from './server/country-proxy';
+import { matchesOpenChromeUrl, validateOpenChromeCapture } from './server/open-chrome-capture';
 import path from 'path';
 import rateLimit from 'express-rate-limit';
 import axios from 'axios';
@@ -76,6 +79,35 @@ const clearMacQuarantine = async (filePath: string) => {
 };
 
 const getResourcesPath = () => process.env.VDX_RESOURCES_PATH || getAppRoot();
+
+const resolveAppDataDir = () =>
+  String(process.env.VDX_USER_DATA || '').trim() || path.join(os.homedir(), '.creative-asset-extractor');
+
+// A mounted DMG is read-only. Electron may inherit TMPDIR from its launch
+// environment, so never use a temporary directory that resolves inside the
+// packaged application bundle.
+const resolveWritableTempDir = () => {
+  const configured = String(process.env.VDX_TEMP_DIR || '').trim();
+  const resources = path.resolve(getResourcesPath());
+  const appRoot = path.resolve(getAppRoot());
+  const candidate = configured || os.tmpdir();
+  const resolved = path.resolve(candidate);
+  const isBundlePath = [resources, appRoot].some((bundle) => resolved === bundle || resolved.startsWith(`${bundle}${path.sep}`));
+  return isBundlePath ? path.join(resolveAppDataDir(), 'tmp') : candidate;
+};
+
+const writableTempDir = resolveWritableTempDir();
+try {
+  fs.mkdirSync(writableTempDir, { recursive: true });
+  // Ensure yt-dlp, ffmpeg, and Python helpers inherit the writable directory
+  // instead of a DMG-mounted TMPDIR.
+  process.env.TMPDIR = writableTempDir;
+  process.env.TMP = writableTempDir;
+  process.env.TEMP = writableTempDir;
+} catch {
+  // Individual download operations surface an actionable error if the user's
+  // application-data directory cannot be created.
+}
 
 const getUnpackedModulePath = (...segments: string[]) => {
   const resources = process.env.VDX_RESOURCES_PATH;
@@ -170,7 +202,7 @@ const logYouTubeMerge = (stage: string, details: Record<string, unknown> = {}) =
       ffprobePath: resolvedFfprobePath,
       ytdlpPath: resolvedYtDlpPath,
       resourcesPath: getResourcesPath(),
-      tempDir: path.join(os.tmpdir(), 'creative-asset-extractor-mp4'),
+      tempDir: writableTempDir,
       ts: new Date().toISOString(),
     })
   );
@@ -316,15 +348,12 @@ const ensureWoff2Ready = async () => {
   await woff2Ready;
 };
 
-const resolveAppDataDir = () =>
-  String(process.env.VDX_USER_DATA || '').trim() || path.join(os.homedir(), '.creative-asset-extractor');
-
 const app = express();
 const DEFAULT_PORT = Number(process.env.PORT || 3000);
 let activePort = DEFAULT_PORT;
 const appCacheRoot = path.join(resolveAppDataDir(), 'cache');
-const convertedVideoDir = path.join(os.tmpdir(), 'creative-asset-extractor-mp4');
-const convertedAudioDir = path.join(os.tmpdir(), 'creative-asset-extractor-audio');
+const convertedVideoDir = path.join(writableTempDir, 'creative-asset-extractor-mp4');
+const convertedAudioDir = path.join(writableTempDir, 'creative-asset-extractor-audio');
 const generatedThumbnailDir = path.join(appCacheRoot, 'thumbnails');
 const generatedImageThumbDir = path.join(appCacheRoot, 'image-thumbs');
 const cachedImageDir = path.join(appCacheRoot, 'images');
@@ -441,10 +470,10 @@ const cleanupDisposableStorage = async () => {
     path.join(legacyDataDir, 'bookmarks', 'backups'),
   ];
   const disposableTempPaths = [convertedVideoDir, convertedAudioDir];
-  const tempEntries = await fsp.readdir(os.tmpdir()).catch(() => [] as string[]);
+  const tempEntries = await fsp.readdir(writableTempDir).catch(() => [] as string[]);
   for (const entry of tempEntries) {
     if (/^creative-asset-extractor-(?:browser-profile|mp4|audio)/i.test(entry)) {
-      disposableTempPaths.push(path.join(os.tmpdir(), entry));
+      disposableTempPaths.push(path.join(writableTempDir, entry));
     }
   }
   await Promise.all(
@@ -1583,7 +1612,7 @@ const isLocalAppUrl = (value: string) => {
   }
 };
 
-const readChromeClientTab = async (preferredUrl = '') => {
+const readChromeClientTab = async (preferredUrl = '', exactMatch = false) => {
   if (process.platform !== 'darwin') {
     throw new Error('Chrome tab detection is currently available on macOS only.');
   }
@@ -1652,7 +1681,13 @@ const readChromeClientTab = async (preferredUrl = '') => {
         }
       })
     : undefined;
-  const selected = preferredTab || (frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0]);
+  const selected = exactMatch
+    ? candidates.find((tab) => matchesOpenChromeUrl(tab.url, preferredUrl))
+    : preferredTab || (frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0]);
+
+  if (exactMatch && !selected) {
+    throw new Error('Open this exact website URL in Chrome with GeoProxy connected, then retry. No matching tab was found.');
+  }
 
   if (!selected?.url) {
     throw new Error('Only local app tabs were found in Chrome. Open the client website in Chrome beside the localhost app tab.');
@@ -2572,7 +2607,7 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
   };
 };
 
-const extractAssetsFromControlledBrowserSession = async (targetUrl: string, userExploreWaitMs = 18000) => {
+const extractAssetsFromControlledBrowserSession = async (targetUrl: string, userExploreWaitMs = 18000, extractionProxy = '') => {
   const initialWaitMs = Math.min(180000, Math.max(8000, Number(userExploreWaitMs || 18000)));
   const executablePath = resolvePuppeteerExecutablePath();
   // Keep a stable, app-owned Chromium profile. Sites such as Kroger use the
@@ -2596,6 +2631,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
         '--no-first-run',
         '--no-default-browser-check',
         '--lang=en-US',
+        ...(extractionProxy ? [`--proxy-server=${proxyServerArg(extractionProxy)}`] : []),
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
@@ -2609,6 +2645,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       browser = await launchControlledBrowser(recoveryUserDataDir);
     }
     const page = await acquireSingleWebsitePage(browser);
+    await applyProxyAuthToPage(page, extractionProxy);
     const capturedFontResponses = new Map<string, any>();
     const capturedStylesheets = new Map<string, string>();
     const capturedVideoCandidates = new Map<string, any>();
@@ -2697,7 +2734,9 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       'Accept-Language': 'en-US,en;q=0.9',
       'Upgrade-Insecure-Requests': '1',
     });
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => undefined);
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch((error) => {
+      if (extractionProxy) throw new Error('Chromium could not load the website through the selected proxy. Check the proxy connection and credentials.');
+    });
     await waitForPageContentSettle(page, {
       minWaitMs: initialWaitMs,
       readinessTimeoutMs: Math.min(12000, Math.max(4000, Math.round(initialWaitMs * 0.35))),
@@ -2753,6 +2792,7 @@ const extractAssetsFromControlledBrowserSession = async (targetUrl: string, user
       let cssPage: Awaited<ReturnType<typeof browser.newPage>> | null = null;
       try {
         cssPage = await browser.newPage();
+        await applyProxyAuthToPage(cssPage, extractionProxy);
         await cssPage.setUserAgent(PAGE_FETCH_USER_AGENTS[0]);
         await cssPage.setExtraHTTPHeaders({
           Accept: 'text/css,*/*;q=0.1',
@@ -2845,6 +2885,45 @@ app.get('/api/browser-tabs/chrome/active', async (_req, res) => {
       ok: false,
       error: error?.message || 'Unable to read Chrome active tab.',
     });
+  }
+});
+
+app.post('/api/browser-tabs/chrome/extract-open', async (req, res) => {
+  try {
+    const target = new URL(String(req.body?.url || '')).href;
+    assertPublicAssetUrl(target);
+    const country = String(req.body?.requestedCountry || '');
+    if (!['US', 'NZ', 'GB', 'IN'].includes(country)) {
+      throw new Error('Choose the country you requested in GeoProxy.');
+    }
+    const tab = await readChromeClientTab(target, true);
+    // Recheck inside the tab so a navigation/tab reorder cannot capture a
+    // different website between discovery and executing the capture script.
+    const script = `(() => {
+      if (location.href !== ${JSON.stringify(target)}) throw new Error('The Chrome tab changed. Reopen the requested URL and retry.');
+      return ${buildChromeTabAssetCaptureScript()};
+    })()`;
+    const raw = validateOpenChromeCapture(JSON.parse(await executeJavascriptInChromeTab(tab, script)), target);
+    const images = (Array.isArray(raw.images) ? raw.images : [])
+      .filter((item: any) => item?.url && !isJunkImageUrl(String(item.url)));
+    const fonts = (Array.isArray(raw.fonts) ? raw.fonts : []).filter(isSupportedFontAsset);
+    const videos = (Array.isArray(raw.videos) ? raw.videos : [])
+      .map((item: any) => sanitizeVideoForClient(item, target)).filter(Boolean);
+    if (!images.length && !fonts.length && !videos.length) {
+      throw new Error('No assets were captured. Check that the website has loaded in Chrome and that GeoProxy is connected.');
+    }
+    return res.json({
+      ok: true, source: 'open-chrome-tab', pageUrl: target, title: raw.title || '',
+      images, fonts, videos, icons: [], colors: Array.isArray(raw.colors) ? raw.colors : [],
+      fontUsage: (Array.isArray(raw.fonts) ? raw.fonts : [])
+        .filter((font: any) => font?.format === 'computed'),
+      extractionMeta: { mode: 'open-chrome-tab', requestedCountry: country, proxyConnectionVerified: false },
+    });
+  } catch (error: any) {
+    const message = String(error?.message || 'Unable to capture the open Chrome tab.');
+    return res.status(400).json({ ok: false, error: /javascript|apple events|not authorized|not permitted/i.test(message)
+      ? 'Chrome tab access failed. In Chrome, enable View → Developer → Allow JavaScript from Apple Events, and allow macOS Automation access when prompted.'
+      : message });
   }
 });
 
@@ -3132,6 +3211,10 @@ async function fillEmptyBrowserExtractionFromStatic(extracted: any, fallbackUrl:
   };
 }
 
+app.get('/api/extraction-proxies', (_req, res) => {
+  res.json({ countries: countryProxyStatus() });
+});
+
 app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
   const requestedUrl = String(req.body?.url || '').trim();
   const previousProxyUrl = activeExtractionProxyUrl;
@@ -3139,8 +3222,11 @@ app.post('/api/browser-tabs/chrome/extract', async (req, res) => {
     if (!requestedUrl) {
       return res.status(400).json({ ok: false, error: 'URL is required.' });
     }
-    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const selectedProxy = req.body?.proxyCountry
+      ? resolveCountryProxy(req.body.proxyCountry)
+      : req.body?.proxyUrl;
+    activeExtractionProxyUrl = normalizeExtractionProxyUrl(selectedProxy);
+    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl, 18000, activeExtractionProxyUrl);
     let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     const requestedHost = new URL(requestedUrl).hostname.replace(/^www\./i, '').toLowerCase();
     if (requestedHost === 'kroger.com') {
@@ -4824,6 +4910,7 @@ const expandVariableFontWeightFaces = (fonts: any[]) => fonts.flatMap((font) => 
     : [String(font?.style || 'normal')];
   return weights.flatMap((weight) => styles.map((style) => ({
     ...font,
+    family: knownModernGothicVariable ? 'Modern Gothic' : font.family,
     weight: String(weight),
     style,
     variableWeightRange: `${start} ${end}`,
@@ -9326,7 +9413,7 @@ const convertFontBufferWithFontForge = async (
   if (cached) return cached;
 
   const conversion = (async () => {
-    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'cae-fontforge-'));
+    const tempRoot = await fsp.mkdtemp(path.join(writableTempDir, 'cae-fontforge-'));
     try {
       const safeBase = sanitizeFilenameBase(filenameBase || 'font').replace(/\s+/g, '-') || 'font';
       const sourceExt = ['woff2', 'woff', 'ttf', 'otf'].includes(sourceFormat) ? sourceFormat : 'woff';
@@ -9453,7 +9540,7 @@ const convertFontBufferWithTransfonter = async (
     const archiveResponse = await fetch(resultUrl, { headers: sessionHeaders });
     if (!archiveResponse.ok) throw new Error(`Transfonter result download failed (${archiveResponse.status}).`);
     const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
-    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'cae-transfonter-'));
+    const tempRoot = await fsp.mkdtemp(path.join(writableTempDir, 'cae-transfonter-'));
     try {
       const zipPath = path.join(tempRoot, 'result.zip');
       const outputDir = path.join(tempRoot, 'output');
@@ -12707,6 +12794,7 @@ const enrichAssetsFromHtml = async (
     }
     addVideoCandidate(absolute, '', pageTitle);
   });
+  extractKalturaVideosFromHtml(html, targetUrl).forEach((video) => assets.videos.push(enforceMp4VideoPayload(video)));
   extractBrightcoveVideosFromHtml(html, targetUrl).forEach((brightcoveVideo) => {
     assets.videos.push({
       ...brightcoveVideo,
@@ -14464,6 +14552,7 @@ const resolveVimeoQualityStreams = async (vimeoUrl: string, sourcePageUrl: strin
     thumbnail: sanitizeStreamUrl(playerConfig?.video?.thumbnail_url || thumbnail || '', vimeoUrl) || thumbnail,
     duration: Number(playerConfig?.video?.duration || duration || 0) || undefined,
     streams: resolved,
+    masterManifestUrl: hlsMasterUrl,
     debug,
   };
 };
@@ -16211,7 +16300,7 @@ const downloadVimeoPlatformVideoToFile = async (
 
   const streamUrl = sanitizeStreamUrl(String(streamVideo.url), sourcePageUrl) || String(streamVideo.url);
   const tempBase = `vimeo-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempPath = path.join(os.tmpdir(), `${tempBase}.mp4`);
+  const tempPath = path.join(writableTempDir, `${tempBase}.mp4`);
 
   if (streamVideo.isVimeoHls || /\.m3u8(?:\?|$)/i.test(streamUrl)) {
     const parsedStream = new URL(streamUrl);
@@ -16249,7 +16338,6 @@ const downloadPlatformVideoToFile = async (
     titleHint?: string;
     sourcePageUrl?: string;
     mode?: 'video' | 'audio';
-    maxDurationSeconds?: number;
     saveToWebsiteAssets?: boolean;
   } = {}
 ) => {
@@ -16273,9 +16361,6 @@ const downloadPlatformVideoToFile = async (
 
   const title = String(options.titleHint || pageTitleFromUrl(normalizedUrl) || 'video').trim();
   const isAudio = options.mode === 'audio';
-  const maxAudioDurationSeconds = isAudio
-    ? Math.min(120, Math.max(1, Number(options.maxDurationSeconds || 120)))
-    : undefined;
   const requestedQuality = ['hd', 'fhd', '4k'].includes(String(quality || '').toLowerCase())
     ? String(quality).toLowerCase()
     : 'fhd';
@@ -16285,9 +16370,9 @@ const downloadPlatformVideoToFile = async (
     : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
   await fsp.mkdir(targetDir, { recursive: true });
   const desiredFilename = isAudio
-    ? `${toSafeFileBase(title)}_MP3_${maxAudioDurationSeconds}s.mp3`
+    ? `${toSafeFileBase(title)}_Audio.mp3`
     : toQualityVideoFilename(requestedQuality, title);
-  const desiredPath = path.join(targetDir, desiredFilename);
+  let desiredPath = path.join(targetDir, desiredFilename);
 
   try {
     const stat = await validateOutputFile(desiredPath, 'Existing download');
@@ -16312,7 +16397,7 @@ const downloadPlatformVideoToFile = async (
     /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) ||
     (/\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL(options.sourcePageUrl || normalizedUrl).hostname));
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempTemplate = path.join(os.tmpdir(), `${tempBase}.%(ext)s`);
+  const tempTemplate = path.join(writableTempDir, `${tempBase}.%(ext)s`);
   const baseYdlOptions: Record<string, unknown> = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
     output: tempTemplate,
@@ -16320,10 +16405,10 @@ const downloadPlatformVideoToFile = async (
     ...(isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {}),
     ...(isAudio
       ? {
+          checkFormats: true,
           extractAudio: true,
           audioFormat: 'mp3',
-          audioQuality: '128K',
-          postprocessorArgs: `ffmpeg:-t ${maxAudioDurationSeconds}`,
+          audioQuality: '0',
         }
       : { postprocessorArgs: 'ffmpeg:-c copy -movflags +faststart' }),
   };
@@ -16364,7 +16449,7 @@ const downloadPlatformVideoToFile = async (
         YOUTUBE_MERGE_TIMEOUT_MS,
         `${attempt.name} for ${normalizedUrl}`
       );
-      downloadedPath = await findYtDlpOutputFile(os.tmpdir(), tempBase);
+      downloadedPath = await findYtDlpOutputFile(writableTempDir, tempBase);
       if (downloadedPath) break;
       throw new Error('Downloader exited without creating an output file.');
     } catch (error: any) {
@@ -16381,7 +16466,7 @@ const downloadPlatformVideoToFile = async (
   // limited to manifest URLs so a provider extractor failure cannot change
   // the behavior of ordinary page downloads.
   if (!downloadedPath && !isAudio && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(normalizedUrl)) {
-    const ffmpegOutput = path.join(os.tmpdir(), `${tempBase}.ffmpeg.mp4`);
+    const ffmpegOutput = path.join(writableTempDir, `${tempBase}.ffmpeg.mp4`);
     try {
       const parsedStream = new URL(normalizedUrl);
       const { referer, origin } = getStreamRequestContext(parsedStream, options.sourcePageUrl || normalizedUrl);
@@ -17538,6 +17623,9 @@ const isTechnicalOrUnsupportedStream = (candidate: any) => {
   const note = String(candidate?.formatNote || candidate?.format_note || candidate?.format || candidate?.resolution || '').toLowerCase();
   if (!raw) return true;
   if (isUnsupportedVideoResourceUrl(raw)) return true;
+  // Hydration-discovered Kaltura masters are validated and handed to the MP4 proxy.
+  if (candidate?.provider === 'kaltura' && candidate?.isMp4Proxy &&
+      /^https:\/\/cdnapisec\.kaltura\.com\/p\/[1-9]\d*\/sp\/\d+\/playManifest\/entryId\/[01]_[a-z0-9]+\//i.test(String(candidate?.sourceStreamUrl || ''))) return false;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(raw)) return true;
   if (/storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd/i.test(note)) return true;
   if (type === 'm3u8' || type === 'mpd') return true;
@@ -17987,8 +18075,7 @@ const downloadBrightcoveVideoToFile = async (
         titleHint: resolvedTitle,
         sourcePageUrl: options.sourcePageUrl || url,
         saveToWebsiteAssets: options.saveToWebsiteAssets,
-        mode: options.mode === 'audio' ? 'audio' : 'video',
-        maxDurationSeconds: options.mode === 'audio' ? 120 : undefined,
+      mode: options.mode === 'audio' ? 'audio' : 'video',
       });
   return { ...result, title: resolvedTitle, thumbnail, platform: 'brightcove' };
 };
@@ -18978,6 +19065,14 @@ app.post('/api/extract', async (req, res) => {
 
     const isWarehouseStationeryTarget = isWarehouseStationeryRequest;
     if (isWarehouseStationeryTarget) {
+      const liveAssets = await withTimeout<{ images: any[]; fonts: any[] }>(
+        extractStaticAssets(targetUrl, '', { fast: true, videosOnly }),
+        35000,
+        `Warehouse Stationery live HTML extraction for ${targetUrl}`
+      ).catch(() => null);
+      if (liveAssets && liveAssets.images.length >= 20 && liveAssets.fonts.length > 0) {
+        return res.json(liveAssets);
+      }
       const warehouseAssetsPromise = videosOnly
         ? Promise.resolve({ fonts: [] as any[], colors: [] as string[] })
         : withTimeout(
@@ -19071,7 +19166,9 @@ app.post('/api/extract', async (req, res) => {
     // A CAPTCHA page cannot yield useful reader/static assets. Start the short
     // Chromium verification check immediately so the user gets a clear status
     // instead of waiting through two long fallback attempts.
-    if (!prefetchedSiteHtml || !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+    // Reader recovery must not replace a successfully fetched page: markdown
+    // omits its embedded stylesheets and font-face declarations.
+    if (!prefetchedSiteHtml) {
       const blockedFallbackAssets = await withTimeout(
         extractReaderFallbackAssets(targetUrl, { videosOnly }),
         35000,
@@ -20210,6 +20307,7 @@ app.post('/api/extract', async (req, res) => {
     const rawMatches = html.match(htmlVideoUrlRegex) || [];
     rawMatches.forEach((match) => addVideoCandidate(match));
     extractYouTubeUrlsFromText(html, targetUrl).forEach((youtubeUrl) => addVideoCandidate(youtubeUrl));
+    extractKalturaVideosFromHtml(html, targetUrl).forEach((video) => videos.push(enforceMp4VideoPayload(video)));
     extractBrightcoveVideosFromHtml(html, targetUrl).forEach((brightcoveVideo) => {
       videos.push({
         ...brightcoveVideo,
@@ -20746,6 +20844,7 @@ app.post('/api/video-extract/bulk', async (req, res) => {
 registerVideoDownloaderRoutes(app, {
   appRoot: getAppRoot(),
   resourcesPath: getResourcesPath(),
+  tempDir: writableTempDir,
   validateUrl: assertPublicAssetUrl,
   specialInspect: async (url) => {
     if (isBrightcoveUrl(url)) {
@@ -20754,6 +20853,19 @@ registerVideoDownloaderRoutes(app, {
     return ispotVideoExtractor(url);
   },
   specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
+    if (quality === 'audio' && isVimeoUrl(url)) {
+      const resolved = await resolveVimeoQualityStreams(url, sourcePageUrl || url);
+      const fallbackStream = resolved.streams.fhd?.sourceStreamUrl || resolved.streams.hd?.sourceStreamUrl || '';
+      const audioSourceUrl = String(resolved.masterManifestUrl || fallbackStream).trim();
+      if (!audioSourceUrl) throw new Error('Vimeo did not provide a downloadable audio stream.');
+      const result = await downloadPlatformVideoToFile(audioSourceUrl, 'fhd', {
+        titleHint: title || resolved.title,
+        sourcePageUrl: sourcePageUrl || url,
+        saveToWebsiteAssets,
+        mode: 'audio',
+      });
+      return { ...result, title: title || resolved.title, thumbnail: resolved.thumbnail, platform: 'vimeo' };
+    }
     if (isBrightcoveUrl(url)) {
       return downloadBrightcoveVideoToFile(url, quality, {
         title,
@@ -20770,7 +20882,6 @@ registerVideoDownloaderRoutes(app, {
       sourcePageUrl: sourcePageUrl || url,
       saveToWebsiteAssets,
       mode: quality === 'audio' ? 'audio' : 'video',
-      maxDurationSeconds: quality === 'audio' ? 120 : undefined,
     });
   },
 });
@@ -20814,7 +20925,6 @@ app.post('/api/platform-video-download', async (req, res) => {
           titleHint,
           sourcePageUrl,
           mode,
-          maxDurationSeconds: mode === 'audio' ? 120 : undefined,
           saveToWebsiteAssets,
         });
     return res.json(result);
@@ -22030,7 +22140,7 @@ app.get('/api/download', async (req, res) => {
     // to avoid "video-only" googlevideo streams.
     if (isYouTubeUrl(normalizedSourceUrl) && !isLikelyDirectVideoStreamUrl(normalizedSourceUrl) && !isLikelyVideoAssetUrl(normalizedSourceUrl)) {
       const tempBase = `creative-ytdlp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const outputPath = path.join(os.tmpdir(), `${tempBase}.mp4`);
+      const outputPath = path.join(writableTempDir, `${tempBase}.mp4`);
       const requestedQuality = typeof req.query.quality === 'string' && ['hd', 'fhd', '4k'].includes(req.query.quality)
         ? req.query.quality
         : 'fhd';
@@ -22122,7 +22232,7 @@ app.get('/api/download', async (req, res) => {
     // Non-mp4 source: transcode the exact source URL to MP4.
     response.data.destroy();
     const tempBase = `creative-extractor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const tempOutput = path.join(os.tmpdir(), `${tempBase}.mp4`);
+    const tempOutput = path.join(writableTempDir, `${tempBase}.mp4`);
     try {
       await transcodeUrlToMp4File(downloadUrl, tempOutput, referer, origin);
       const stat = await fsp.stat(tempOutput);

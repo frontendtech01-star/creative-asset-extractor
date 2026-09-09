@@ -12,15 +12,13 @@ const SITES = [
   'https://www.tandemdiabetes.com/',
 ];
 const EXPECT_VIDEO = new Set([
-  'https://www.brinsupri.com/about-brinsupri/#moa-video',
-  'https://www.brinsuprihcp.com/how-brinsupri-works/',
   'https://vdx.tv/',
   'https://miplyffa-hcp.com/resources/#video-popup',
 ]);
-const EXPECTED_VIDEO_ID = new Map([
-  ['https://www.brinsupri.com/about-brinsupri/#moa-video', '1183479863'],
-  ['https://www.brinsuprihcp.com/how-brinsupri-works/', '1097923504'],
-]);
+// The publisher removed the historical Vimeo embeds from the Brinsupri pages.
+// Keep those URLs as false-positive regression fixtures, but only require an
+// actual player on the pages which still publish one.
+const EXPECTED_VIDEO_ID = new Map();
 
 const waitForResult = (extractId) => new Promise((resolve, reject) => {
   const socket = new WebSocket(`${BASE.replace(/^http/, 'ws')}/ws/extract?extractId=${encodeURIComponent(extractId)}`);

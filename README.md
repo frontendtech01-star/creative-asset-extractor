@@ -71,6 +71,10 @@ npm run dev
 
 ## Common Commands
 
+The website extractor has no proxy section or country selector. **Extract from
+Chrome** uses the normal controlled-browser workflow. Advanced backend proxy
+support remains separate; no proxy service or credentials are bundled.
+
 | Command | Purpose |
 | --- | --- |
 | `npm install` | Install all dependencies and prepare media tools |
@@ -79,7 +83,6 @@ npm run dev
 | `npm run typecheck` | Check TypeScript |
 | `npm run build` | Build the frontend |
 | `npm run build:all` | Build the frontend and type-check the server |
-| `npm run smoke` | Run the consolidated fast static smoke check |
 | `npm run dmg` | Build and verify a macOS DMG |
 | `npm run dist:win` | Build a Windows NSIS installer |
 | `npm run dist:linux` | Build a Linux AppImage |
@@ -137,7 +140,7 @@ creative extracter/
 | `scripts/dev.mjs` | Repairs required local tools if necessary and starts `server.ts` for development. |
 | `scripts/start.mjs` / `scripts/start-localhost.mjs` | Starts the desktop/local-host variants. |
 | `scripts/build-*.mjs` | Creates the server bundle and platform installer builds. |
-| `scripts/smoke-*.mjs` | Retained targeted regression tests for extraction, fonts, images, videos, packaging, and feedback. Use `npm run smoke` for the normal fast check. |
+| `scripts/smoke-*.mjs` | Retained targeted regression tests for extraction, fonts, images, videos, packaging, and feedback. See [TESTING.md](TESTING.md) for test commands. |
 | `scripts/qc-dmg.mjs` | Packaged macOS installer verification, run as part of the DMG build. |
 | `scripts/lib/` | Shared helpers used by setup/build/smoke scripts. |
 
@@ -181,10 +184,7 @@ Do **not** delete `src/`, `server/`, `vendor/`, `electron/`, `scripts/`,
 the application. Avoid deleting `node_modules/` unless you are prepared to run
 `npm install` again.
 
-`npm run smoke` is the standard fast check for normal development. The named
-scripts in `scripts/smoke-*.mjs` are retained only for focused regressions or
-release checks; they do not create files unless the individual test requires
-an output folder.
+Testing instructions are maintained separately in [TESTING.md](TESTING.md).
 
 ## How the App Works
 

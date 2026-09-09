@@ -1,9 +1,96 @@
+// server/kaltura.ts
+import * as cheerio from "cheerio";
+var extractKalturaVideosFromHtml = (html, sourceUrl) => {
+  const videos = /* @__PURE__ */ new Map();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    const partnerId = String(value.partnerId || "");
+    const entryId = String(value.entryId || value.id || "");
+    if (/^[1-9]\d*$/.test(partnerId) && /^[01]_[a-z0-9]+$/i.test(entryId)) {
+      const url = `https://cdnapisec.kaltura.com/p/${partnerId}/sp/${partnerId}00/playManifest/entryId/${entryId}/format/applehttp/protocol/https/a.m3u8`;
+      videos.set(url, {
+        url,
+        sourceUrl,
+        provider: "kaltura",
+        type: "m3u8",
+        isDirect: true,
+        title: value.name || value.alt || "Kaltura video",
+        thumbnail: `https://cfvod.kaltura.com/p/${partnerId}/sp/${partnerId}00/thumbnail/entry_id/${entryId}/width/1280`
+      });
+    }
+    Object.values(value).forEach(visit);
+  };
+  const $ = cheerio.load(html);
+  $('script[type="application/json"]').each((_, element) => {
+    try {
+      visit(JSON.parse($(element).text()));
+    } catch {
+    }
+  });
+  return [...videos.values()];
+};
+
 // server.ts
 import express from "express";
+
+// server/country-proxy.ts
+var PROXY_COUNTRIES = [
+  { code: "US", label: "USA" },
+  { code: "NZ", label: "NZ" },
+  { code: "GB", label: "UK" },
+  { code: "IN", label: "India" }
+];
+function resolveCountryProxy(country, env = process.env) {
+  const code = String(country || "").trim().toUpperCase();
+  if (!code) return "";
+  if (!PROXY_COUNTRIES.some((item) => item.code === code)) {
+    throw new Error("Choose USA, NZ, UK, or India for the Chromium proxy.");
+  }
+  const value = String(env[`EXTRACTION_PROXY_${code}`] || "").trim();
+  if (!value) throw new Error(`The ${code} proxy is not configured. Add a real proxy server in the app configuration first.`);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`The ${code} proxy configuration is invalid.`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || !parsed.port) {
+    throw new Error(`The ${code} proxy must be an HTTP or HTTPS proxy URL with a port.`);
+  }
+  return parsed.href;
+}
+function countryProxyStatus(env = process.env) {
+  return PROXY_COUNTRIES.map((country) => {
+    try {
+      resolveCountryProxy(country.code, env);
+      return { ...country, configured: true };
+    } catch {
+      return { ...country, configured: false };
+    }
+  });
+}
+
+// server/open-chrome-capture.ts
+var matchesOpenChromeUrl = (candidate, target) => {
+  try {
+    return new URL(candidate).href === new URL(target).href;
+  } catch {
+    return false;
+  }
+};
+function validateOpenChromeCapture(raw, target) {
+  if (!matchesOpenChromeUrl(String(raw?.url || ""), target)) {
+    throw new Error("The Chrome tab navigated during capture. Retry extraction.");
+  }
+  if (!raw?.ok) throw new Error("Chrome could not capture this page. Check the open tab and retry.");
+  return raw;
+}
+
+// server.ts
 import path3 from "path";
 import rateLimit from "express-rate-limit";
 import axios from "axios";
-import * as cheerio from "cheerio";
+import * as cheerio2 from "cheerio";
 import archiver2 from "archiver";
 import extractZip from "extract-zip";
 import { URL as URL2 } from "url";
@@ -1025,6 +1112,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   const platformDir = job.saveToWebsiteAssets && job.sourcePageUrl ? resolveCreativeAssetsDir(job.sourcePageUrl, "Videos") : resolvePlatformVideoAssetsDir(job.platform);
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   await fsp2.mkdir(platformDir, { recursive: true });
+  await fsp2.mkdir(options.tempDir, { recursive: true });
   const outputTemplate = path2.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   const aria2Path2 = aria2cAvailable(options);
@@ -1057,6 +1145,8 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "180",
     "--force-overwrites",
     "--no-part",
+    "--paths",
+    `temp:${options.tempDir}`,
     "--output",
     outputTemplate,
     "--format",
@@ -1071,7 +1161,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     "--buffer-size",
     "128K",
     ...trimSectionArgs(job),
-    ...job.quality === "audio" ? ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "128K", "--postprocessor-args", "ffmpeg:-t 120"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
+    ...job.quality === "audio" ? ["--check-formats", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0"] : ["--merge-output-format", "mp4", "--remux-video", "mp4", "--postprocessor-args", "ffmpeg:-c copy -movflags +faststart"],
     ...extraArgs.filter(
       (a) => !a.startsWith("--no-aria2") && !a.startsWith("--quality-fallback") && !a.startsWith("--youtube-http-403-fallback")
     ),
@@ -1084,8 +1174,12 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
     });
     const extraPath = toolPathEnv(options);
     const child = spawn(ytdlp, args, {
+      cwd: options.tempDir,
       env: {
         ...process.env,
+        TMPDIR: options.tempDir,
+        TMP: options.tempDir,
+        TEMP: options.tempDir,
         ELECTRON_RUN_AS_NODE: "1",
         PATH: extraPath ? `${extraPath}${path2.delimiter}${process.env.PATH || ""}` : process.env.PATH
       },
@@ -1537,12 +1631,19 @@ var completeJob = async (options, job, downloaded) => {
   const preserveOriginal = job.quality === "audio";
   updateJob(job, {
     progress: job.quality === "4k" ? 86 : 95,
-    message: job.quality === "4k" ? "Converting 4K to Mac-compatible MP4..." : "Optimizing for QuickTime..."
+    message: job.quality === "audio" ? "Verifying audio..." : job.quality === "4k" ? "Converting 4K to Mac-compatible MP4..." : "Optimizing for QuickTime..."
   });
   const filePath = preserveOriginal ? initialPath : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === "4k");
-  if (job.quality !== "audio") {
-    const finalProbe = await probeMedia(options, filePath);
-    const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+  const finalProbe = await probeMedia(options, filePath);
+  const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+  if (job.quality === "audio") {
+    const hasAudio = finalStreams.some((stream) => stream?.codec_type === "audio");
+    const hasVideo = finalStreams.some((stream) => stream?.codec_type === "video");
+    if (!hasAudio || hasVideo) {
+      await fsp2.rm(filePath, { force: true }).catch(() => void 0);
+      throw new Error(hasVideo ? "The provider returned a video file instead of an audio-only track." : "The provider did not return a decodable audio track.");
+    }
+  } else {
     const hasVideo = finalStreams.some((stream) => stream?.codec_type === "video");
     const hasAudio = finalStreams.some((stream) => stream?.codec_type === "audio");
     if (!hasVideo || !hasAudio) {
@@ -1606,7 +1707,7 @@ var processJob = async (options, job) => {
     aria2c_path: resolveTool(options, "aria2c")
   });
   try {
-    if ((job.platform === "ispot" || job.platform === "brightcove") && options.specialDownload) {
+    if ((job.platform === "ispot" || job.platform === "brightcove" || job.platform === "vimeo" && job.quality === "audio") && options.specialDownload) {
       updateJob(job, {
         progress: 12,
         message: job.platform === "brightcove" ? "Resolving Brightcove stream..." : "Resolving iSpot.tv stream..."
@@ -2691,6 +2792,24 @@ var clearMacQuarantine = async (filePath) => {
   await execFileAsync2("/usr/bin/xattr", ["-d", "com.apple.quarantine", filePath]).catch(() => void 0);
 };
 var getResourcesPath = () => process.env.VDX_RESOURCES_PATH || getAppRoot();
+var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path3.join(os3.homedir(), ".creative-asset-extractor");
+var resolveWritableTempDir = () => {
+  const configured = String(process.env.VDX_TEMP_DIR || "").trim();
+  const resources = path3.resolve(getResourcesPath());
+  const appRoot = path3.resolve(getAppRoot());
+  const candidate = configured || os3.tmpdir();
+  const resolved = path3.resolve(candidate);
+  const isBundlePath = [resources, appRoot].some((bundle) => resolved === bundle || resolved.startsWith(`${bundle}${path3.sep}`));
+  return isBundlePath ? path3.join(resolveAppDataDir(), "tmp") : candidate;
+};
+var writableTempDir = resolveWritableTempDir();
+try {
+  fs2.mkdirSync(writableTempDir, { recursive: true });
+  process.env.TMPDIR = writableTempDir;
+  process.env.TMP = writableTempDir;
+  process.env.TEMP = writableTempDir;
+} catch {
+}
 var getUnpackedModulePath = (...segments) => {
   const resources = process.env.VDX_RESOURCES_PATH;
   if (resources) {
@@ -2774,7 +2893,7 @@ var logYouTubeMerge = (stage, details = {}) => {
       ffprobePath: resolvedFfprobePath,
       ytdlpPath: resolvedYtDlpPath,
       resourcesPath: getResourcesPath(),
-      tempDir: path3.join(os3.tmpdir(), "creative-asset-extractor-mp4"),
+      tempDir: writableTempDir,
       ts: (/* @__PURE__ */ new Date()).toISOString()
     })
   );
@@ -2897,13 +3016,12 @@ var ensureWoff2Ready = async () => {
   }
   await woff2Ready;
 };
-var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path3.join(os3.homedir(), ".creative-asset-extractor");
 var app = express();
 var DEFAULT_PORT = Number(process.env.PORT || 3e3);
 var activePort = DEFAULT_PORT;
 var appCacheRoot = path3.join(resolveAppDataDir(), "cache");
-var convertedVideoDir = path3.join(os3.tmpdir(), "creative-asset-extractor-mp4");
-var convertedAudioDir = path3.join(os3.tmpdir(), "creative-asset-extractor-audio");
+var convertedVideoDir = path3.join(writableTempDir, "creative-asset-extractor-mp4");
+var convertedAudioDir = path3.join(writableTempDir, "creative-asset-extractor-audio");
 var generatedThumbnailDir = path3.join(appCacheRoot, "thumbnails");
 var generatedImageThumbDir = path3.join(appCacheRoot, "image-thumbs");
 var cachedImageDir = path3.join(appCacheRoot, "images");
@@ -3003,10 +3121,10 @@ var cleanupDisposableStorage = async () => {
     path3.join(legacyDataDir, "bookmarks", "backups")
   ];
   const disposableTempPaths = [convertedVideoDir, convertedAudioDir];
-  const tempEntries = await fsp3.readdir(os3.tmpdir()).catch(() => []);
+  const tempEntries = await fsp3.readdir(writableTempDir).catch(() => []);
   for (const entry of tempEntries) {
     if (/^creative-asset-extractor-(?:browser-profile|mp4|audio)/i.test(entry)) {
-      disposableTempPaths.push(path3.join(os3.tmpdir(), entry));
+      disposableTempPaths.push(path3.join(writableTempDir, entry));
     }
   }
   await Promise.all(
@@ -3900,7 +4018,7 @@ var isLocalAppUrl = (value) => {
     return false;
   }
 };
-var readChromeClientTab = async (preferredUrl = "") => {
+var readChromeClientTab = async (preferredUrl = "", exactMatch = false) => {
   if (process.platform !== "darwin") {
     throw new Error("Chrome tab detection is currently available on macOS only.");
   }
@@ -3961,7 +4079,10 @@ var readChromeClientTab = async (preferredUrl = "") => {
       return false;
     }
   }) : void 0;
-  const selected = preferredTab || (frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0]);
+  const selected = exactMatch ? candidates.find((tab) => matchesOpenChromeUrl(tab.url, preferredUrl)) : preferredTab || (frontActive && !isLocalAppUrl(frontActive.url) ? frontActive : candidates[0]);
+  if (exactMatch && !selected) {
+    throw new Error("Open this exact website URL in Chrome with GeoProxy connected, then retry. No matching tab was found.");
+  }
   if (!selected?.url) {
     throw new Error("Only local app tabs were found in Chrome. Open the client website in Chrome beside the localhost app tab.");
   }
@@ -4811,7 +4932,7 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     title: raw?.title || ""
   };
 };
-var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWaitMs = 18e3) => {
+var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWaitMs = 18e3, extractionProxy = "") => {
   const initialWaitMs = Math.min(18e4, Math.max(8e3, Number(userExploreWaitMs || 18e3)));
   const executablePath = resolvePuppeteerExecutablePath();
   const userDataDir = path3.join(appDataDir, "chromium-profile");
@@ -4830,7 +4951,8 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
         "--no-default-browser-check",
-        "--lang=en-US"
+        "--lang=en-US",
+        ...extractionProxy ? [`--proxy-server=${proxyServerArg(extractionProxy)}`] : []
       ],
       ignoreDefaultArgs: ["--enable-automation"]
     });
@@ -4844,6 +4966,7 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       browser = await launchControlledBrowser(recoveryUserDataDir);
     }
     const page = await acquireSingleWebsitePage(browser);
+    await applyProxyAuthToPage(page, extractionProxy);
     const capturedFontResponses = /* @__PURE__ */ new Map();
     const capturedStylesheets = /* @__PURE__ */ new Map();
     const capturedVideoCandidates = /* @__PURE__ */ new Map();
@@ -4920,7 +5043,9 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       "Accept-Language": "en-US,en;q=0.9",
       "Upgrade-Insecure-Requests": "1"
     });
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch(() => void 0);
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45e3 }).catch((error) => {
+      if (extractionProxy) throw new Error("Chromium could not load the website through the selected proxy. Check the proxy connection and credentials.");
+    });
     await waitForPageContentSettle(page, {
       minWaitMs: initialWaitMs,
       readinessTimeoutMs: Math.min(12e3, Math.max(4e3, Math.round(initialWaitMs * 0.35)))
@@ -4969,6 +5094,7 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
       let cssPage = null;
       try {
         cssPage = await browser.newPage();
+        await applyProxyAuthToPage(cssPage, extractionProxy);
         await cssPage.setUserAgent(PAGE_FETCH_USER_AGENTS[0]);
         await cssPage.setExtraHTTPHeaders({
           Accept: "text/css,*/*;q=0.1",
@@ -5051,6 +5177,44 @@ app.get("/api/browser-tabs/chrome/active", async (_req, res) => {
       ok: false,
       error: error?.message || "Unable to read Chrome active tab."
     });
+  }
+});
+app.post("/api/browser-tabs/chrome/extract-open", async (req, res) => {
+  try {
+    const target = new URL2(String(req.body?.url || "")).href;
+    assertPublicAssetUrl(target);
+    const country = String(req.body?.requestedCountry || "");
+    if (!["US", "NZ", "GB", "IN"].includes(country)) {
+      throw new Error("Choose the country you requested in GeoProxy.");
+    }
+    const tab = await readChromeClientTab(target, true);
+    const script = `(() => {
+      if (location.href !== ${JSON.stringify(target)}) throw new Error('The Chrome tab changed. Reopen the requested URL and retry.');
+      return ${buildChromeTabAssetCaptureScript()};
+    })()`;
+    const raw = validateOpenChromeCapture(JSON.parse(await executeJavascriptInChromeTab(tab, script)), target);
+    const images = (Array.isArray(raw.images) ? raw.images : []).filter((item) => item?.url && !isJunkImageUrl(String(item.url)));
+    const fonts = (Array.isArray(raw.fonts) ? raw.fonts : []).filter(isSupportedFontAsset);
+    const videos = (Array.isArray(raw.videos) ? raw.videos : []).map((item) => sanitizeVideoForClient(item, target)).filter(Boolean);
+    if (!images.length && !fonts.length && !videos.length) {
+      throw new Error("No assets were captured. Check that the website has loaded in Chrome and that GeoProxy is connected.");
+    }
+    return res.json({
+      ok: true,
+      source: "open-chrome-tab",
+      pageUrl: target,
+      title: raw.title || "",
+      images,
+      fonts,
+      videos,
+      icons: [],
+      colors: Array.isArray(raw.colors) ? raw.colors : [],
+      fontUsage: (Array.isArray(raw.fonts) ? raw.fonts : []).filter((font) => font?.format === "computed"),
+      extractionMeta: { mode: "open-chrome-tab", requestedCountry: country, proxyConnectionVerified: false }
+    });
+  } catch (error) {
+    const message = String(error?.message || "Unable to capture the open Chrome tab.");
+    return res.status(400).json({ ok: false, error: /javascript|apple events|not authorized|not permitted/i.test(message) ? "Chrome tab access failed. In Chrome, enable View \u2192 Developer \u2192 Allow JavaScript from Apple Events, and allow macOS Automation access when prompted." : message });
   }
 });
 app.post("/api/browser-tabs/chrome/resolve-blob-video", async (req, res) => {
@@ -5255,6 +5419,9 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     title: extracted?.title || ""
   };
 }
+app.get("/api/extraction-proxies", (_req, res) => {
+  res.json({ countries: countryProxyStatus() });
+});
 app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
   const requestedUrl = String(req.body?.url || "").trim();
   const previousProxyUrl = activeExtractionProxyUrl;
@@ -5262,8 +5429,9 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
     if (!requestedUrl) {
       return res.status(400).json({ ok: false, error: "URL is required." });
     }
-    activeExtractionProxyUrl = normalizeExtractionProxyUrl(req.body?.proxyUrl);
-    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl);
+    const selectedProxy = req.body?.proxyCountry ? resolveCountryProxy(req.body.proxyCountry) : req.body?.proxyUrl;
+    activeExtractionProxyUrl = normalizeExtractionProxyUrl(selectedProxy);
+    const browserExtracted = await extractAssetsFromControlledBrowserSession(requestedUrl, 18e3, activeExtractionProxyUrl);
     let extracted = await fillEmptyBrowserExtractionFromStatic(browserExtracted, requestedUrl);
     const requestedHost = new URL2(requestedUrl).hostname.replace(/^www\./i, "").toLowerCase();
     if (requestedHost === "kroger.com") {
@@ -6663,6 +6831,7 @@ var expandVariableFontWeightFaces = (fonts) => fonts.flatMap((font) => {
   const styles = font?.variableItalicAxis || knownModernGothicVariable ? ["normal", "italic"] : [String(font?.style || "normal")];
   return weights.flatMap((weight) => styles.map((style) => ({
     ...font,
+    family: knownModernGothicVariable ? "Modern Gothic" : font.family,
     weight: String(weight),
     style,
     variableWeightRange: `${start} ${end}`,
@@ -6728,7 +6897,7 @@ var fetchCssSourceCandidates = async (siteUrl, preloadedHtml = "", options = {})
   const visitedCss = /* @__PURE__ */ new Set();
   const queue = [];
   const html = preloadedHtml || await fetchSiteHtml(siteUrl);
-  const $ = cheerio.load(html);
+  const $ = cheerio2.load(html);
   $('link[rel="stylesheet"]').each((_, el) => {
     const href = $(el).attr("href");
     const abs = href ? resolveUrl(siteUrl, href) : null;
@@ -6823,7 +6992,7 @@ var fetchCssSourceCandidates = async (siteUrl, preloadedHtml = "", options = {})
   return { inlineStyles, fetchedCss };
 };
 var fetchImportedFontProviderFonts = async (siteUrl, html) => {
-  const $ = cheerio.load(html);
+  const $ = cheerio2.load(html);
   const stylesheetUrls = /* @__PURE__ */ new Set();
   const providerUrls = new Set(extractExternalFontCssUrls(html, siteUrl));
   $("link[href]").each((_, el) => {
@@ -7077,7 +7246,7 @@ var materializeSvgFragmentForIllustrator = (buffer, sourceUrl = "") => {
   }
   if (!fragment) return normalizeSvgBufferForIllustrator(buffer);
   try {
-    const $ = cheerio.load(buffer.toString("utf8"), { xmlMode: true });
+    const $ = cheerio2.load(buffer.toString("utf8"), { xmlMode: true });
     const target = $("[id]").filter((_, el) => String($(el).attr("id") || "") === fragment).first();
     if (!target.length) return normalizeSvgBufferForIllustrator(buffer);
     const root = $("svg").first();
@@ -8137,7 +8306,7 @@ var extractBrightcoveVideosFromHtml = (htmlText, baseUrl) => {
     videos.push(input);
   };
   try {
-    const $ = cheerio.load(htmlText);
+    const $ = cheerio2.load(htmlText);
     $("gb-video-brightcove, [data-video-id][data-account-id], [data-bc-video-id][data-account-id]").each((_, el) => {
       const accountId = $(el).attr("data-account-id") || $(el).attr("account-id") || "";
       const playerId = $(el).attr("data-player-id") || $(el).attr("player-id") || "default";
@@ -8297,7 +8466,7 @@ var discoverSiteVideoCandidates = async (siteUrl, initialHtml) => {
     }
     addVideoUrlsFromHtml(htmlText, pageUrl);
     if (current.depth >= maxDepth) continue;
-    const $ = cheerio.load(htmlText);
+    const $ = cheerio2.load(htmlText);
     const links = [];
     $("a[href], area[href]").each((_, el) => {
       const href = $(el).attr("href");
@@ -10067,7 +10236,7 @@ var convertFontBufferWithFontForge = async (buffer, filenameBase, sourceFormat) 
   const cached = fontForgeTtfCache.get(cacheKey);
   if (cached) return cached;
   const conversion = (async () => {
-    const tempRoot = await fsp3.mkdtemp(path3.join(os3.tmpdir(), "cae-fontforge-"));
+    const tempRoot = await fsp3.mkdtemp(path3.join(writableTempDir, "cae-fontforge-"));
     try {
       const safeBase = sanitizeFilenameBase(filenameBase || "font").replace(/\s+/g, "-") || "font";
       const sourceExt = ["woff2", "woff", "ttf", "otf"].includes(sourceFormat) ? sourceFormat : "woff";
@@ -10180,7 +10349,7 @@ var convertFontBufferWithTransfonter = async (buffer, filenameBase, sourceFormat
     const archiveResponse = await fetch(resultUrl, { headers: sessionHeaders });
     if (!archiveResponse.ok) throw new Error(`Transfonter result download failed (${archiveResponse.status}).`);
     const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
-    const tempRoot = await fsp3.mkdtemp(path3.join(os3.tmpdir(), "cae-transfonter-"));
+    const tempRoot = await fsp3.mkdtemp(path3.join(writableTempDir, "cae-transfonter-"));
     try {
       const zipPath = path3.join(tempRoot, "result.zip");
       const outputDir = path3.join(tempRoot, "output");
@@ -10994,7 +11163,7 @@ var extractPharmaBlocksFromText = (items) => {
 };
 var extractIndicationBlocksFromHtml = (html) => {
   const blocks = [];
-  const $ = cheerio.load(html || "");
+  const $ = cheerio2.load(html || "");
   $('[id*="indication" i], [class*="indication" i], [data-module*="indication" i], [data-section*="indication" i]').each((_, el) => {
     const text = normalizeExactBlockText($(el).text());
     if (text.length > 40 && !isBotWallText(text)) blocks.push(text);
@@ -11009,7 +11178,7 @@ var extractIndicationBlocksFromHtml = (html) => {
 };
 var extractIsiBlocksFromHtml = (html) => {
   const blocks = [];
-  const $ = cheerio.load(html || "");
+  const $ = cheerio2.load(html || "");
   $('[id*="isi" i], [class*="isi" i], [data-module*="isi" i], [data-section*="isi" i], [class*="important-information" i], [class*="safety-information" i]').each((_, el) => {
     const text = normalizeExactBlockText($(el).text());
     if (text.length > 40 && !isBotWallText(text)) blocks.push(text);
@@ -12754,7 +12923,7 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
   };
 };
 var enrichAssetsFromHtml = async (html, targetUrl, assets, options = {}) => {
-  const $ = cheerio.load(html);
+  const $ = cheerio2.load(html);
   const pagePrimaryThumb = $('meta[property="og:image"]').attr("content") || $('meta[name="twitter:image"]').attr("content") || "";
   const resolvedPagePrimaryThumb = pagePrimaryThumb ? resolveUrl(targetUrl, pagePrimaryThumb) || pagePrimaryThumb : "";
   const pageTitle = $('meta[property="og:title"]').attr("content") || $('meta[name="twitter:title"]').attr("content") || $("title").first().text().trim() || "Video link";
@@ -12808,6 +12977,7 @@ ${html}`, targetUrl).forEach((wistiaId) => assets.wistiaCandidateIds.add(wistiaI
     }
     addVideoCandidate(absolute, "", pageTitle);
   });
+  extractKalturaVideosFromHtml(html, targetUrl).forEach((video) => assets.videos.push(enforceMp4VideoPayload(video)));
   extractBrightcoveVideosFromHtml(html, targetUrl).forEach((brightcoveVideo) => {
     assets.videos.push({
       ...brightcoveVideo,
@@ -14201,6 +14371,7 @@ var resolveVimeoQualityStreams = async (vimeoUrl, sourcePageUrl, ytDlpInfo = nul
     thumbnail: sanitizeStreamUrl(playerConfig?.video?.thumbnail_url || thumbnail || "", vimeoUrl) || thumbnail,
     duration: Number(playerConfig?.video?.duration || duration || 0) || void 0,
     streams: resolved,
+    masterManifestUrl: hlsMasterUrl,
     debug
   };
 };
@@ -15474,7 +15645,7 @@ var downloadVimeoPlatformVideoToFile = async (targetUrl, quality, options = {}) 
   }
   const streamUrl = sanitizeStreamUrl(String(streamVideo.url), sourcePageUrl) || String(streamVideo.url);
   const tempBase = `vimeo-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempPath = path3.join(os3.tmpdir(), `${tempBase}.mp4`);
+  const tempPath = path3.join(writableTempDir, `${tempBase}.mp4`);
   if (streamVideo.isVimeoHls || /\.m3u8(?:\?|$)/i.test(streamUrl)) {
     const parsedStream = new URL2(streamUrl);
     const { referer, origin } = getStreamRequestContext(parsedStream, sourcePageUrl || normalizedUrl);
@@ -15516,13 +15687,12 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   }
   const title = String(options.titleHint || pageTitleFromUrl(normalizedUrl) || "video").trim();
   const isAudio = options.mode === "audio";
-  const maxAudioDurationSeconds = isAudio ? Math.min(120, Math.max(1, Number(options.maxDurationSeconds || 120))) : void 0;
   const requestedQuality = ["hd", "fhd", "4k"].includes(String(quality || "").toLowerCase()) ? String(quality).toLowerCase() : "fhd";
   const platform = platformProviderFromUrl(options.sourcePageUrl || normalizedUrl) || "video";
   const targetDir = isAudio ? resolveDownloadSaveDir("audio", options.sourcePageUrl || normalizedUrl) : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
   await fsp3.mkdir(targetDir, { recursive: true });
-  const desiredFilename = isAudio ? `${toSafeFileBase(title)}_MP3_${maxAudioDurationSeconds}s.mp3` : toQualityVideoFilename(requestedQuality, title);
-  const desiredPath = path3.join(targetDir, desiredFilename);
+  const desiredFilename = isAudio ? `${toSafeFileBase(title)}_Audio.mp3` : toQualityVideoFilename(requestedQuality, title);
+  let desiredPath = path3.join(targetDir, desiredFilename);
   try {
     const stat = await validateOutputFile(desiredPath, "Existing download");
     return {
@@ -15538,17 +15708,17 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   }
   const isBitmovinManifest = /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) || /\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL2(options.sourcePageUrl || normalizedUrl).hostname);
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempTemplate = path3.join(os3.tmpdir(), `${tempBase}.%(ext)s`);
+  const tempTemplate = path3.join(writableTempDir, `${tempBase}.%(ext)s`);
   const baseYdlOptions = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
     output: tempTemplate,
     mergeOutputFormat: "mp4",
     ...isYouTubeUrl(normalizedUrl) ? { noPart: true, noContinue: true } : {},
     ...isAudio ? {
+      checkFormats: true,
       extractAudio: true,
       audioFormat: "mp3",
-      audioQuality: "128K",
-      postprocessorArgs: `ffmpeg:-t ${maxAudioDurationSeconds}`
+      audioQuality: "0"
     } : { postprocessorArgs: "ffmpeg:-c copy -movflags +faststart" }
   };
   const requestedSelector = isAudio ? getReferenceAudioFormatSelector() : isBitmovinManifest ? "bestvideo+bestaudio/best" : getReferenceVideoFormatSelector(requestedQuality);
@@ -15583,7 +15753,7 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
         YOUTUBE_MERGE_TIMEOUT_MS,
         `${attempt.name} for ${normalizedUrl}`
       );
-      downloadedPath = await findYtDlpOutputFile(os3.tmpdir(), tempBase);
+      downloadedPath = await findYtDlpOutputFile(writableTempDir, tempBase);
       if (downloadedPath) break;
       throw new Error("Downloader exited without creating an output file.");
     } catch (error) {
@@ -15596,7 +15766,7 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
     }
   }
   if (!downloadedPath && !isAudio && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(normalizedUrl)) {
-    const ffmpegOutput = path3.join(os3.tmpdir(), `${tempBase}.ffmpeg.mp4`);
+    const ffmpegOutput = path3.join(writableTempDir, `${tempBase}.ffmpeg.mp4`);
     try {
       const parsedStream = new URL2(normalizedUrl);
       const { referer, origin } = getStreamRequestContext(parsedStream, options.sourcePageUrl || normalizedUrl);
@@ -16505,6 +16675,7 @@ var isTechnicalOrUnsupportedStream = (candidate) => {
   const note = String(candidate?.formatNote || candidate?.format_note || candidate?.format || candidate?.resolution || "").toLowerCase();
   if (!raw) return true;
   if (isUnsupportedVideoResourceUrl(raw)) return true;
+  if (candidate?.provider === "kaltura" && candidate?.isMp4Proxy && /^https:\/\/cdnapisec\.kaltura\.com\/p\/[1-9]\d*\/sp\/\d+\/playManifest\/entryId\/[01]_[a-z0-9]+\//i.test(String(candidate?.sourceStreamUrl || ""))) return false;
   if (/\.(jpg|jpeg|png|gif|webp|svg|avif|js|css|json)(\?|$)/i.test(raw)) return true;
   if (/storyboard|thumbnail|sprite|dash fragment|fragmented|metadata|manifest|m3u8|mpd/i.test(note)) return true;
   if (type === "m3u8" || type === "mpd") return true;
@@ -16856,8 +17027,7 @@ var downloadBrightcoveVideoToFile = async (url, quality, options = {}) => {
     titleHint: resolvedTitle,
     sourcePageUrl: options.sourcePageUrl || url,
     saveToWebsiteAssets: options.saveToWebsiteAssets,
-    mode: options.mode === "audio" ? "audio" : "video",
-    maxDurationSeconds: options.mode === "audio" ? 120 : void 0
+    mode: options.mode === "audio" ? "audio" : "video"
   });
   return { ...result, title: resolvedTitle, thumbnail, platform: "brightcove" };
 };
@@ -17473,7 +17643,7 @@ var injectSectionPickerIntoHtml = (html, targetUrl, enablePicker = true) => {
   return `<!doctype html><html><head>${baseTag}</head><body>${html}${scriptTag}</body></html>`;
 };
 var extractSectionAssetsFromHtml = async (targetUrl, sectionHtml, sectionSelector, sectionLabel = "", computedFonts = []) => {
-  const $section = cheerio.load(sectionHtml);
+  const $section = cheerio2.load(sectionHtml);
   const images = [];
   const icons = [];
   let fonts = [];
@@ -17668,6 +17838,14 @@ app.post("/api/extract", async (req, res) => {
     }
     const isWarehouseStationeryTarget = isWarehouseStationeryRequest;
     if (isWarehouseStationeryTarget) {
+      const liveAssets = await withTimeout(
+        extractStaticAssets(targetUrl, "", { fast: true, videosOnly }),
+        35e3,
+        `Warehouse Stationery live HTML extraction for ${targetUrl}`
+      ).catch(() => null);
+      if (liveAssets && liveAssets.images.length >= 20 && liveAssets.fonts.length > 0) {
+        return res.json(liveAssets);
+      }
       const warehouseAssetsPromise = videosOnly ? Promise.resolve({ fonts: [], colors: [] }) : withTimeout(
         extractProtectedPageAssetsFast(targetUrl),
         24e3,
@@ -17748,7 +17926,7 @@ app.post("/api/extract", async (req, res) => {
     progressMgr?.setProfile(extractionProfile);
     progressMgr?.setTask(extractionProfile.detail);
     const staticFallbackAssets = async () => extractStaticAssets(targetUrl, prefetchedSiteHtml);
-    if (!prefetchedSiteHtml || !htmlLooksLikeBotWall(prefetchedSiteHtml)) {
+    if (!prefetchedSiteHtml) {
       const blockedFallbackAssets = await withTimeout(
         extractReaderFallbackAssets(targetUrl, { videosOnly }),
         35e3,
@@ -18623,7 +18801,7 @@ app.post("/api/extract", async (req, res) => {
     `);
         colors = domColors;
         const html = await waitForRenderedSiteHtml(page);
-        const $ = cheerio.load(html);
+        const $ = cheerio2.load(html);
         const pagePrimaryThumb = $('meta[property="og:image"]').attr("content") || $('meta[name="twitter:image"]').attr("content") || "";
         const resolvedPagePrimaryThumb = pagePrimaryThumb ? resolveUrl(targetUrl, pagePrimaryThumb) || pagePrimaryThumb : "";
         const pageTitle = $('meta[property="og:title"]').attr("content") || $('meta[name="twitter:title"]').attr("content") || $("title").first().text().trim() || "Video link";
@@ -18650,7 +18828,7 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
         });
         videos.push(...ustudioVideos);
         if (prefetchedSiteHtml) {
-          const $prefetch = cheerio.load(prefetchedSiteHtml);
+          const $prefetch = cheerio2.load(prefetchedSiteHtml);
           if (!videosOnly) {
             images.push(...extractImagesFromDom($prefetch, targetUrl));
             images.push(...extractImagesFromHtmlString(prefetchedSiteHtml, targetUrl));
@@ -18709,6 +18887,7 @@ ${html}`, targetUrl).forEach((wistiaId) => wistiaCandidateIds.add(wistiaId));
         const rawMatches = html.match(htmlVideoUrlRegex) || [];
         rawMatches.forEach((match) => addVideoCandidate(match));
         extractYouTubeUrlsFromText(html, targetUrl).forEach((youtubeUrl) => addVideoCandidate(youtubeUrl));
+        extractKalturaVideosFromHtml(html, targetUrl).forEach((video) => videos.push(enforceMp4VideoPayload(video)));
         extractBrightcoveVideosFromHtml(html, targetUrl).forEach((brightcoveVideo) => {
           videos.push({
             ...brightcoveVideo,
@@ -19203,6 +19382,7 @@ app.post("/api/video-extract/bulk", async (req, res) => {
 registerVideoDownloaderRoutes(app, {
   appRoot: getAppRoot(),
   resourcesPath: getResourcesPath(),
+  tempDir: writableTempDir,
   validateUrl: assertPublicAssetUrl,
   specialInspect: async (url) => {
     if (isBrightcoveUrl(url)) {
@@ -19211,6 +19391,19 @@ registerVideoDownloaderRoutes(app, {
     return ispotVideoExtractor(url);
   },
   specialDownload: async ({ url, quality, title, sourcePageUrl, saveToWebsiteAssets }) => {
+    if (quality === "audio" && isVimeoUrl(url)) {
+      const resolved = await resolveVimeoQualityStreams(url, sourcePageUrl || url);
+      const fallbackStream = resolved.streams.fhd?.sourceStreamUrl || resolved.streams.hd?.sourceStreamUrl || "";
+      const audioSourceUrl = String(resolved.masterManifestUrl || fallbackStream).trim();
+      if (!audioSourceUrl) throw new Error("Vimeo did not provide a downloadable audio stream.");
+      const result = await downloadPlatformVideoToFile(audioSourceUrl, "fhd", {
+        titleHint: title || resolved.title,
+        sourcePageUrl: sourcePageUrl || url,
+        saveToWebsiteAssets,
+        mode: "audio"
+      });
+      return { ...result, title: title || resolved.title, thumbnail: resolved.thumbnail, platform: "vimeo" };
+    }
     if (isBrightcoveUrl(url)) {
       return downloadBrightcoveVideoToFile(url, quality, {
         title,
@@ -19226,8 +19419,7 @@ registerVideoDownloaderRoutes(app, {
       titleHint: title,
       sourcePageUrl: sourcePageUrl || url,
       saveToWebsiteAssets,
-      mode: quality === "audio" ? "audio" : "video",
-      maxDurationSeconds: quality === "audio" ? 120 : void 0
+      mode: quality === "audio" ? "audio" : "video"
     });
   }
 });
@@ -19265,7 +19457,6 @@ app.post("/api/platform-video-download", async (req, res) => {
       titleHint,
       sourcePageUrl,
       mode,
-      maxDurationSeconds: mode === "audio" ? 120 : void 0,
       saveToWebsiteAssets
     });
     return res.json(result);
@@ -20289,7 +20480,7 @@ app.get("/api/download", async (req, res) => {
     assertPublicAssetUrl(normalizedSourceUrl);
     if (isYouTubeUrl(normalizedSourceUrl) && !isLikelyDirectVideoStreamUrl(normalizedSourceUrl) && !isLikelyVideoAssetUrl(normalizedSourceUrl)) {
       const tempBase2 = `creative-ytdlp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const outputPath = path3.join(os3.tmpdir(), `${tempBase2}.mp4`);
+      const outputPath = path3.join(writableTempDir, `${tempBase2}.mp4`);
       const requestedQuality = typeof req.query.quality === "string" && ["hd", "fhd", "4k"].includes(req.query.quality) ? req.query.quality : "fhd";
       const inlinePlayback = req.query.inline === "1" || req.query.inline === "true";
       try {
@@ -20369,7 +20560,7 @@ app.get("/api/download", async (req, res) => {
     }
     response.data.destroy();
     const tempBase = `creative-extractor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const tempOutput = path3.join(os3.tmpdir(), `${tempBase}.mp4`);
+    const tempOutput = path3.join(writableTempDir, `${tempBase}.mp4`);
     try {
       await transcodeUrlToMp4File(downloadUrl, tempOutput, referer, origin);
       const stat = await fsp3.stat(tempOutput);
@@ -21116,7 +21307,7 @@ app.get("/api/video-preview", async (req, res) => {
       }
     });
     const html = String(response.data || "");
-    const $ = cheerio.load(html);
+    const $ = cheerio2.load(html);
     const rawThumb = $('meta[property="og:image"]').attr("content") || $('meta[name="twitter:image"]').attr("content") || $('meta[property="og:image:url"]').attr("content") || "";
     const thumb = rawThumb ? resolveUrl(targetUrl, rawThumb) || rawThumb : "";
     const title = $('meta[property="og:title"]').attr("content") || $('meta[name="twitter:title"]').attr("content") || $("title").first().text().trim() || "Video link";
@@ -21316,7 +21507,7 @@ app.post("/api/insights", async (req, res) => {
     const keywordsRaw = [];
     const prefetchedHtml = await withTimeout(fetchSiteHtml(seedUrl), 28e3, `Insights prefetch HTML for ${seedUrl}`).catch(() => "");
     if (prefetchedHtml && !isBotWallHtml(prefetchedHtml)) {
-      const $prefetch = cheerio.load(prefetchedHtml);
+      const $prefetch = cheerio2.load(prefetchedHtml);
       const prefetchHeading = $prefetch("h1").first().text().replace(/\s+/g, " ").trim();
       if (prefetchHeading.length > 4 && !/^phyrago\.com$/i.test(prefetchHeading) && !isBotWallText(prefetchHeading)) {
         headingCandidates.push({ text: prefetchHeading, score: 1200 });
@@ -21367,7 +21558,7 @@ app.post("/api/insights", async (req, res) => {
             }
             const extracted = await page.evaluate(insightsPageEvaluate, current.url, safetyKeywords).catch(() => ({}));
             const htmlFromPage = html || await page.content().catch(() => "");
-            const $ = cheerio.load(htmlFromPage || "<html></html>");
+            const $ = cheerio2.load(htmlFromPage || "<html></html>");
             const htmlSafety = uniqueExactBlocks(
               $('section, article, div, p, li, footer, [class*="isi" i]').map((_, el) => $(el).text()).get().map((item) => normalizeExactBlock(item)).filter((item) => item.length > 20 && !isBotWallText(item) && safetyKeywords.some((keyword) => item.toLowerCase().includes(keyword)))
             );

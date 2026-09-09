@@ -62,7 +62,7 @@ try {
   if (initialCount < minimumImages || result.count < minimumImages) {
     throw new Error(`${siteLabel} UI image cards collapsed from ${initialCount} to ${result.count}`);
   }
-  if (/warehousestationery/i.test(target) && !result.urls.some((url) => /wsl_logo_desktop\.svg/i.test(url))) {
+  if (/warehousestationery/i.test(target) && !result.urls.some((url) => /(?:wsl_logo_desktop|header-logo)\.svg/i.test(url))) {
     throw new Error('Warehouse Stationery logo card is missing');
   }
   if (result.ready < minimumImages) throw new Error(`Only ${result.ready} ${siteLabel} image previews rendered out of ${result.count} cards`);

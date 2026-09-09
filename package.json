@@ -30,6 +30,8 @@
     "smoke:bissell": "node scripts/smoke-bissell-extraction.mjs",
     "smoke:warehouse-stationery": "node scripts/smoke-warehouse-stationery.mjs",
     "smoke:warehouse-stationery-ui": "node scripts/smoke-warehouse-stationery-ui.mjs",
+    "smoke:vdx-thumbnails": "node scripts/smoke-vdx-thumbnails.mjs",
+    "smoke:country-proxy": "tsx scripts/smoke-country-proxy.mjs",
     "smoke:tandem-images-ui": "QC_TARGET=https://www.tandemdiabetes.com/ QC_MIN_IMAGES=50 node scripts/smoke-warehouse-stationery-ui.mjs",
     "smoke:alprolix-icons": "node scripts/smoke-alprolix-icons.mjs",
     "smoke:kroger": "node scripts/smoke-kroger.mjs",
@@ -37,11 +39,13 @@
     "smoke:hello-banner": "node scripts/smoke-hello-banner.mjs",
     "smoke:reported-sites": "node scripts/smoke-reported-sites.mjs",
     "smoke:video-downloader": "node scripts/smoke-video-downloader.mjs",
+    "smoke:audio-downloader": "SMOKE_AUDIO=1 SMOKE_DOWNLOAD=1 node scripts/smoke-video-downloader.mjs",
     "smoke:video-failure-layers": "tsx scripts/smoke-video-failure-layers.mjs",
     "smoke:video-reported-sites": "node scripts/smoke-video-reported-sites.mjs",
     "smoke:xtandi-videos": "node scripts/smoke-xtandi-videos.mjs",
     "smoke:xtandi-video-ui": "node scripts/smoke-xtandi-video-ui.mjs",
     "smoke:packaged-video-ui": "node scripts/smoke-packaged-video-ui.mjs",
+    "smoke:packaged-youtube-audio": "node scripts/smoke-packaged-youtube-audio.mjs",
     "smoke:packaged-xtandi-video": "QC_TARGET=https://www.xtandi.com/patient-videos/jims-journey QC_EXACT_VIDEOS=1 QC_EXPECTED_VIDEO_URL=https://streams.bitmovin.com/cvrub3qpb3clk0so01n0/manifest.m3u8 node scripts/smoke-packaged-video-ui.mjs",
     "smoke:packaged-tandem-fonts": "node scripts/smoke-packaged-tandem-fonts.mjs",
     "smoke:packaged-warehouse-images": "node scripts/smoke-packaged-warehouse-images.mjs",
@@ -62,7 +66,8 @@
     "typecheck": "tsc --noEmit",
     "setup:feedback": "node scripts/setup-google-feedback.mjs",
     "sync:ftp": "bash scripts/sync-ftp.sh",
-    "size": "du -sh dist node_modules 2>/dev/null || true"
+    "size": "du -sh dist node_modules 2>/dev/null || true",
+    "smoke:kesimpta": "tsx scripts/smoke-kesimpta.mjs"
   },
   "build": {
     "appId": "com.creativeassetextractor.desktop",

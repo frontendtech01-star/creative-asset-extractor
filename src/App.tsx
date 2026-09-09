@@ -933,7 +933,7 @@ export default function App() {
     } catch (chromeError: any) {
       if (controller.signal.aborted || chromeError?.name === 'AbortError') return;
       console.warn('Open Chrome tab extraction failed:', chromeError?.message || chromeError);
-      setError(chromeError?.message || 'Open Chrome tab extraction failed. Try Extract as a fallback.');
+      setError(friendlyExtractionError(chromeError?.message || 'Open Chrome tab extraction failed. Please retry extraction.'));
     } finally {
       if (extractAbortRef.current === controller) {
         extractAbortRef.current = null;

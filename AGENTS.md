@@ -44,12 +44,9 @@ For a release or DMG change, use this mandatory order:
 3. Run `npm run smoke:all:packaged` against the exact generated app bundle.
 4. Upload or publish artifacts only when all three commands pass.
 
-For every v2 macOS refresh, preserve and replace both existing public release assets; never rename or remove them:
+For every v2 macOS refresh, use only `Creative.Asset.Extractor-2.0.0-arm64.dmg` as the installer filename. Do not create or publish a second `2.0` filename alias.
 
-- `v2.0`: `Creative.Asset.Extractor-2.0-arm64.dmg`
-- `v2.0.0`: `Creative.Asset.Extractor-2.0.0-arm64.dmg`
-
-`npm run dmg` creates `release/Creative.Asset.Extractor-2.0.0-arm64.dmg`. Upload that file directly to `v2.0.0`, and copy it to `release/Creative.Asset.Extractor-2.0-arm64.dmg` for `v2.0`. Replace assets with `gh release upload <tag> <file> --clobber` so bookmarked download URLs remain valid. Upload `latest-mac.yml` to each release with its `url` and `path` fields matching that release's DMG filename. Verify the remote asset size and SHA-256 digest after upload.
+`npm run dmg` creates `release/Creative.Asset.Extractor-2.0.0-arm64.dmg`. Upload that file directly to `v2.0.0`. Replace the asset with `gh release upload v2.0.0 <file> --clobber` so its bookmarked download URL remains valid. Upload `latest-mac.yml` with its `url` and `path` fields matching `Creative.Asset.Extractor-2.0.0-arm64.dmg`. Verify the remote asset size and SHA-256 digest after upload.
 
 For Xtandi/Bitmovin changes specifically, `smoke:xtandi-videos` must return the route-specific master manifest, `smoke:xtandi-video-ui` must show one direct video card with its thumbnail and `Download MP4` handoff, and `smoke:packaged-xtandi-video` must repeat those UI assertions from the packaged bundle. Also verify one real Image/Video Downloader job completes as a playable MP4 with video and audio; do not accept manifest extraction alone as sufficient.
 

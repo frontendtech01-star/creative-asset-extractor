@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Image as ImageIcon } from 'lucide-react';
 import { apiUrl } from '../lib/api';
 import { buildImagePreviewRequest, buildImageThumbRequest, getImageAssetKey } from '../lib/imageAsset';
+import { loadPreviewImageThumb } from '../lib/thumbnailLoader';
 
 type ThumbPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
@@ -80,7 +81,7 @@ const buildThumbCandidates = (
     source.includes('font-awesome-icon-svg') ||
     (String((img as any)?.filename || '').toLowerCase().endsWith('.svg') && source.includes('font-awesome'));
 
-  if (isSvgAsset && embeddedDataUrl.startsWith('data:image/svg+xml')) {
+  if (embeddedDataUrl.startsWith('data:image/')) {
     addCandidate(sanitizeInlineSvgDataUrl(embeddedDataUrl));
   }
   if (isGeneratedFontAwesomeSvg && originalUrl.startsWith('data:image/svg+xml')) {
@@ -137,23 +138,47 @@ export default function LazyCachedImageThumb({
 }: LazyCachedImageThumbProps) {
   const [phase, setPhase] = useState<ThumbPhase>('idle');
   const [candidateIndex, setCandidateIndex] = useState(0);
+  const [validatedPreview, setValidatedPreview] = useState('');
   const assetKey = getImageAssetKey(img);
   const cachedPath = String(img?.cachedUrl || '').trim();
   const embeddedDataUrl = String(img?.dataUrl || '').trim();
   const generatedThumbnail = String(img?.thumbnailUrl || '').trim();
   const typeKey = `${String(img?.type || '')}:${String(img?.mimeType || '')}:${String(img?.source || '')}:${String(img?.filename || '')}:${generatedThumbnail}`;
   const reportedReadyRef = useRef(false);
+  const imageRef = useRef<HTMLImageElement>(null);
   const reportedFailedRef = useRef(false);
-  const candidates = useMemo(
-    () => buildThumbCandidates(img, sourcePageUrl),
-    [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, generatedThumbnail, typeKey]
-  );
+  const candidates = useMemo(() => {
+    const fallbackCandidates = buildThumbCandidates(img, sourcePageUrl);
+    return validatedPreview
+      ? [validatedPreview, ...fallbackCandidates.filter((candidate) => candidate !== validatedPreview)]
+      : fallbackCandidates;
+  }, [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, generatedThumbnail, typeKey, validatedPreview]);
   const src = candidates[candidateIndex] || '';
   const inlineSvgFallback = useMemo(() => {
     const directSvg = [String(img?.dataUrl || ''), assetKey, String(img?.cachedUrl || '')]
       .find((value) => /^data:image\/svg\+xml/i.test(value));
     return directSvg ? getSafeInlineSvgMarkup(directSvg) : '';
   }, [assetKey, img?.cachedUrl, img?.dataUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setValidatedPreview('');
+    if (!assetKey || assetKey.startsWith('data:') || embeddedDataUrl.startsWith('data:image/')) return () => {
+      cancelled = true;
+    };
+
+    void loadPreviewImageThumb(img, sourcePageUrl)
+      .then((preview) => {
+        if (!cancelled) setValidatedPreview(preview.src);
+      })
+      .catch(() => {
+        // The component's ordered candidates retain direct and proxy fallbacks.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assetKey, sourcePageUrl, cachedPath, embeddedDataUrl, generatedThumbnail, typeKey]);
 
   const advanceCandidateOrFail = () => {
     if (candidateIndex + 1 < candidates.length) {
@@ -173,6 +198,12 @@ export default function LazyCachedImageThumb({
 
   useEffect(() => {
     if (!src || phase === 'ready' || phase === 'failed') return;
+    // Inline and cached images can finish before passive effects run. Do not
+    // overwrite that completion with a timer that later marks them failed.
+    if (imageRef.current?.complete && imageRef.current.naturalWidth > 0) {
+      setPhase('ready');
+      return;
+    }
     setPhase('loading');
     const timeout = window.setTimeout(() => {
       advanceCandidateOrFail();
@@ -188,16 +219,21 @@ export default function LazyCachedImageThumb({
   }, [candidates]);
 
   const label = fallbackLabel || alt;
+  // An inline SVG fallback is a rendered preview, even if the browser refuses
+  // to decode its data URL as an <img> source. Report it as ready so callers
+  // do not treat a visible vector thumbnail as blank.
+  const thumbnailPhase = phase === 'failed' && inlineSvgFallback ? 'ready' : phase;
 
   return (
-    <div data-thumbnail-phase={phase} className="relative h-full w-full overflow-hidden bg-zinc-100">
+    <div data-thumbnail-phase={thumbnailPhase} className="relative h-full w-full overflow-hidden bg-zinc-100">
       {src && phase !== 'failed' ? (
         <img
+          ref={imageRef}
           src={src}
           alt={alt}
           className={`${className} h-full w-full`}
           decoding="async"
-          loading={generatedThumbnail ? 'eager' : 'lazy'}
+          loading={generatedThumbnail || validatedPreview || src.startsWith('data:') ? 'eager' : 'lazy'}
           onLoad={(event) => {
             setPhase('ready');
             if (!reportedReadyRef.current) {

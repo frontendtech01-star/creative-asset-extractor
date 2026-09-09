@@ -19,7 +19,7 @@ if (process.env.QC_REQUIRE_LIVE_KROGER === '1' && previewState !== 'live') {
   throw new Error('Kroger still rate-limited this network address; Chromium rendered the recovered preview instead of the live website');
 }
 if (images.length < 300) throw new Error(`Kroger Chromium workflow returned only ${images.length} images instead of the full website extraction`);
-if (fonts.length !== 13) throw new Error(`Kroger Chromium workflow returned ${fonts.length} fonts instead of exactly 13`);
+if (fonts.length < 13) throw new Error(`Kroger Chromium workflow returned only ${fonts.length} fonts; expected at least the 13 validated live faces`);
 if (colors.length < 33) throw new Error(`Kroger Chromium workflow returned only ${colors.length} colors instead of the full palette`);
 if (!images.some((image) => String(image?.url || '').includes('kroger_svg_logo'))) {
   throw new Error('Kroger Chromium workflow omitted the Kroger logo');

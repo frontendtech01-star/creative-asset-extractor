@@ -111,7 +111,7 @@ try {
   if (/tandemdiabetes/i.test(target) && result.ready < result.count - 1) {
     throw new Error(`Packaged ${siteLabel} left ${result.count - result.ready} image cards without previews`);
   }
-  if (/warehousestationery/i.test(target) && !result.urls.some((url) => /wsl_logo_desktop\.svg/i.test(url))) {
+  if (/warehousestationery/i.test(target) && !result.urls.some((url) => /(?:wsl_logo_desktop|header-logo)\.svg/i.test(url))) {
     throw new Error('Warehouse logo card is missing');
   }
   console.log(`PASS packaged UI ${siteLabel} — ${result.count} cards, ${result.ready} rendered previews in ${Date.now() - previewStartedAt}ms`);

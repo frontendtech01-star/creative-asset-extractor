@@ -56,8 +56,8 @@ const realFonts = fonts.filter((font) =>
 );
 
 const requiredAssetPaths = [
-  '/on/demandware.static/-/Library-Sites-wsl-shared-library/default/dw33120018/logos/wsl_logo_desktop.svg',
-  '/on/demandware.static/-/Library-Sites-wsl-shared-library/default/dw757e8e85/fy-26/MTEs/bts/icons/wsl-bts-nav-exercise-150x150px.png',
+  '/images/header-logo.svg',
+  '/2021/icons/Free_Delivery.png',
 ];
 
 if (realImages.length < 20) throw new Error(`Expected at least 20 Warehouse Stationery images, got ${realImages.length}`);

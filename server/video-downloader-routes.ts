@@ -110,6 +110,7 @@ type SpecialDownload = (input: {
 export type VideoDownloaderRouteOptions = {
   appRoot: string;
   resourcesPath: string;
+  tempDir: string;
   validateUrl?: (url: string) => unknown;
   specialInspect?: SpecialInspect;
   specialDownload?: SpecialDownload;
@@ -1025,6 +1026,7 @@ const runDownloadAttempt = async (
     : resolvePlatformVideoAssetsDir(job.platform);
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
   await fsp.mkdir(platformDir, { recursive: true });
+  await fsp.mkdir(options.tempDir, { recursive: true });
   const outputTemplate = path.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
   const ffmpegPath = resolveTool(options, 'ffmpeg');
   const aria2Path = aria2cAvailable(options);
@@ -1071,6 +1073,8 @@ const runDownloadAttempt = async (
     '180',
     '--force-overwrites',
     '--no-part',
+    '--paths',
+    `temp:${options.tempDir}`,
     '--output',
     outputTemplate,
     '--format',
@@ -1088,7 +1092,7 @@ const runDownloadAttempt = async (
     '--buffer-size', '128K',
     ...trimSectionArgs(job),
     ...(job.quality === 'audio'
-      ? ['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K', '--postprocessor-args', 'ffmpeg:-t 120']
+      ? ['--check-formats', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0']
       : ['--merge-output-format', 'mp4', '--remux-video', 'mp4', '--postprocessor-args', 'ffmpeg:-c copy -movflags +faststart']),
     ...extraArgs.filter(
       (a) =>
@@ -1106,8 +1110,12 @@ const runDownloadAttempt = async (
     });
     const extraPath = toolPathEnv(options);
     const child = spawn(ytdlp, args, {
+      cwd: options.tempDir,
       env: {
         ...process.env,
+        TMPDIR: options.tempDir,
+        TMP: options.tempDir,
+        TEMP: options.tempDir,
         ELECTRON_RUN_AS_NODE: '1',
         PATH: extraPath ? `${extraPath}${path.delimiter}${process.env.PATH || ''}` : process.env.PATH,
       },
@@ -1675,14 +1683,27 @@ const completeJob = async (
   const preserveOriginal = job.quality === 'audio';
   updateJob(job, {
     progress: job.quality === '4k' ? 86 : 95,
-    message: job.quality === '4k' ? 'Converting 4K to Mac-compatible MP4...' : 'Optimizing for QuickTime...',
+    message: job.quality === 'audio'
+      ? 'Verifying audio...'
+      : job.quality === '4k'
+        ? 'Converting 4K to Mac-compatible MP4...'
+        : 'Optimizing for QuickTime...',
   });
   const filePath = preserveOriginal
     ? initialPath
     : await ensureQuickTimeMp4(options, initialPath, job.id, job.quality === '4k');
-  if (job.quality !== 'audio') {
-    const finalProbe = await probeMedia(options, filePath);
-    const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+  const finalProbe = await probeMedia(options, filePath);
+  const finalStreams = Array.isArray(finalProbe?.streams) ? finalProbe.streams : [];
+  if (job.quality === 'audio') {
+    const hasAudio = finalStreams.some((stream: any) => stream?.codec_type === 'audio');
+    const hasVideo = finalStreams.some((stream: any) => stream?.codec_type === 'video');
+    if (!hasAudio || hasVideo) {
+      await fsp.rm(filePath, { force: true }).catch(() => undefined);
+      throw new Error(hasVideo
+        ? 'The provider returned a video file instead of an audio-only track.'
+        : 'The provider did not return a decodable audio track.');
+    }
+  } else {
     const hasVideo = finalStreams.some((stream: any) => stream?.codec_type === 'video');
     const hasAudio = finalStreams.some((stream: any) => stream?.codec_type === 'audio');
     if (!hasVideo || !hasAudio) {
@@ -1753,7 +1774,7 @@ const processJob = async (options: VideoDownloaderRouteOptions, job: DownloadJob
     aria2c_path: resolveTool(options, 'aria2c'),
   });
   try {
-    if ((job.platform === 'ispot' || job.platform === 'brightcove') && options.specialDownload) {
+    if ((job.platform === 'ispot' || job.platform === 'brightcove' || (job.platform === 'vimeo' && job.quality === 'audio')) && options.specialDownload) {
       updateJob(job, {
         progress: 12,
         message: job.platform === 'brightcove' ? 'Resolving Brightcove stream...' : 'Resolving iSpot.tv stream...',

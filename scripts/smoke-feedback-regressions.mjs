@@ -108,6 +108,10 @@ const checkStaticFeedbackContracts = async () => {
 
   assertIncludes('Reset button UI', app, 'Video Downloader');
   assertIncludes('Reset button UI', app, 'Reset');
+  for (const removedControl of ['Use GeoProxy in Chrome', 'Proxy connection', 'setProxyCountry', '/api/extraction-proxies']) {
+    if (app.includes(removedControl)) fail(`Removed proxy UI still contains ${removedControl}`);
+  }
+  assertIncludes('Normal Chrome extraction route', app, "apiFetch('/api/browser-tabs/chrome/extract',");
   assertIncludes('Reset handler', app, 'handleResetApp');
   assertIncludes('Reset handler', app, 'clearDownloaderJobs');
   assertIncludes('Reset handler', app, 'clearAppSessionState');
@@ -165,6 +169,21 @@ const checkStaticFeedbackContracts = async () => {
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'autoStartRequest');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, 'handledAutoStartIdRef');
   assertIncludes('Video downloader auto-start', videoDownloaderPage, "downloadQueue(autoStartRequest.quality || 'fhd'");
+  assertIncludes('Separate audio fetch handler', videoDownloaderPage, 'const fetchAudioQueue = async () =>');
+  assertIncludes('Separate audio fetch handler', videoDownloaderPage, "quality: 'audio'");
+  assertIncludes('Fetch Audio control', videoDownloaderPage, 'Fetch Audio');
+  assertIncludes('Audio-specific failure reporting', videoDownloaderPage, "operation: 'audio_extraction_failure'");
+  assertIncludes('Audio-specific loading label', videoDownloaderPage, 'Fetching Audio...');
+  assertIncludes('Audio bulk download path', videoDownloaderPage, "startBulkDownloaderJobs(urls, 'audio'");
+  assertIncludes('MP3 audio selection', videoDownloaderRoutes, "'--audio-format', 'mp3'");
+  assertIncludes('Facebook and Instagram fallback', videoDownloaderPage, 'https://cobalt.tools/');
+  assertIncludes('Vimeo fallback', videoDownloaderPage, 'https://toolzu.com/downloader/vimeo/');
+  assertIncludes('Manifest and client-video fallback', videoDownloaderPage, 'https://fetchv.net/');
+  assertIncludes('YouTube MP3 fallback', videoDownloaderPage, 'https://strydomwebdevelopment.co.za/');
+  assertIncludes('Audio-only output verification', videoDownloaderRoutes, 'The provider returned a video file instead of an audio-only track.');
+  if (videoDownloaderRoutes.includes("'ffmpeg:-t 120'") || server.includes("maxDurationSeconds: quality === 'audio' ? 120")) {
+    fail('Fetch Audio must not retain the former 120-second preview cap');
+  }
   assertIncludes('Fresh extracted-video queue clears stale jobs', videoDownloaderPage, 'await clearDownloaderJobs()');
   assertIncludes('Late downloader hydration cannot restore stale jobs', videoDownloaderPage, 'if (handledAutoStartIdRef.current !== null) return');
   if (videoDownloaderPage.includes("window.confirm('Delete all downloaded videos and extracted platform folders?')") || videoDownloaderPage.includes('Clear Downloads')) {
@@ -301,6 +320,9 @@ const checkSelectedFontZipConversion = async () => {
       originalFormat: sourceFormat,
       filenameBase,
       familyFolder: family,
+      fontFamily: String(font.family || ''),
+      fontWeight: String(font.weight || '400'),
+      fontStyle: String(font.style || 'normal'),
       zipEntryName: `fonts/${filenameBase.replace(/\s+/g, '-')}.${sourceFormat}`,
       metadataFilename: family,
       assetType: 'font',

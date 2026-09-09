@@ -106,6 +106,10 @@ extraResources:
     to: bin/youtube-pot
     filter:
       - '**/*'
+  - from: vendor/site-snapshots
+    to: site-snapshots
+    filter:
+      - '**/*'
 win:
   target:
     - target: nsis

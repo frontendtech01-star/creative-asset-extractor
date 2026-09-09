@@ -7,6 +7,9 @@
  * Inspect and download:
  *   SMOKE_DOWNLOAD=1 node scripts/smoke-video-downloader.mjs
  *
+ * Full-length best-original audio:
+ *   SMOKE_AUDIO=1 SMOKE_DOWNLOAD=1 node scripts/smoke-video-downloader.mjs
+ *
  * Add live public Instagram/Facebook examples with:
  *   SMOKE_INSTAGRAM_REEL_URL=...
  *   SMOKE_INSTAGRAM_POST_URL=...
@@ -19,7 +22,10 @@ import path from 'node:path';
 
 const BASE = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:3000';
 const DOWNLOAD = process.env.SMOKE_DOWNLOAD === '1';
+const AUDIO = process.env.SMOKE_AUDIO === '1';
 const ONLY = String(process.env.SMOKE_ONLY || '').trim().toLowerCase();
+const COOKIES_FILE_PATH = String(process.env.SMOKE_COOKIES_FILE_PATH || '').trim();
+const MIN_AUDIO_DURATION = Number(process.env.SMOKE_MIN_AUDIO_DURATION || 0);
 const headers = { 'Content-Type': 'application/json', 'X-VDX-Local-Request': '1' };
 
 const platforms = [
@@ -45,11 +51,26 @@ const platforms = [
   { id: 'instagram-post', url: process.env.SMOKE_INSTAGRAM_POST_URL || '', optional: true },
   { id: 'facebook-video', url: process.env.SMOKE_FACEBOOK_VIDEO_URL || '', optional: true },
   { id: 'facebook-reel', url: process.env.SMOKE_FACEBOOK_REEL_URL || '', optional: true },
+  { id: 'tiktok', url: process.env.SMOKE_TIKTOK_URL || '', optional: true },
+  { id: 'brightcove', url: process.env.SMOKE_BRIGHTCOVE_URL || '', optional: true },
+  { id: 'direct', url: process.env.SMOKE_DIRECT_URL || '', optional: true },
+  {
+    id: 'm3u8',
+    url: process.env.SMOKE_M3U8_URL || '',
+    sourcePageUrl: process.env.SMOKE_M3U8_SOURCE_PAGE_URL || '',
+    optional: true,
+  },
+  {
+    id: 'website-video',
+    url: process.env.SMOKE_WEBSITE_VIDEO_URL || '',
+    sourcePageUrl: process.env.SMOKE_WEBSITE_SOURCE_PAGE_URL || '',
+    optional: true,
+  },
+  { id: 'browser-blob', url: process.env.SMOKE_BROWSER_BLOB_URL || '', optional: true, browserBlob: true },
 ].filter((platform) => !ONLY || platform.id === ONLY);
 
 const fail = (message) => {
-  console.error(`FAIL: ${message}`);
-  process.exit(1);
+  throw new Error(message);
 };
 
 const fetchJson = async (route, init = {}, timeoutMs = 180000) => {
@@ -95,10 +116,29 @@ const inspect = async (platform) => {
 };
 
 const download = async (platform, video) => {
-  const quality = video?.qualityVariants?.fhd?.formatAvailable ? 'fhd' : 'hd';
+  const quality = AUDIO ? 'audio' : video?.qualityVariants?.fhd?.formatAvailable ? 'fhd' : 'hd';
+  let downloadUrl = video.url || platform.url;
+  let sourcePageUrl = platform.sourcePageUrl || '';
+  if (platform.browserBlob) {
+    const resolved = await fetchJson('/api/browser-tabs/chrome/resolve-blob-video', {
+      method: 'POST',
+      body: JSON.stringify({ url: platform.url }),
+    });
+    if (!resolved.response.ok || !resolved.json?.url) {
+      fail(`${platform.id} resolve: ${resolved.json?.error || resolved.response.status}`);
+    }
+    downloadUrl = resolved.json.url;
+    sourcePageUrl = resolved.json.sourcePageUrl || sourcePageUrl;
+  }
   const started = await fetchJson('/api/downloader/download', {
     method: 'POST',
-    body: JSON.stringify({ url: video.url || platform.url, title: video.title, quality }),
+    body: JSON.stringify({
+      url: downloadUrl,
+      title: video.title,
+      quality,
+      sourcePageUrl: sourcePageUrl || undefined,
+      cookiesFilePath: COOKIES_FILE_PATH || undefined,
+    }),
   });
   if (!started.response.ok || !started.json?.job?.id) {
     fail(`${platform.id} download start: ${started.json?.error || started.response.status}`);
@@ -119,21 +159,33 @@ const download = async (platform, video) => {
   });
   if (!file.ok) fail(`${platform.id} completed file link returned ${file.status}`);
   await file.body?.cancel();
-  if (quality !== 'audio') {
-    const ffprobe = [
-      process.env.SMOKE_FFPROBE_PATH,
-      path.resolve('vendor/bin-pack/ffprobe'),
-      'ffprobe',
-    ].find((candidate) => candidate && (candidate === 'ffprobe' || existsSync(candidate)));
-    const probe = spawnSync(ffprobe, [
-      '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', job.result.filePath,
-    ], { encoding: 'utf8' });
-    const streams = JSON.parse(probe.stdout || '{}')?.streams || [];
-    if (probe.status !== 0 || !streams.some((stream) => stream.codec_type === 'video')) {
-      fail(`${platform.id} final file has no decodable video stream`);
+  const ffprobe = [
+    process.env.SMOKE_FFPROBE_PATH,
+    path.resolve('vendor/bin-pack/ffprobe'),
+    'ffprobe',
+  ].find((candidate) => candidate && (candidate === 'ffprobe' || existsSync(candidate)));
+  const probe = spawnSync(ffprobe, [
+    '-v', 'error', '-show_entries', 'stream=codec_type:format=duration', '-of', 'json', job.result.filePath,
+  ], { encoding: 'utf8' });
+  const probeResult = JSON.parse(probe.stdout || '{}');
+  const streams = probeResult?.streams || [];
+  if (probe.status !== 0 || !streams.some((stream) => stream.codec_type === 'audio')) {
+    fail(`${platform.id} final file has no decodable audio stream`);
+  }
+  if (quality === 'audio') {
+    if (streams.some((stream) => stream.codec_type === 'video')) {
+      fail(`${platform.id} audio result still contains a video stream`);
     }
-    if (!streams.some((stream) => stream.codec_type === 'audio')) {
-      fail(`${platform.id} final file has no audio stream`);
+    const duration = Number(probeResult?.format?.duration || 0);
+    if (MIN_AUDIO_DURATION > 0 && duration < MIN_AUDIO_DURATION) {
+      fail(`${platform.id} audio duration ${duration.toFixed(1)}s is below ${MIN_AUDIO_DURATION}s`);
+    }
+    if (MIN_AUDIO_DURATION > 120 && duration <= 120) {
+      fail(`${platform.id} audio was truncated at the former 120-second limit`);
+    }
+  } else {
+    if (!streams.some((stream) => stream.codec_type === 'video')) {
+      fail(`${platform.id} final file has no decodable video stream`);
     }
   }
   console.log(`OK download ${platform.id}: ${job.result.displayPath} (${Math.round(job.result.size / 1024 / 1024)} MB)`);
@@ -143,24 +195,43 @@ const main = async () => {
   if (ONLY && platforms.length === 0) fail(`Unknown SMOKE_ONLY platform: ${ONLY}`);
   const health = await fetch(`${BASE}/`, { headers: { 'X-VDX-Local-Request': '1' } }).catch(() => null);
   if (!health?.ok) fail(`Server not reachable at ${BASE}`);
-  console.log(`Video Downloader QC -> ${BASE} (${DOWNLOAD ? 'inspect + download' : 'inspect only'})\n`);
+  console.log(`Video Downloader QC -> ${BASE} (${DOWNLOAD ? AUDIO ? 'inspect + audio download' : 'inspect + video download' : 'inspect only'})\n`);
 
   let tested = 0;
+  const failures = [];
+  const skipped = [];
   for (const platform of platforms) {
     if (!platform.url) {
       console.log(`SKIP ${platform.id}: provide a live public URL through its SMOKE_* environment variable`);
+      skipped.push(platform.id);
       continue;
     }
-    const video = await inspect(platform);
-    if (DOWNLOAD) await download(platform, video);
-    tested += 1;
+    try {
+      const video = await inspect(platform);
+      if (DOWNLOAD) await download(platform, video);
+      tested += 1;
+    } catch (error) {
+      const message = error?.message || String(error);
+      failures.push({ id: platform.id, message });
+      console.error(`FAIL ${platform.id}: ${message}`);
+    }
   }
 
   const downloads = await fetchJson('/api/downloader/downloads', {}, 30000);
   if (!downloads.response.ok || !Array.isArray(downloads.json?.items)) {
     fail(`downloads history: ${downloads.json?.error || downloads.response.status}`);
   }
-  console.log(`\nPASS: ${tested} platform inspections; history items=${downloads.json.items.length}`);
+  console.log(`\nPlatform summary: ${tested} passed, ${failures.length} failed, ${skipped.length} skipped; history items=${downloads.json.items.length}`);
+  if (skipped.length) console.log(`Skipped: ${skipped.join(', ')}`);
+  if (failures.length) {
+    failures.forEach((failure) => console.error(`- ${failure.id}: ${failure.message}`));
+    process.exitCode = 1;
+    return;
+  }
+  console.log('PASS: all configured platform checks completed successfully');
 };
 
-main().catch((error) => fail(error?.message || String(error)));
+main().catch((error) => {
+  console.error(`FAIL: ${error?.message || String(error)}`);
+  process.exitCode = 1;
+});

@@ -7,6 +7,7 @@ const packagedApp = new URL('../release/mac-arm64/Creative Asset Extractor.app',
 
 const sourceTests = [
   'smoke:webp',
+  'smoke:country-proxy',
   'smoke:teneo-svg',
   'smoke:teneo-fonts',
   'smoke:rxsight-typekit',
@@ -15,6 +16,7 @@ const sourceTests = [
   'smoke:bissell',
   'smoke:warehouse-stationery',
   'smoke:warehouse-stationery-ui',
+  'smoke:vdx-thumbnails',
   'smoke:tandem-images-ui',
   'smoke:alprolix-icons',
   'smoke:kroger',
@@ -31,6 +33,7 @@ const sourceTests = [
 
 const packagedTests = [
   'smoke:packaged-video-ui',
+  'smoke:packaged-youtube-audio',
   'smoke:packaged-xtandi-video',
   'smoke:packaged-tandem-fonts',
   'smoke:packaged-warehouse-images',
@@ -67,7 +70,7 @@ const runNpm = async (script) => {
   console.log(`\n=== ${script} ===`);
   try {
     await run('npm', ['run', script], {
-      env: sharedBaseUrl ? { SMOKE_BASE_URL: sharedBaseUrl } : {},
+      env: sharedBaseUrl ? { SMOKE_BASE_URL: sharedBaseUrl, SMOKE_API_URL: sharedBaseUrl, QC_API: sharedBaseUrl } : {},
     });
   } catch (error) {
     failures.push({ script, error: error?.message || String(error) });
