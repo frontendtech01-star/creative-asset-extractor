@@ -33,11 +33,12 @@ export const useImageThumbWarm = (
       for (let offset = 0; offset < items.length; offset += 60) {
         batches.push(items.slice(offset, offset + 60));
       }
-      await Promise.all(batches.map(async (batch) => {
+      for (const batch of batches) {
         if (cancelled) return;
         try {
           const response = await apiFetch('/api/warm-image-thumbs-batch', {
             method: 'POST',
+            signal: AbortSignal.timeout(30000),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               sourcePageUrl: sourcePageUrl || undefined,
@@ -50,7 +51,7 @@ export const useImageThumbWarm = (
         } catch {
           // Continue warming later batches when one remote asset fails.
         }
-      }));
+      }
     })();
 
     return () => {

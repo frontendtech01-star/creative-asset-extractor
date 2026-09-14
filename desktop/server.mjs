@@ -1,3 +1,9 @@
+// src/lib/svgPreview.ts
+var resolveSvgVariables = (svg) => svg.replace(
+  /var\(\s*(--[^,)]+)(?:,\s*([^)]+))?\)/gi,
+  (_match, token, fallback) => String(fallback || (/opacity/i.test(token) ? "1" : /width|size/i.test(token) ? "1.5" : "#000000")).trim()
+);
+
 // server/duplicate-image-content.ts
 import { createHash } from "node:crypto";
 
@@ -7768,8 +7774,7 @@ var normalizeSvgBufferForIllustrator = (buffer) => {
   }
   svg = svg.replace(/<script\b[\s\S]*?<\/script>/gi, "");
   svg = svg.replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, "");
-  svg = svg.replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || "#000000").trim());
-  svg = svg.replace(/var\(\s*--[^)]+\)/gi, "#000000");
+  svg = resolveSvgVariables(svg);
   const tagMatch = svg.match(/<svg\b[^>]*>/i);
   if (!tagMatch) return buffer;
   let tag = tagMatch[0];
@@ -8042,7 +8047,24 @@ var extractInlineSvgsFromDom = ($, images, options = {}) => {
       $(el).attr("id") || $(el).attr("aria-label") || $(el).find("title").first().text() || `inline-svg-${index + 1}`
     ).trim();
     const safeName = sanitizeFilenameBase(rawName).replace(/\.[^.]+$/i, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "") || `inline-svg-${index + 1}`;
-    const svgString = $.html(el);
+    const standalone = $(el).clone();
+    const copied = new Set(standalone.find("[id]").toArray().map((node) => $(node).attr("id")));
+    for (let depth = 0; depth < 4; depth += 1) {
+      const markup = $.html(standalone);
+      const references = [...markup.matchAll(/(?:href=["']#|url\(["']?#)([^"')\s]+)/g)].map((match) => match[1]);
+      let added = false;
+      for (const id of references) {
+        if (copied.has(id)) continue;
+        copied.add(id);
+        const target = $("[id]").filter((_i, node) => $(node).attr("id") === id).first();
+        if (target.length) {
+          standalone.append($("<defs></defs>").append(target.clone()));
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
+    const svgString = resolveSvgVariables($.html(standalone));
     const svgBuffer = Buffer.from(svgString, "utf8");
     const dims = probeRasterDimensions(svgBuffer);
     images.push({
@@ -20060,7 +20082,7 @@ app.post("/api/image-meta-batch", async (req, res) => {
   });
   return res.json({ ok: true, results });
 });
-var imageThumbHashFor = (originalUrl) => crypto2.createHash("sha1").update(String(originalUrl || "").trim()).digest("hex");
+var imageThumbHashFor = (originalUrl) => crypto2.createHash("sha1").update("preview-v2:" + String(originalUrl || "").trim()).digest("hex");
 var imageThumbPathsFor = (originalUrl) => {
   const hash = imageThumbHashFor(originalUrl);
   return {

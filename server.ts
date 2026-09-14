@@ -1,3 +1,4 @@
+import { resolveSvgVariables } from './src/lib/svgPreview';
 import { resolveDuplicateImageContent } from './server/duplicate-image-content';
 import { mergeExtractionFonts } from './src/lib/extractionFontIdentity';
 import { mergeExtractionImages } from './src/lib/extractionImageIdentity';
@@ -5406,8 +5407,7 @@ const normalizeSvgBufferForIllustrator = (buffer: Buffer) => {
   // CSS variables are also fragile in Illustrator and standalone SVG viewers.
   // Keep the fallback color from `var(--token,#hex)` so the artwork remains
   // self-contained after download.
-  svg = svg.replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || '#000000').trim());
-  svg = svg.replace(/var\(\s*--[^)]+\)/gi, '#000000');
+  svg = resolveSvgVariables(svg);
   const tagMatch = svg.match(/<svg\b[^>]*>/i);
   if (!tagMatch) return buffer;
   let tag = tagMatch[0];
@@ -5754,7 +5754,21 @@ const extractInlineSvgsFromDom = ($: any, images: any[], options: { asIcons?: bo
         .replace(/\s+/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-+|-+$/g, '') || `inline-svg-${index + 1}`;
-    const svgString = $.html(el);
+    const standalone = $(el).clone();
+    const copied = new Set(standalone.find('[id]').toArray().map((node: any) => $(node).attr('id')));
+    for (let depth = 0; depth < 4; depth += 1) {
+      const markup = $.html(standalone);
+      const references = [...markup.matchAll(/(?:href=["']#|url\(["']?#)([^"')\s]+)/g)].map(match => match[1]);
+      let added = false;
+      for (const id of references) {
+        if (copied.has(id)) continue;
+        copied.add(id);
+        const target = $('[id]').filter((_i: number, node: any) => $(node).attr('id') === id).first();
+        if (target.length) { standalone.append($('<defs></defs>').append(target.clone())); added = true; }
+      }
+      if (!added) break;
+    }
+    const svgString = resolveSvgVariables($.html(standalone));
     const svgBuffer = Buffer.from(svgString, 'utf8');
     const dims = probeRasterDimensions(svgBuffer);
     images.push({
@@ -21132,7 +21146,7 @@ type ImageThumbMeta = {
 };
 
 const imageThumbHashFor = (originalUrl: string) =>
-  crypto.createHash('sha1').update(String(originalUrl || '').trim()).digest('hex');
+  crypto.createHash('sha1').update('preview-v2:' + String(originalUrl || '').trim()).digest('hex');
 
 const imageThumbPathsFor = (originalUrl: string) => {
   const hash = imageThumbHashFor(originalUrl);

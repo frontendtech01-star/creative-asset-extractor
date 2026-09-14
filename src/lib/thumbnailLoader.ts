@@ -53,7 +53,12 @@ export const preloadValidatedImage = (src: string) =>
     }
     const probe = new Image();
     probe.decoding = 'async';
+    const timeout = setTimeout(() => {
+      probe.onload = null; probe.onerror = null; probe.src = '';
+      reject(new Error('Image preview timed out'));
+    }, 8000);
     probe.onload = () => {
+      clearTimeout(timeout);
       const width = probe.naturalWidth;
       const height = probe.naturalHeight;
       if (width <= 0 || height <= 0) {
@@ -62,7 +67,7 @@ export const preloadValidatedImage = (src: string) =>
       }
       resolve({ src: trimmed, width, height });
     };
-    probe.onerror = () => reject(new Error('Image failed to load'));
+    probe.onerror = () => { clearTimeout(timeout); reject(new Error('Image failed to load')); };
     probe.src = trimmed;
   });
 
@@ -88,7 +93,7 @@ const parseSvgDimensions = (svgText: string) => {
 };
 
 const preloadValidatedSvg = async (src: string) => {
-  const response = await fetch(src, { credentials: 'same-origin' });
+  const response = await fetch(src, { credentials: 'same-origin', signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error('SVG failed to load');
   const contentType = String(response.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('text/html')) throw new Error('SVG response was HTML');
@@ -164,7 +169,7 @@ const fetchServerThumbMeta = async (
   const metaRequest = buildImageThumbRequest(img, sourcePageUrl, { meta: true });
   if (!metaRequest) return null;
 
-  const response = await apiFetch(metaRequest);
+  const response = await apiFetch(metaRequest, { signal: AbortSignal.timeout(10000) });
   const data = (await response.json().catch(() => ({}))) as ServerThumbMeta;
   if (!response.ok || !data?.ok || !data.thumbUrl) return null;
 

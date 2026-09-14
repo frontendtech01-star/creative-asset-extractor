@@ -1,3 +1,4 @@
+import { resolveSvgVariables, previewBackground } from '../lib/svgPreview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Image as ImageIcon } from 'lucide-react';
 import { apiUrl } from '../lib/api';
@@ -33,9 +34,8 @@ const getSafeInlineSvgMarkup = (url: string) => {
       .replace(/<foreignObject\b[\s\S]*?<\/foreignObject>/gi, '')
       .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
       .replace(/(?:href|xlink:href)\s*=\s*(["'])\s*javascript:[\s\S]*?\1/gi, '')
-      .replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, '')
-      .replace(/var\(\s*--[^,\)]+,\s*([^)]+?)\s*\)/gi, (_match, fallback) => String(fallback || '#000000').trim())
-      .replace(/var\(\s*--[^)]+\)/gi, '#000000');
+      .replace(/\sserif:[\w.-]+=(?:"[^"]*"|'[^']*')/gi, '');
+    sanitized = resolveSvgVariables(sanitized);
     const tagMatch = sanitized.match(/<svg\b[^>]*>/i);
     if (tagMatch) {
       let tag = tagMatch[0];
@@ -138,6 +138,7 @@ export default function LazyCachedImageThumb({
   onReady,
   onFailed,
 }: LazyCachedImageThumbProps) {
+  const [background, setBackground] = useState('#f4f4f5');
   const [phase, setPhase] = useState<ThumbPhase>('idle');
   const [candidateIndex, setCandidateIndex] = useState(0);
   const [validatedPreview, setValidatedPreview] = useState('');
@@ -228,7 +229,7 @@ export default function LazyCachedImageThumb({
   const thumbnailPhase = phase === 'failed' && inlineSvgFallback ? 'ready' : phase;
 
   return (
-    <div data-thumbnail-phase={thumbnailPhase} className="relative h-full w-full overflow-hidden bg-zinc-100">
+    <div data-thumbnail-phase={thumbnailPhase} className="relative h-full w-full overflow-hidden" style={{ background }}>
       {src && phase !== 'failed' ? (
         <img
           ref={imageRef}
@@ -236,7 +237,7 @@ export default function LazyCachedImageThumb({
           alt={alt}
           className={`${className} h-full w-full`}
           decoding="async"
-          loading={generatedThumbnail || validatedPreview || src.startsWith('data:') ? 'eager' : 'lazy'}
+          loading="eager"
           onLoad={(event) => {
             setPhase('ready');
             if (!reportedReadyRef.current) {
@@ -244,6 +245,11 @@ export default function LazyCachedImageThumb({
               onReady?.();
             }
             const el = event.currentTarget;
+            try {
+              const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 40;
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              if (ctx) { ctx.drawImage(el, 0, 0, 40, 40); setBackground(previewBackground(ctx.getImageData(0, 0, 40, 40).data)); }
+            } catch { /* Remote images may disallow pixel inspection. */ }
             if (el.naturalWidth > 0 && el.naturalHeight > 0) {
               onDimensions?.(el.naturalWidth, el.naturalHeight);
             }
