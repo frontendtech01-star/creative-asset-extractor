@@ -1,3 +1,1114 @@
+// server/duplicate-image-content.ts
+import { createHash } from "node:crypto";
+
+// src/lib/streamUrl.ts
+var htmlEntities = {
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  lt: "<",
+  gt: ">"
+};
+var isLocalHost = (host) => host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1" || host.endsWith(".local");
+var decodeEscapedUrl = (value) => {
+  let next = String(value || "").trim();
+  next = next.replace(/^["'`]+|["'`]+$/g, "");
+  next = next.replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=").replace(/\\u002f/gi, "/");
+  next = next.replace(/\\\//g, "/").replace(/\\&/g, "&");
+  next = next.replace(/(\.(?:mp4|webm|mov|mkv|m3u8|mpd|m4a|mp3|aac|wav))&(?=[a-z0-9_.-]+=)/i, "$1?");
+  next = next.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
+    const key = String(entity).toLowerCase();
+    if (key.startsWith("#x")) return String.fromCharCode(parseInt(key.slice(2), 16));
+    if (key.startsWith("#")) return String.fromCharCode(parseInt(key.slice(1), 10));
+    return htmlEntities[key] || match;
+  });
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const decoded = decodeURIComponent(next);
+      if (decoded === next || !/^https?:|^\/|^\/\//i.test(decoded)) break;
+      next = decoded;
+    } catch {
+      break;
+    }
+  }
+  return next.trim().replace(/ /g, "%20");
+};
+var normalizeDuplicateQueryMarkers = (value) => {
+  const firstQuestion = value.indexOf("?");
+  if (firstQuestion === -1) return value;
+  return `${value.slice(0, firstQuestion + 1)}${value.slice(firstQuestion + 1).replace(/\?/g, "&")}`;
+};
+var normalizeYouTubeWatchUrlLite = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl.includes("://") ? rawUrl : `https://${rawUrl}`);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === "youtu.be") {
+      const id = parsed.pathname.replace(/^\/+/, "").split("/")[0];
+      return id ? `https://www.youtube.com/watch?v=${id}` : rawUrl;
+    }
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+      const videoId = parsed.searchParams.get("v");
+      if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
+      const embedMatch = parsed.pathname.match(/\/(?:embed|shorts|live)\/([^/?#]+)/);
+      if (embedMatch?.[1]) return `https://www.youtube.com/watch?v=${embedMatch[1]}`;
+    }
+    return rawUrl;
+  } catch {
+    return rawUrl;
+  }
+};
+var recoverYouTubeWatchFromMergeQuery = (watchPart, looseVideoId) => {
+  let watchUrl = String(watchPart || "").trim();
+  const videoId = String(looseVideoId || "").trim();
+  if (watchUrl && videoId && !watchUrl.includes("v=")) {
+    watchUrl = `${watchUrl}${watchUrl.includes("?") ? "&" : "?"}v=${videoId}`;
+  }
+  return normalizeYouTubeWatchUrlLite(watchUrl);
+};
+var rebuildYouTubeMergedStreamUrl = (rawUrl, baseUrl) => {
+  try {
+    const parsed = new URL(rawUrl, baseUrl || "http://127.0.0.1");
+    if (!/\/api\/youtube-merged-stream$/i.test(parsed.pathname)) return null;
+    const watchUrl = recoverYouTubeWatchFromMergeQuery(
+      parsed.searchParams.get("url") || "",
+      parsed.searchParams.get("v")
+    );
+    if (!/youtube\.com|youtu\.be/i.test(watchUrl)) return null;
+    const params = new URLSearchParams();
+    params.set("url", watchUrl);
+    params.set("quality", parsed.searchParams.get("quality") || "fhd");
+    const inline = parsed.searchParams.get("inline");
+    if (inline) params.set("inline", inline);
+    const filename = parsed.searchParams.get("filename");
+    if (filename) params.set("filename", filename);
+    const path5 = `/api/youtube-merged-stream?${params.toString()}`;
+    if (isLocalHost(parsed.hostname) || rawUrl.startsWith("/api/")) return path5;
+    return `${parsed.protocol}//${parsed.host}${path5}`;
+  } catch {
+    return null;
+  }
+};
+var sanitizeStreamUrl = (rawUrl, baseUrl) => {
+  const raw = String(rawUrl || "").trim();
+  if (/\/api\/youtube-merged-stream(?:\?|$)/i.test(raw)) {
+    const rebuilt = rebuildYouTubeMergedStreamUrl(raw, baseUrl);
+    if (rebuilt) return rebuilt;
+  }
+  let value = decodeEscapedUrl(rawUrl);
+  if (!value || /^(?:javascript|data|blob):/i.test(value)) return null;
+  value = value.replace(/^(https?:)\/{3,}/i, "$1//");
+  value = value.replace(/^(https?:\/\/)(https?:\/\/)+/i, "$2");
+  value = normalizeDuplicateQueryMarkers(value);
+  if (value.startsWith("//")) {
+    value = `https:${value}`;
+  } else if (/^www\./i.test(value) || /^[a-z0-9.-]+\.[a-z]{2,}(?:[/:?]|$)/i.test(value)) {
+    value = `https://${value}`;
+  }
+  try {
+    const parsed = new URL(value, baseUrl || void 0);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (/\/api\/youtube-merged-stream$/i.test(parsed.pathname)) {
+      const rebuilt = rebuildYouTubeMergedStreamUrl(parsed.href, baseUrl);
+      if (rebuilt) return rebuilt;
+    }
+    const nestedStreamUrl = parsed.searchParams.get("url");
+    if (!isLocalHost(parsed.hostname) && /\/api\/download$/i.test(parsed.pathname) && nestedStreamUrl && /googlevideo\.com|\/videoplayback(?:\?|\/|$)|\.(?:mp4|webm|mov|mkv|m3u8|mpd)(?:\?|$)/i.test(nestedStreamUrl)) {
+      let nestedValue = nestedStreamUrl;
+      try {
+        const nestedParsed = new URL(nestedValue);
+        parsed.searchParams.forEach((paramValue, key) => {
+          if (key !== "url" && !nestedParsed.searchParams.has(key)) {
+            nestedParsed.searchParams.append(key, paramValue);
+          }
+        });
+        nestedValue = nestedParsed.href;
+      } catch {
+      }
+      const unwrapped = sanitizeStreamUrl(nestedValue, baseUrl);
+      if (unwrapped) return unwrapped;
+    }
+    parsed.hash = "";
+    if (parsed.protocol === "http:" && !isLocalHost(parsed.hostname)) {
+      parsed.protocol = "https:";
+    }
+    return parsed.href;
+  } catch {
+    return null;
+  }
+};
+var isAppRelativeMediaPath = (value) => /^\/(?:api|converted-videos|converted-audio|cached-images|cached-fonts)\//i.test(String(value || "").trim());
+var isExpiredStreamUrl = (rawUrl, graceSeconds = 90, baseUrl) => {
+  const raw = String(rawUrl || "").trim();
+  if (!raw) return true;
+  let parsed;
+  try {
+    const fallbackBase = baseUrl || (typeof window !== "undefined" ? window.location.origin : void 0) || "http://127.0.0.1";
+    parsed = new URL(raw, fallbackBase);
+  } catch {
+    return isAppRelativeMediaPath(raw) ? false : true;
+  }
+  const nowSeconds = Math.floor(Date.now() / 1e3);
+  const keys = ["expire", "expires", "exp", "X-Amz-Date"];
+  for (const key of keys) {
+    const value = parsed.searchParams.get(key);
+    if (!value) continue;
+    if (key === "X-Amz-Date") {
+      const ttl = Number(parsed.searchParams.get("X-Amz-Expires") || 0);
+      const match = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+      if (ttl > 0 && match) {
+        const [, y, mo, d, h, mi, s] = match;
+        const issued = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)) / 1e3;
+        return issued + ttl < nowSeconds + graceSeconds;
+      }
+      continue;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) continue;
+    const seconds = numeric > 1e10 ? Math.floor(numeric / 1e3) : numeric;
+    if (seconds < nowSeconds + graceSeconds) return true;
+  }
+  return false;
+};
+var isLikelyHttpMediaUrl = (rawUrl) => /\.(mp4|webm|mov|mkv|m3u8|mpd|m4a|mp3|aac|wav)(?:\?|$)/i.test(rawUrl) || /googlevideo\.com\/videoplayback|video\.xx\.fbcdn\.net|vimeo\.com\/progressive_redirect|\/videoplayback\?/i.test(rawUrl);
+
+// src/lib/api.ts
+var trimTrailingSlash = (value) => value.replace(/\/+$/, "");
+var readRuntimeApiBase = () => {
+  const globalConfig = globalThis.__CREATIVE_EXTRACTOR_CONFIG__;
+  return typeof globalConfig?.apiBaseUrl === "string" ? globalConfig.apiBaseUrl : "";
+};
+var envApiBase = import.meta.env?.VITE_API_BASE_URL || "";
+var API_BASE_URL = trimTrailingSlash(readRuntimeApiBase() || envApiBase || "");
+
+// src/lib/filename.ts
+var decodeUrlEncodedFilename = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch {
+    return raw.replace(/\+/g, " ");
+  }
+};
+var filenameFromUrlPath = (rawUrl) => {
+  const value = String(rawUrl || "").trim();
+  if (!value || value.startsWith("data:")) return "";
+  try {
+    const parsed = new URL(value);
+    const segment = parsed.pathname.split("/").filter(Boolean).pop() || "";
+    return decodeUrlEncodedFilename(segment.split("?")[0].split("#")[0]);
+  } catch {
+    const segment = value.split("/").pop() || "";
+    return decodeUrlEncodedFilename(segment.split("?")[0].split("#")[0]);
+  }
+};
+
+// src/lib/imageAsset.ts
+var IMAGE_VARIANT_QUERY_PARAMS = /* @__PURE__ */ new Set([
+  "w",
+  "width",
+  "h",
+  "height",
+  "wid",
+  "hei",
+  "qlt",
+  "q",
+  "quality",
+  "fit",
+  "dpr",
+  "fm",
+  "format",
+  "auto",
+  "v",
+  "ver",
+  "version",
+  "cache",
+  "cb"
+]);
+var IMAGE_SEQUENCE_COUNTS = /* @__PURE__ */ new Set([4, 18, 24, 36, 72, 120]);
+var looksLikeImageSequenceAsset = (img, rawUrl) => {
+  const source = String(img?.source || "").toLowerCase();
+  if (source.includes("360-sequence") || Number(img?.sequenceFrame || 0) > 0) return true;
+  const explicitCountMatch = rawUrl.match(
+    /\/(\d{1,3})\/(\d{1,3})\.(?:png|jpe?g|webp|avif|gif)(?:[?#]|$)/i
+  );
+  if (explicitCountMatch && IMAGE_SEQUENCE_COUNTS.has(Number(explicitCountMatch[1] || 0))) {
+    return true;
+  }
+  return /(?:visualizer|threesixty|360)/i.test(rawUrl.split(/[?#]/)[0]) && /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif|gif)(?:[?#]|$)/i.test(rawUrl);
+};
+var getGeneratedImageIdentity = (img, rawUrl) => {
+  const urlFilename = (() => {
+    try {
+      const parsed = new URL(rawUrl);
+      return decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+    } catch {
+      return rawUrl.split(/[?#]/)[0]?.split("/").filter(Boolean).pop() || "";
+    }
+  })();
+  const candidates = [
+    String(img?.filename || "").trim(),
+    String(img?.name || "").trim(),
+    urlFilename
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const leaf = candidate.split("/").pop() || candidate;
+    const stem = leaf.replace(/\.(?:png|jpe?g|webp|avif|gif|svg|bmp|ico)$/i, "");
+    const generatedMatch = stem.match(/^([a-f0-9]{20,})(?:[-_].*)?$/i);
+    if (generatedMatch?.[1]) return generatedMatch[1].toLowerCase();
+  }
+  return "";
+};
+var normalizeImageVariantPath = (pathname) => pathname.replace(/[-_]\d{2,5}x\d{2,5}(?=\.[a-z0-9]+$)/i, "").replace(/_(?:\d{2,5}x|x\d{2,5})(?=\.[a-z0-9]+$)/i, "").replace(/\/cdn-cgi\/image\/[^/]+\//i, "/cdn-cgi/image/");
+var getImageDedupeKey = (img) => {
+  const rawUrl = String(img?.url || img?.src || img?.originalUrl || "").trim();
+  if (!rawUrl) return "";
+  if (rawUrl.startsWith("data:")) {
+    return `data:${rawUrl}`;
+  }
+  const isSequence = looksLikeImageSequenceAsset(img, rawUrl);
+  if (!isSequence) {
+    const generatedIdentity = getGeneratedImageIdentity(img, rawUrl);
+    if (generatedIdentity) return `generated:${generatedIdentity}`;
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    const symbol = /\.svg$/i.test(parsed.pathname) ? parsed.hash : "";
+    parsed.hash = "";
+    Array.from(parsed.searchParams.keys()).forEach((key) => {
+      if (IMAGE_VARIANT_QUERY_PARAMS.has(key.toLowerCase())) {
+        parsed.searchParams.delete(key);
+      }
+    });
+    const remainingParams = Array.from(parsed.searchParams.entries()).sort(([aKey, aValue], [bKey, bValue]) => {
+      const keyCompare = aKey.localeCompare(bKey);
+      return keyCompare !== 0 ? keyCompare : aValue.localeCompare(bValue);
+    });
+    parsed.search = "";
+    remainingParams.forEach(([key, value]) => parsed.searchParams.append(key, value));
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const pathname = normalizeImageVariantPath(decodeURIComponent(parsed.pathname));
+    const prefix = isSequence ? "sequence" : "url";
+    return `${prefix}:${host}${pathname}${parsed.search}${symbol}`;
+  } catch {
+    const clean = rawUrl.split("#")[0].replace(/[-_]\d{2,5}x\d{2,5}(?=\.[a-z0-9]+(?:[?#]|$))/i, "");
+    return `${isSequence ? "sequence" : "url"}:${clean}`;
+  }
+};
+var getImageSourceFormat = (img) => {
+  const mime = String(img?.mimeType || "").toLowerCase();
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("avif")) return "avif";
+  const type = String(img?.type || "").toLowerCase().trim();
+  if (["jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "bmp", "ico"].includes(type)) {
+    return type === "jpeg" ? "jpg" : type;
+  }
+  const remote = String(img?.url || "");
+  if (/\.webp(?:[?#]|$)/i.test(remote) || /\/styles\/webp\//i.test(remote)) return "webp";
+  if (/\.avif(?:[?#]|$)/i.test(remote)) return "avif";
+  const fromUrl = filenameFromUrlPath(remote);
+  const ext = fromUrl.split(".").pop()?.toLowerCase() || "";
+  if (ext === "jpeg") return "jpg";
+  return ["jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "bmp", "ico"].includes(ext) ? ext === "jpeg" ? "jpg" : ext : "jpg";
+};
+var looksLikeGeneratedFilename = (name) => {
+  const base = String(name || "").trim();
+  if (!base) return true;
+  if (/^image-\d+\./i.test(base)) return true;
+  if (/^[a-f0-9]{20,}(\-\d+)?\./i.test(base)) return true;
+  return false;
+};
+var getImageDisplayName = (img, index = 0) => {
+  if (img.assetName) return img.assetName;
+  const candidates = [
+    String(img?.filename || "").trim(),
+    String(img?.name || "").trim(),
+    String(img?.alt || "").trim(),
+    filenameFromUrlPath(String(img?.url || "")),
+    filenameFromUrlPath(String(img?.cachedUrl || "").replace(/^\/cached-images-original\//, ""))
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const leaf = candidate.split("/").pop() || candidate;
+    if (!looksLikeGeneratedFilename(leaf)) return leaf;
+  }
+  const fromUrl = filenameFromUrlPath(String(img?.url || ""));
+  if (fromUrl) return fromUrl;
+  return `image-${index + 1}.${getImageSourceFormat(img)}`;
+};
+
+// server/duplicate-image-content.ts
+async function resolveDuplicateImageContent(images, read) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const image of images) {
+    const name = getImageDisplayName({ ...image, assetName: void 0 }).toLowerCase();
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  let cursor = 0;
+  const output = [...images];
+  await Promise.all(Array.from({ length: Math.min(4, images.length) }, async () => {
+    while (cursor < images.length) {
+      const index = cursor++, image = images[index];
+      if (image.sequenceFrame || counts.get(getImageDisplayName({ ...image, assetName: void 0 }).toLowerCase()) < 2) continue;
+      const buffer = await read(image).catch(() => null);
+      if (buffer?.length) output[index] = { ...image, contentHash: createHash("sha256").update(buffer).digest("hex") };
+    }
+  }));
+  return output;
+}
+
+// src/lib/fontAsset.ts
+var getFontConversionOutputs = (sourceFormat) => {
+  const source = String(sourceFormat || "").toLowerCase();
+  if (source === "woff2") return ["woff2", "ttf", "woff"];
+  if (source === "woff") return ["woff", "ttf"];
+  if (source === "ttf") return ["ttf", "woff"];
+  if (source === "otf") return ["otf", "ttf", "woff"];
+  return [];
+};
+var buildFontZipEntryName = (filenameBase, format, _familyFolder = "") => {
+  const safe = sanitizeFontFilenameBase(filenameBase).replace(/\s+/g, "-").replace(/-+/g, "-") || "font";
+  const ext = String(format || "ttf").toLowerCase();
+  return `fonts/${safe}.${ext}`;
+};
+var getFontSelectionKey = (font) => {
+  const url = String(font?.url || "").trim();
+  const variation = String(font?.variationWeight ?? "").trim();
+  const italic = font?.variationItalic ? "#ital=1" : "";
+  if (!url.startsWith("data:")) return variation ? `${url}#wght=${variation}${italic}` : `${url}#face=${normalizeFontWeightKey(font.weight)}:${normalizeFontStyleKey(font.style)}${italic}`;
+  return `inline-font:${String(font?.family || "").trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url}`;
+};
+var normalizeFontStyleKey = (style) => {
+  const raw = String(style || "").trim().toLowerCase();
+  if (!raw || raw === "normal") return "normal";
+  if (raw === "italic" || raw === "oblique") return "italic";
+  return raw;
+};
+var normalizeFontWeightKey = (weight) => {
+  const raw = String(weight || "").trim().toLowerCase();
+  if (!raw || raw === "normal" || raw === "regular") return "400";
+  if (/^\d+$/.test(raw)) return String(Math.min(900, Math.max(1, Number(raw))));
+  if (raw === "bold" || raw === "bolder") return "700";
+  if (raw === "lighter") return "300";
+  return raw;
+};
+var WEIGHT_SUFFIX_TO_KEY = {
+  thin: "100",
+  extralight: "200",
+  light: "300",
+  regular: "400",
+  book: "400",
+  medium: "500",
+  semibold: "600",
+  bold: "700",
+  extrabold: "800",
+  black: "900",
+  condbold: "700"
+};
+var resolveFontIdentityFields = (font) => {
+  const label = [font?.family, font?.title, font?.name].find((value) => value && !isJunkFontLabel(String(value))) || "";
+  let family = sanitizeFontFilenameBase(
+    String(label).replace(/\.(?:woff2?|ttf|otf|eot)$/i, "").replace(/^["']+|["']+$/g, "").trim()
+  );
+  let weight = font?.weight;
+  let style = font?.style;
+  const hyphenated = family.match(
+    /^(.+?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
+  );
+  if (hyphenated) {
+    family = sanitizeFontFilenameBase(hyphenated[1].replace(/([a-z0-9])([A-Z])/g, "$1 $2"));
+    const suffixKey = hyphenated[2].toLowerCase().replace(/\s+/g, "");
+    const mapped = WEIGHT_SUFFIX_TO_KEY[suffixKey];
+    if (mapped && (!weight || String(weight).toLowerCase() === "normal" || String(weight) === "400")) {
+      weight = mapped;
+    }
+    if (hyphenated[3] && (!style || style === "normal")) style = "italic";
+  }
+  if (/[- ]Italic$/i.test(family)) {
+    family = family.replace(/[- ]Italic$/i, "");
+    if (!style || style === "normal") style = "italic";
+  }
+  return { family: family.replace(/\s+/g, " ").trim(), weight, style };
+};
+var getFontLogicalKey = (font) => {
+  const { family, weight, style } = resolveFontIdentityFields(font);
+  if (!family || isJunkFontLabel(family)) return "";
+  return `${family.toLowerCase()}|${normalizeFontWeightKey(weight)}|${normalizeFontStyleKey(style)}`;
+};
+var scoreFontSubsetUrl = (url) => {
+  const lower = String(url || "").toLowerCase();
+  let score = 0;
+  if (/latin-ext|latn-ext/i.test(lower)) score += 8;
+  else if (/latin|latn/i.test(lower)) score += 12;
+  if (/fonts\.gstatic\.com/i.test(lower)) score += 25;
+  if (/fonts\.googleapis\.com/i.test(lower)) score += 5;
+  if (/vietnamese|vi_/i.test(lower)) score -= 10;
+  if (/cyrillic|cy_/i.test(lower)) score -= 8;
+  if (/greek|greek-ext|el_/i.test(lower)) score -= 6;
+  const subsetMatch = /[_-]s(\d)w/i.exec(lower) || /(\d)wH8/i.exec(lower);
+  if (subsetMatch) score += Number(subsetMatch[1]) / 10;
+  return score;
+};
+var scoreFontRecord = (font) => {
+  let score = 0;
+  const unicodeRange = String(font?.unicodeRange || "").toUpperCase();
+  if (/U\+0000-00FF|U\+0020-007E|U\+0000-024F/.test(unicodeRange)) score += 80;
+  else if (/U\+0100-02|LATIN/.test(unicodeRange)) score += 50;
+  if (/U\+0400|U\+0460|U\+1C80|CYRILLIC/.test(unicodeRange)) score -= 35;
+  if (/U\+0370|GREEK/.test(unicodeRange)) score -= 25;
+  const format = resolveFontSourceFormat(font);
+  if (format === "woff2") score += 30;
+  else if (format === "woff") score += 20;
+  else if (format === "ttf" || format === "otf") score += 10;
+  const assetUrl = String(font?.url || font?.cachedUrl || "");
+  score += scoreFontSubsetUrl(assetUrl);
+  if (/fonts\.gstatic\.com/i.test(assetUrl) && /\.ttf(?:[?#]|$)/i.test(assetUrl)) score += 85;
+  if (/-ttf\.ttf(\?|$)/i.test(assetUrl)) score += 18;
+  else if (/-woff\.woff(\?|$)/i.test(assetUrl)) score += 12;
+  if (/\/fonts\//i.test(assetUrl) && (format === "ttf" || format === "woff")) score += 10;
+  if (font?.cachedUrl) score += 50;
+  if (String(font?.status || "").toLowerCase() === "downloaded") score += 40;
+  return score;
+};
+var isPreferredExtractedFontFormat = (font) => {
+  const format = resolveFontSourceFormat(font);
+  return format === "woff" || format === "woff2";
+};
+var fontDedupeFormatPriority = (font) => {
+  const format = resolveFontSourceFormat(font);
+  if (format === "woff") return 50;
+  if (format === "woff2") return 40;
+  return 0;
+};
+var compareFontDedupePreference = (a, b) => {
+  const formatDelta = fontDedupeFormatPriority(b) - fontDedupeFormatPriority(a);
+  if (formatDelta !== 0) return formatDelta;
+  return scoreFontRecord(b) - scoreFontRecord(a);
+};
+var getFontFileVariantKey = (font) => {
+  const candidate = String(font?.url || font?.cachedUrl || "").trim();
+  if (!candidate || candidate.startsWith("data:")) return "";
+  try {
+    const parsed = new URL(candidate);
+    const pathWithoutExt = parsed.pathname.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
+    if (pathWithoutExt === parsed.pathname) return "";
+    return `${parsed.hostname.replace(/^www\./i, "").toLowerCase()}${decodeURIComponent(pathWithoutExt).toLowerCase()}`;
+  } catch {
+    const pathWithoutExt = candidate.split(/[?#]/)[0].replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
+    if (!pathWithoutExt || pathWithoutExt === candidate.split(/[?#]/)[0]) return "";
+    return pathWithoutExt.toLowerCase();
+  }
+};
+var preferSingleFontFormatPerFileStem = (fonts) => {
+  const groups = /* @__PURE__ */ new Map();
+  const passthrough = [];
+  for (const font of fonts) {
+    const fileKey = getFontFileVariantKey(font);
+    const logicalKey = getFontLogicalKey(font);
+    const key = fileKey && logicalKey ? `${fileKey}|${logicalKey}` : fileKey;
+    if (!key) {
+      passthrough.push(font);
+      continue;
+    }
+    const bucket = groups.get(key) || [];
+    bucket.push(font);
+    groups.set(key, bucket);
+  }
+  const preferred = Array.from(groups.values()).map((group) => {
+    const sorted = [...group].sort(compareFontDedupePreference);
+    const best = sorted[0];
+    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
+    return {
+      ...merged,
+      url: best.url,
+      format: best.format || merged.format,
+      cachedUrl: best.cachedUrl || merged.cachedUrl
+    };
+  });
+  return [...passthrough, ...preferred];
+};
+var dedupeFontsByLogicalKey = (fonts) => {
+  const groups = /* @__PURE__ */ new Map();
+  for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
+    if (!font?.url) continue;
+    const key = getFontLogicalKey(font);
+    if (!key) continue;
+    const bucket = groups.get(key) || [];
+    bucket.push(font);
+    groups.set(key, bucket);
+  }
+  const deduped = [];
+  for (const group of groups.values()) {
+    const sorted = [...group].sort(compareFontDedupePreference);
+    const best = sorted[0];
+    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
+    deduped.push({
+      ...merged,
+      url: best.url,
+      format: best.format || merged.format,
+      cachedUrl: best.cachedUrl || merged.cachedUrl
+    });
+  }
+  return deduped.sort((a, b) => {
+    const familyA = buildFontDisplayName(a) || a.family || "";
+    const familyB = buildFontDisplayName(b) || b.family || "";
+    return familyA.localeCompare(familyB);
+  });
+};
+var resolveFontSourceFormat = (font) => {
+  const raw = String(font?.format || "").toLowerCase().trim();
+  if (["woff", "woff2", "ttf", "otf", "eot", "svg"].includes(raw)) return raw;
+  const candidate = String(font?.url || font?.cachedUrl || "");
+  if (/\.woff2(\?|$)/i.test(candidate)) return "woff2";
+  if (/\.woff(\?|$)/i.test(candidate)) return "woff";
+  if (/\.ttf(\?|$)/i.test(candidate)) return "ttf";
+  if (/\.otf(\?|$)/i.test(candidate)) return "otf";
+  if (/\.eot(\?|$)/i.test(candidate)) return "eot";
+  if (/\.svg(\?|$)/i.test(candidate)) return "svg";
+  return raw || "unknown";
+};
+var isJunkFontLabel = (value) => {
+  const raw = String(value || "").trim();
+  const base = raw.toLowerCase();
+  if (!base) return true;
+  if (base === "unknown" || base === "font") return true;
+  if (base.length <= 2) return true;
+  if (/^font-\d+$/i.test(base)) return true;
+  if (/^[lda](?:-\d+)?$/i.test(base)) return true;
+  if (/^[0-9a-f]{8,}$/i.test(base)) return true;
+  if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
+  const compact = raw.replace(/[\s.-]+/g, "");
+  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|compressed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open|nexon|shilia)/i.test(raw);
+  if (!hasFamilyWord && /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) || !hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact)) return true;
+  if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
+  if (/^(?=[a-z0-9 ._-]*\d)[a-z0-9_-]{16,}(?:[ ._-]+[a-z0-9_-]{3,})+$/i.test(base)) return true;
+  return false;
+};
+var scoreFontFamilyLabel = (value) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return 0;
+  if (isJunkFontLabel(trimmed)) return 1;
+  if (/^https?:\/\//i.test(trimmed)) return 1;
+  if (/[._-][0-9a-f]{8,}$/i.test(trimmed)) return 2;
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  return 10 + Math.min(words, 4) + Math.min(trimmed.length, 48);
+};
+var sanitizeFontFilenameBase = (value) => String(value || "").trim().replace(/^["']+|["']+$/g, "").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").replace(/[/\\]+/g, "-").replace(/[^\w .-]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
+var prettifyFontFamilyLabel = (value) => {
+  const cleaned = sanitizeFontFilenameBase(value);
+  if (!cleaned) return "";
+  const compactSlug = /^[a-z0-9]+(?:[-_][a-z0-9]+)+$/;
+  if (!compactSlug.test(cleaned)) return cleaned;
+  return cleaned.split(/[-_]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+};
+var FONT_WEIGHT_LABELS = {
+  100: "Thin",
+  200: "ExtraLight",
+  300: "Light",
+  400: "Regular",
+  500: "Medium",
+  600: "SemiBold",
+  700: "Bold",
+  800: "ExtraBold",
+  900: "Black"
+};
+var normalizeFontWeightLabel = (weight) => {
+  const raw = String(weight || "").trim().toLowerCase();
+  if (!raw || raw === "normal" || raw === "regular" || raw === "400") return "Regular";
+  if (/^\d+$/.test(raw)) {
+    const num = Number(raw);
+    return FONT_WEIGHT_LABELS[num] || "";
+  }
+  if (raw === "bold" || raw === "bolder") return "Bold";
+  if (raw === "lighter") return "Light";
+  return sanitizeFontFilenameBase(raw);
+};
+var buildFontDisplayName = (font) => {
+  if (font.assetName) return font.assetName;
+  const identity = resolveFontIdentityFields(font);
+  const resolvedFamily = prettifyFontFamilyLabel(sanitizeFontFilenameBase(String(identity.family || "").trim()));
+  const familyCandidates = [
+    String(font?.title || "").trim(),
+    String(font?.name || "").trim(),
+    String(font?.filename || "").trim()
+  ].map((value) => sanitizeFontFilenameBase(value.replace(/^["']+|["']+$/g, ""))).map(prettifyFontFamilyLabel).filter((value) => value && !isJunkFontLabel(value));
+  const family = resolvedFamily && !isJunkFontLabel(resolvedFamily) ? resolvedFamily : familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || "";
+  if (!family) return "";
+  const weight = normalizeFontWeightLabel(identity.weight);
+  const style = String(identity.style || "").trim().toLowerCase();
+  const italic = style === "italic" || style === "oblique";
+  const suffixes = [weight, italic ? "Italic" : ""].filter(Boolean);
+  return suffixes.length ? `${family} ${suffixes.join(" ")}`.trim() : family;
+};
+var mergeFontRecords = (left, right) => {
+  if (!left) return right;
+  if (!right) return left;
+  const familyCandidates = [left.family, right.family, left.title, right.title, left.name, right.name, left.filename, right.filename];
+  const family = familyCandidates.map((value) => sanitizeFontFilenameBase(String(value || "").replace(/^["']+|["']+$/g, ""))).map(prettifyFontFamilyLabel).filter((value) => value && !isJunkFontLabel(value)).sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || left.family || right.family || "Font";
+  return {
+    ...left,
+    ...right,
+    family,
+    format: right.format || left.format,
+    cssSource: right.cssSource || left.cssSource,
+    source: right.source || left.source,
+    url: left.url || right.url,
+    weight: right.weight || left.weight,
+    style: right.style || left.style,
+    filename: right.filename || left.filename,
+    originalFilename: right.originalFilename || left.originalFilename,
+    name: right.name || left.name
+  };
+};
+var pickBestFontForUrl = (fonts, url) => fonts.filter((font) => String(font?.url || "") === url).reduce((best, current) => mergeFontRecords(best, current), null);
+var getFontFilenameBase = (font) => {
+  const display = buildFontDisplayName(font);
+  if (display) return display;
+  for (const source of [String(font?.url || "").trim(), String(font?.cachedUrl || "").trim()]) {
+    if (!source) continue;
+    const fromUrl = filenameFromUrlPath(source);
+    if (!fromUrl) continue;
+    const base = fromUrl.replace(/\.[^/.]+$/, "") || fromUrl;
+    if (base && !isJunkFontLabel(base)) return sanitizeFontFilenameBase(base);
+  }
+  return "font";
+};
+
+// src/lib/extractionFontIdentity.ts
+function mergeExtractionFonts(fonts) {
+  const byFace = /* @__PURE__ */ new Map();
+  for (const original of fonts) {
+    if (!original?.url) continue;
+    const { assetName: _assetName, ...record } = original;
+    const font = { ...record, ...resolveFontIdentityFields(record) };
+    const key = getFontLogicalKey(font) || getFontSelectionKey(font);
+    const previous = byFace.get(key);
+    if (!previous || scoreFontRecord(font) > scoreFontRecord(previous)) {
+      byFace.set(key, { ...font, alternativeSources: [...previous?.alternativeSources || [], ...previous ? [previous.url] : []] });
+    } else {
+      previous.alternativeSources = [.../* @__PURE__ */ new Set([...previous.alternativeSources || [], font.url])].filter((url) => url !== previous.url);
+    }
+  }
+  const results = [...byFace.values()];
+  const groups = /* @__PURE__ */ new Map();
+  for (const font of results) {
+    const label = buildFontDisplayName(font) || getFontFilenameBase(font);
+    groups.set(label.toLowerCase(), [...groups.get(label.toLowerCase()) || [], font]);
+  }
+  const used = new Set(groups.keys());
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    let number = 1;
+    for (const font of group.sort((a, b) => String(a.url).localeCompare(String(b.url)))) {
+      const label = buildFontDisplayName(font) || getFontFilenameBase(font);
+      let name;
+      do {
+        name = `${label} ${String(number++).padStart(3, "0")}`;
+      } while (used.has(name.toLowerCase()));
+      used.add(name.toLowerCase());
+      font.assetName = name;
+    }
+  }
+  return results;
+}
+
+// src/lib/extractionImageIdentity.ts
+var imageResolution = (image) => {
+  let width = Number(image.width) || 0, height = Number(image.height) || 0;
+  try {
+    const url = new URL(image.url || image.src);
+    width = Math.max(width, ...["width", "w", "wid"].map((key) => Number(url.searchParams.get(key)) || 0));
+    height = Math.max(height, ...["height", "h", "hei"].map((key) => Number(url.searchParams.get(key)) || 0));
+    const size = url.pathname.match(/[_-](\d+)x(\d+)(?=\.[^.]+$)/i);
+    if (size) {
+      width = Math.max(width, Number(size[1]));
+      height = Math.max(height, Number(size[2]));
+    }
+  } catch {
+  }
+  return width && height ? width * height : Math.max(width, height) ** 2;
+};
+var compareImageQuality = (a, b) => imageResolution(b) - imageResolution(a) || Number(b.bytes || b.size || 0) - Number(a.bytes || a.size || 0) || Number(Boolean(b.cachedUrl)) - Number(Boolean(a.cachedUrl));
+function mergeExtractionImages(images) {
+  const byIdentity = /* @__PURE__ */ new Map();
+  for (const item of images) {
+    if (!(item?.url || item?.src)) continue;
+    const key = getImageDedupeKey(item);
+    const previous = byIdentity.get(key);
+    if (!previous || compareImageQuality(item, previous) < 0) byIdentity.set(key, item);
+  }
+  const byContent = /* @__PURE__ */ new Map();
+  for (const item of byIdentity.values()) {
+    const frame = Number(item.sequenceFrame || 0);
+    const key = item.contentHash && !frame ? `content:${item.contentHash}` : getImageDedupeKey(item);
+    const previous = byContent.get(key);
+    if (!previous || compareImageQuality(item, previous) < 0) byContent.set(key, item);
+  }
+  const groups = /* @__PURE__ */ new Map();
+  const result = [...byContent.values()].map(({ assetName: _assetName, ...item }) => item);
+  for (const item of result) {
+    const name = getImageDisplayName(item).trim();
+    const key = name.toLowerCase();
+    groups.set(key, [...groups.get(key) || [], item]);
+  }
+  const used = new Set(groups.keys());
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => String(a.url).localeCompare(String(b.url)));
+    let number = 1;
+    for (const item of group) {
+      const name = getImageDisplayName(item);
+      const extension = name.match(/\.[a-z0-9]+$/i)?.[0] || "";
+      const stem = extension ? name.slice(0, -extension.length) : name;
+      let candidate;
+      do {
+        candidate = `${stem}-${String(number++).padStart(3, "0")}${extension}`;
+      } while (used.has(candidate.toLowerCase()));
+      used.add(candidate.toLowerCase());
+      item.assetName = candidate;
+    }
+  }
+  return result;
+}
+
+// server/lexus-interior.ts
+import { createHash as createHash2 } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+// src/lib/convertRasterImage.ts
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var sharpModule = null;
+var loadSharp = async () => {
+  if (sharpModule) return sharpModule;
+  try {
+    const mod = await import("sharp");
+    sharpModule = mod.default || mod;
+    return sharpModule;
+  } catch {
+    try {
+      sharpModule = require2("sharp");
+      return sharpModule.default || sharpModule;
+    } catch {
+      throw new Error("Image conversion backend is unavailable. Install sharp to enable WEBP/AVIF conversion.");
+    }
+  }
+};
+var isValidRasterOutputBuffer = (buffer, format) => {
+  if (!buffer || buffer.length < 12) return false;
+  if (format === "png") {
+    return buffer[0] === 137 && buffer[1] === 80 && buffer[2] === 78 && buffer[3] === 71;
+  }
+  return buffer[0] === 255 && buffer[1] === 216;
+};
+var detectRasterFormatFromBuffer = (buffer) => {
+  if (!buffer || buffer.length < 12) return "";
+  if (buffer[0] === 255 && buffer[1] === 216) return "jpg";
+  if (buffer.slice(0, 8).toString("ascii") === "\x89PNG\r\n\n") return "png";
+  if (buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") return "webp";
+  if (buffer.slice(4, 8).toString("ascii") === "ftyp") {
+    const brand = buffer.slice(8, 12).toString("ascii");
+    if (brand.startsWith("avif") || brand.startsWith("avis")) return "avif";
+  }
+  return "";
+};
+var supportedRasterConversionTargets = (sourceFormat) => {
+  const normalized = String(sourceFormat || "").toLowerCase().replace("jpeg", "jpg");
+  if (normalized === "webp" || normalized === "avif" || normalized === "svg") return ["png", "jpg"];
+  return [];
+};
+var looksLikeSvg = (buffer) => {
+  const head = buffer.slice(0, 512).toString("utf8").trimStart();
+  return head.startsWith("<svg") || head.startsWith("<?xml") || head.includes("<svg");
+};
+var numericSvgLength = (value) => {
+  const match = String(value || "").trim().match(/^([0-9]+(?:\.[0-9]+)?)/);
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+var prepareSvgForSharp = (buffer) => {
+  if (!looksLikeSvg(buffer)) return buffer;
+  let svg = buffer.toString("utf8").trim();
+  if (/<font\b/i.test(svg) && !/(<path\b|<rect\b|<circle\b|<ellipse\b|<line\b|<polyline\b|<polygon\b|<image\b|<text\b)/i.test(svg)) {
+    throw new Error("SVG font files cannot be rasterized as images. Download the original SVG instead.");
+  }
+  const tagMatch = svg.match(/<svg\b[^>]*>/i);
+  if (!tagMatch) return buffer;
+  let tag = tagMatch[0];
+  if (!/\sxmlns=/.test(tag)) {
+    tag = tag.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  const width = numericSvgLength(tag.match(/\swidth=["']([^"']+)["']/i)?.[1] || "");
+  const height = numericSvgLength(tag.match(/\sheight=["']([^"']+)["']/i)?.[1] || "");
+  const viewBoxMatch = tag.match(/\sviewBox=["']([^"']+)["']/i);
+  const viewBoxParts = (viewBoxMatch?.[1] || "").trim().split(/[\s,]+/).map(Number).filter((part) => Number.isFinite(part));
+  const viewBoxWidth = viewBoxParts.length === 4 && viewBoxParts[2] > 0 ? viewBoxParts[2] : 0;
+  const viewBoxHeight = viewBoxParts.length === 4 && viewBoxParts[3] > 0 ? viewBoxParts[3] : 0;
+  const finalWidth = Math.ceil(width || viewBoxWidth || 1024);
+  const finalHeight = Math.ceil(height || viewBoxHeight || 1024);
+  if (!width) tag = tag.replace(/<svg\b/i, `<svg width="${finalWidth}"`);
+  if (!height) tag = tag.replace(/<svg\b/i, `<svg height="${finalHeight}"`);
+  if (!viewBoxMatch) tag = tag.replace(/<svg\b/i, `<svg viewBox="0 0 ${finalWidth} ${finalHeight}"`);
+  svg = svg.replace(tagMatch[0], tag);
+  return Buffer.from(svg, "utf8");
+};
+var convertRasterImageBuffer = async (input, targetFormat) => {
+  if (!input?.length) throw new Error("Empty image buffer");
+  const sharp = await loadSharp();
+  const preparedInput = prepareSvgForSharp(input);
+  const image = sharp(preparedInput, { failOn: "error", unlimited: true, density: 144 }).rotate();
+  const metadata = await image.metadata();
+  if (!metadata.width || !metadata.height) {
+    throw new Error("Invalid image buffer for conversion");
+  }
+  const output = targetFormat === "jpg" ? await image.flatten({ background: "#ffffff" }).jpeg({ quality: 92, mozjpeg: true }).toBuffer() : await image.png({ compressionLevel: 9 }).toBuffer();
+  if (!isValidRasterOutputBuffer(output, targetFormat)) {
+    throw new Error(`${targetFormat.toUpperCase()} conversion produced invalid output`);
+  }
+  const detected = detectRasterFormatFromBuffer(output);
+  if (detected === "webp" || detected === "avif") {
+    throw new Error(`Conversion returned ${detected} bytes instead of ${targetFormat}`);
+  }
+  return output;
+};
+
+// server/lexus-interior.ts
+var PANORAMA_FACES = ["right", "left", "top", "bottom", "front", "back"];
+var MEDIA = "https://tmna.assetscs.toyota.com/is/image/lexusaemcs";
+function discoverInteriorPanoramas(model, pageUrl) {
+  const page = new URL(pageUrl);
+  if (!/(^|\.)lexus\.com$/i.test(page.hostname)) return [];
+  const trim = page.searchParams.get("trim") || "";
+  const wanted = /^nxh|^hybrid/.test(trim) ? "nxh" : /^nxp/.test(trim) ? "nxphev" : /^nxf|^fsport/.test(trim) ? "fsport" : trim ? "nx" : "";
+  const output = [];
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (value.id === "model_visualizer_interior" && Array.isArray(value.visualizerTabs)) {
+      const tab = value.visualizerTabs.find((t) => t.id === (wanted || (value.selectedTabId === "hybrid" ? "nxh" : value.selectedTabId)));
+      if (!tab) return;
+      for (const category of tab.visualizerInnerTabs || []) {
+        if (category.type !== "interior" || !category.panoAssetPathStructure) continue;
+        for (const swatch of category.swatches || []) {
+          for (const view of category.panoViews || []) {
+            const template = String(category.panoAssetPathStructure).replace("{{dynamicMediaURL}}", MEDIA).replace("{{activeInteriorSwatch}}", swatch.id).replace("{{pano}}", view.id);
+            const urls = PANORAMA_FACES.map((face) => template.replace("{position}", face) + "?" + (category.panoDesktopImageProfile || "wid=2000"));
+            if (!urls.every((url) => {
+              const p = new URL(url);
+              return p.origin === new URL(MEDIA).origin && p.pathname.includes("/interior/") && !/[{}]/.test(url);
+            })) continue;
+            output.push({ label: `Interior ${swatch.label}${category.panoViews.length > 1 ? ` ${view.labelTitle}` : ""}`, urls });
+          }
+        }
+      }
+      return;
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(model);
+  return output.slice(0, 16);
+}
+function cubeSample(x, y, z) {
+  const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+  let face, u, v;
+  if (ax >= ay && ax >= az) {
+    face = x > 0 ? 0 : 1;
+    u = (x > 0 ? -z : z) / ax;
+    v = -y / ax;
+  } else if (ay >= az) {
+    face = y > 0 ? 2 : 3;
+    u = x / ay;
+    v = (y > 0 ? z : -z) / ay;
+  } else {
+    face = z > 0 ? 4 : 5;
+    u = (z > 0 ? x : -x) / az;
+    v = -y / az;
+  }
+  return { face, u: (u + 1) / 2, v: (v + 1) / 2 };
+}
+async function renderInteriorPanorama(buffers, write, width = 960, height = 420) {
+  if (buffers.length !== 6) throw new Error("Interior panorama requires all six faces");
+  const sharp = await loadSharp();
+  const faces = await Promise.all(buffers.map(async (buffer) => {
+    const result = await sharp(buffer).removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+    if (result.info.width !== result.info.height || result.info.channels !== 3) throw new Error("Invalid panorama face");
+    return result;
+  }));
+  const tangent = Math.tan(80 * Math.PI / 360);
+  for (let frame = 1; frame <= 36; frame++) {
+    const yaw = (frame - 1) * Math.PI / 18, sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const output = Buffer.alloc(width * height * 3);
+    for (let row = 0; row < height; row++) {
+      const y = (1 - 2 * (row + 0.5) / height) * tangent * height / width;
+      for (let col = 0; col < width; col++) {
+        const x = (2 * (col + 0.5) / width - 1) * tangent;
+        const sample = cubeSample(x * cos + sin, y, cos - x * sin);
+        const { data, info } = faces[sample.face];
+        const px = Math.max(0, Math.min(info.width - 1, sample.u * info.width - 0.5));
+        const py = Math.max(0, Math.min(info.height - 1, sample.v * info.height - 0.5));
+        const left = Math.floor(px), top = Math.floor(py), right = Math.min(left + 1, info.width - 1), bottom = Math.min(top + 1, info.height - 1);
+        const dx = px - left, dy = py - top, dest = (row * width + col) * 3;
+        for (let c = 0; c < 3; c++) output[dest + c] = Math.round(
+          (data[(top * info.width + left) * 3 + c] * (1 - dx) + data[(top * info.width + right) * 3 + c] * dx) * (1 - dy) + (data[(bottom * info.width + left) * 3 + c] * (1 - dx) + data[(bottom * info.width + right) * 3 + c] * dx) * dy
+        );
+      }
+    }
+    await write(frame, await sharp(output, { raw: { width, height, channels: 3 } }).jpeg({ quality: 92 }).toBuffer());
+  }
+}
+var pending = /* @__PURE__ */ new Map();
+async function extractLexusInterior(pageUrl, cacheDir, appOrigin) {
+  const page = new URL(pageUrl);
+  if (!/(^|\.)lexus\.com$/i.test(page.hostname) || !/^\/models\//.test(page.pathname)) return [];
+  const key = page.href;
+  if (pending.has(key)) return pending.get(key);
+  const task = (async () => {
+    const modelUrl = new URL(page.pathname.replace(/\/$/, "") + ".model.json", page.origin);
+    const response = await fetch(modelUrl, { signal: AbortSignal.timeout(2e4) });
+    if (!response.ok) throw new Error(`Interior model HTTP ${response.status}`);
+    const panoramas = discoverInteriorPanoramas(await response.json(), page.href);
+    const images = [];
+    for (const panorama of panoramas) {
+      const id = createHash2("sha256").update("cubemap-v1:" + panorama.urls.join("|")).digest("hex").slice(0, 24);
+      const folder = `interior-360/${id}`;
+      const directory = path.join(cacheDir, folder);
+      const ready = await fs.access(path.join(directory, "complete")).then(() => true, () => false);
+      if (!ready) {
+        const buffers = await Promise.all(panorama.urls.map(async (url) => {
+          const r = await fetch(url, { signal: AbortSignal.timeout(2e4) });
+          if (!r.ok || !r.headers.get("content-type")?.startsWith("image/")) throw new Error(`Interior face HTTP ${r.status}`);
+          return Buffer.from(await r.arrayBuffer());
+        }));
+        await fs.mkdir(directory, { recursive: true });
+        await renderInteriorPanorama(buffers, async (frame, jpeg) => {
+          await fs.writeFile(path.join(directory, `frame-${String(frame).padStart(3, "0")}.jpg`), jpeg);
+        });
+        await fs.writeFile(path.join(directory, "complete"), "36");
+      }
+      for (let frame = 1; frame <= 36; frame++) {
+        const filename = `frame-${String(frame).padStart(3, "0")}.jpg`;
+        const cachedUrl = `/cached-images-original/${folder}/${filename}`;
+        images.push({
+          url: new URL(cachedUrl, appOrigin).href,
+          cachedUrl,
+          filename,
+          type: "jpg",
+          mimeType: "image/jpeg",
+          width: 960,
+          height: 420,
+          source: "360-sequence-interior-rendered",
+          sequenceVerified: true,
+          sequenceColor: panorama.label,
+          sequenceFrame: frame,
+          sequenceCount: 36,
+          alt: `${panorama.label}, viewing angle ${(frame - 1) * 10} degrees`,
+          panoramaSourceUrls: panorama.urls
+        });
+      }
+    }
+    return images;
+  })();
+  pending.set(key, task);
+  try {
+    return await task;
+  } finally {
+    pending.delete(key);
+  }
+}
+
+// server/image-sequence-metadata.ts
+function imageSequenceSeedMetadata(seed) {
+  const { cachedUrl, dataUrl, thumbnailUrl, previewUrl, lqip, width, height, size, ...metadata } = seed;
+  return metadata;
+}
+
+// server/lexus-sequences.ts
+import { load } from "cheerio";
+function discoverLexusSequences(html, pageUrl) {
+  try {
+    if (!/(^|\.)lexus\.com$/i.test(new URL(pageUrl).hostname)) return [];
+  } catch {
+    return [];
+  }
+  const $ = load(html);
+  const result = /* @__PURE__ */ new Map();
+  const visited = /* @__PURE__ */ new Set();
+  $("img[src]").each((_index, image) => {
+    const src = $(image).attr("src") || "";
+    let seed;
+    try {
+      seed = new URL(src, pageUrl);
+    } catch {
+      return;
+    }
+    if (seed.protocol !== "https:" || seed.hostname !== "tmna.assetscs.toyota.com") return;
+    const match = seed.pathname.match(/^(.*\/visualizer[^/]*\/[^/]+\/exterior\/[^/]+\/)([^/]+)\/(large-)(\d+)\.(jpg|png|webp)$/i);
+    if (!match) return;
+    const wrapper = $(image).parents().toArray().find((node) => $(node).find('[role="radio"], input[type="radio"]').length > 0);
+    if (!wrapper || visited.has(wrapper)) return;
+    visited.add(wrapper);
+    const root = $(wrapper);
+    const colors = /* @__PURE__ */ new Map();
+    root.find('[role="radio"], input[type="radio"]').each((_i, radio) => {
+      const label = ($(radio).attr("aria-label") || $(radio).attr("data-color-name") || "").trim();
+      if (!label || label.length > 60) return;
+      const slug = label.toLowerCase().replace(/\s+/g, "-");
+      if (/^[a-z]+(?:-[a-z]+)*$/.test(slug)) colors.set(slug, label);
+    });
+    if (!colors.has(match[2]) || colors.size > 24) return;
+    const frames = /* @__PURE__ */ new Map();
+    root.find("img[src]").each((_i, img) => {
+      try {
+        const url = new URL($(img).attr("src"), pageUrl);
+        const frame = url.pathname.match(/\/large-(\d+)\.(?:jpg|png|webp)$/i);
+        if (url.origin !== seed.origin || !url.pathname.startsWith(match[1] + match[2] + "/") || !frame) return;
+        const n = Number(frame[1]);
+        if (n >= 1 && n <= 120) frames.set(n, url);
+      } catch {
+      }
+    });
+    if (frames.size < 2) return;
+    for (const [slug, color] of colors) {
+      for (const [frame, observedUrl] of frames) {
+        const url = new URL(observedUrl.href);
+        url.pathname = url.pathname.replace(match[1] + match[2] + "/", match[1] + slug + "/");
+        result.set(url.href, {
+          url: url.href,
+          filename: `${slug}-frame-${String(frame).padStart(3, "0")}.${match[5]}`,
+          type: match[5],
+          alt: `${color} 360 frame ${frame}`,
+          source: "360-sequence-color-candidate",
+          sequenceColor: color,
+          sequenceFrame: frame,
+          sequenceCount: Math.max(...frames.keys())
+        });
+      }
+    }
+  });
+  return [...result.values()].slice(0, 2880);
+}
+async function verifyLexusSequences(items, available) {
+  const candidates = [...new Map(items.filter((item) => item.source === "360-sequence-color-candidate").map((item) => [item.url, item])).values()];
+  if (!candidates.length) return items;
+  const verified = /* @__PURE__ */ new Map();
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, async () => {
+    while (cursor < candidates.length) {
+      const item = candidates[cursor++];
+      if (await available(item.url).catch(() => false)) {
+        verified.set(item.url, { ...item, source: "360-sequence-verified", sequenceVerified: true });
+      }
+    }
+  }));
+  const output = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (item.source === "360-sequence-color-candidate") continue;
+    output.set(item.url, verified.get(item.url) || item);
+  }
+  for (const [url, item] of verified) output.set(url, item);
+  return [...output.values()];
+}
+
 // server/kaltura.ts
 import * as cheerio from "cheerio";
 var extractKalturaVideosFromHtml = (html, sourceUrl) => {
@@ -87,7 +1198,7 @@ function validateOpenChromeCapture(raw, target) {
 }
 
 // server.ts
-import path3 from "path";
+import path4 from "path";
 import rateLimit from "express-rate-limit";
 import axios from "axios";
 import * as cheerio2 from "cheerio";
@@ -104,7 +1215,7 @@ import { Client as FtpClient } from "basic-ftp";
 import { Readable } from "stream";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
-import fs2 from "fs";
+import fs3 from "fs";
 import fsp3 from "fs/promises";
 import os3 from "os";
 import https from "https";
@@ -236,16 +1347,16 @@ function setGlobalProgressManager(mgr) {
 
 // server/video-downloader-routes.ts
 import { spawn, execFile } from "node:child_process";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import fsp2 from "node:fs/promises";
 import os2 from "node:os";
-import path2 from "node:path";
+import path3 from "node:path";
 import crypto from "node:crypto";
 import { promisify } from "node:util";
 import archiver from "archiver";
 
 // src/lib/projectDownloadsPaths.ts
-import path from "path";
+import path2 from "path";
 import os from "os";
 import fsp from "fs/promises";
 
@@ -289,40 +1400,40 @@ var LEGACY_CREATIVE_ASSET_SUBFOLDERS = [
 ];
 var LEGACY_IMAGE_SUBFOLDERS = ["Originals", "Thumbnails"];
 var DISPOSABLE_FOLDER_ENTRIES = /* @__PURE__ */ new Set([".DS_Store"]);
-var resolveDownloadsRoot = () => String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path.join(os.homedir(), "Downloads");
+var resolveDownloadsRoot = () => String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path2.join(os.homedir(), "Downloads");
 var resolveCreativeAssetsRoot = (sourcePageUrl, options = {}) => {
   const folderName = buildCreativeAssetsFolderName(String(sourcePageUrl || "").trim());
-  return path.join(resolveDownloadsRoot(), folderName);
+  return path2.join(resolveDownloadsRoot(), folderName);
 };
 var resolveCreativeAssetsDir = (sourcePageUrl, subfolder, options = {}) => {
   const root = resolveCreativeAssetsRoot(sourcePageUrl, options);
-  return subfolder ? path.join(root, subfolder) : root;
+  return subfolder ? path2.join(root, subfolder) : root;
 };
 var resolvePlatformVideoAssetsDir = (platform) => {
-  const root = path.join(resolveDownloadsRoot(), buildPlatformCreativeAssetsFolderName(platform));
-  return path.join(root, VIDEO_ASSET_SUBFOLDER);
+  const root = path2.join(resolveDownloadsRoot(), buildPlatformCreativeAssetsFolderName(platform));
+  return path2.join(root, VIDEO_ASSET_SUBFOLDER);
 };
 var removeDirectoryWhenEmpty = async (directory) => {
   const entries = await fsp.readdir(directory).catch(() => null);
   if (!entries) return;
   for (const entry of entries) {
     if (DISPOSABLE_FOLDER_ENTRIES.has(entry)) {
-      await fsp.unlink(path.join(directory, entry)).catch(() => void 0);
+      await fsp.unlink(path2.join(directory, entry)).catch(() => void 0);
     }
   }
   await fsp.rmdir(directory).catch(() => void 0);
 };
 var removeEmptyCreativeAssetFolders = async (sourcePageUrl) => {
   const root = resolveCreativeAssetsRoot(sourcePageUrl);
-  const imagesDir = path.join(root, "Images");
+  const imagesDir = path2.join(root, "Images");
   for (const subfolder of LEGACY_IMAGE_SUBFOLDERS) {
-    await removeDirectoryWhenEmpty(path.join(imagesDir, subfolder));
+    await removeDirectoryWhenEmpty(path2.join(imagesDir, subfolder));
   }
   for (const subfolder of LEGACY_CREATIVE_ASSET_SUBFOLDERS) {
-    await removeDirectoryWhenEmpty(path.join(root, subfolder));
+    await removeDirectoryWhenEmpty(path2.join(root, subfolder));
   }
   for (const subfolder of CREATIVE_ASSET_SUBFOLDERS) {
-    await removeDirectoryWhenEmpty(path.join(root, subfolder));
+    await removeDirectoryWhenEmpty(path2.join(root, subfolder));
   }
   await removeDirectoryWhenEmpty(root);
 };
@@ -360,9 +1471,9 @@ var retryLayersForFailure = (kind) => {
 var execFileAsync = promisify(execFile);
 var writeLog = async (jobId, data) => {
   try {
-    const logsDir = path2.join(os2.tmpdir(), "creative-asset-extractor", "video-downloader-logs");
+    const logsDir = path3.join(os2.tmpdir(), "creative-asset-extractor", "video-downloader-logs");
     await fsp2.mkdir(logsDir, { recursive: true });
-    const logFile = path2.join(logsDir, `${jobId || "unknown"}-${Date.now()}.log`);
+    const logFile = path3.join(logsDir, `${jobId || "unknown"}-${Date.now()}.log`);
     const entry = {
       ...data,
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
@@ -425,9 +1536,9 @@ var toDisplayPath = (filePath) => {
   return filePath.startsWith(home) ? `~${filePath.slice(home.length)}` : filePath;
 };
 var isPathInside = (candidate, root) => {
-  const resolvedCandidate = path2.resolve(candidate);
-  const resolvedRoot = path2.resolve(root);
-  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path2.sep}`);
+  const resolvedCandidate = path3.resolve(candidate);
+  const resolvedRoot = path3.resolve(root);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path3.sep}`);
 };
 var detectDownloaderPlatform = (rawUrl) => {
   try {
@@ -495,14 +1606,14 @@ var validateDownloaderUrl = (rawUrl, validateUrl) => {
 var resolveTool = (options, name) => {
   const fileName = binaryName(name);
   const candidates = [
-    path2.join(options.resourcesPath || "", "bin", fileName),
-    path2.join(options.appRoot || "", "vendor", "bin-pack", fileName),
-    path2.join(options.resourcesPath || "", "vendor", "bin-pack", fileName),
-    path2.join(process.cwd(), "vendor", "bin-pack", fileName),
-    path2.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin", fileName),
-    path2.join(process.cwd(), "runtime-bin", fileName)
+    path3.join(options.resourcesPath || "", "bin", fileName),
+    path3.join(options.appRoot || "", "vendor", "bin-pack", fileName),
+    path3.join(options.resourcesPath || "", "vendor", "bin-pack", fileName),
+    path3.join(process.cwd(), "vendor", "bin-pack", fileName),
+    path3.join(os2.homedir(), ".creative-asset-extractor", "runtime-bin", fileName),
+    path3.join(process.cwd(), "runtime-bin", fileName)
   ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) || "";
+  return candidates.find((candidate) => fs2.existsSync(candidate)) || "";
 };
 var ensureRuntimeYtDlp = async (options) => {
   const toolPath = resolveTool(options, "yt-dlp");
@@ -512,16 +1623,16 @@ var ensureRuntimeYtDlp = async (options) => {
 };
 var resolveYouTubePotPaths = (options) => {
   const roots = [
-    path2.join(options.resourcesPath || "", "bin", "youtube-pot"),
-    path2.join(options.appRoot || "", "vendor", "youtube-pot-pack"),
-    path2.join(options.resourcesPath || "", "vendor", "youtube-pot-pack"),
-    path2.join(process.cwd(), "vendor", "youtube-pot-pack")
+    path3.join(options.resourcesPath || "", "bin", "youtube-pot"),
+    path3.join(options.appRoot || "", "vendor", "youtube-pot-pack"),
+    path3.join(options.resourcesPath || "", "vendor", "youtube-pot-pack"),
+    path3.join(process.cwd(), "vendor", "youtube-pot-pack")
   ].filter(Boolean);
   for (const root of roots) {
-    const providerEntry = path2.join(root, "provider", "build", "main.js");
-    const pluginDir = path2.join(root, "plugins");
-    if (fs.existsSync(providerEntry) && fs.existsSync(pluginDir)) {
-      return { providerEntry, providerRoot: path2.dirname(path2.dirname(providerEntry)), pluginDir };
+    const providerEntry = path3.join(root, "provider", "build", "main.js");
+    const pluginDir = path3.join(root, "plugins");
+    if (fs2.existsSync(providerEntry) && fs2.existsSync(pluginDir)) {
+      return { providerEntry, providerRoot: path3.dirname(path3.dirname(providerEntry)), pluginDir };
     }
   }
   return null;
@@ -567,7 +1678,7 @@ var commonYtDlpArgs = (options, platform) => {
     "3",
     "--user-agent",
     USER_AGENT,
-    ...ffmpegPath2 ? ["--ffmpeg-location", path2.dirname(ffmpegPath2)] : [],
+    ...ffmpegPath2 ? ["--ffmpeg-location", path3.dirname(ffmpegPath2)] : [],
     ...platformHeaders(platform)
   ];
 };
@@ -576,17 +1687,17 @@ var aria2cAvailable = (options) => {
   return aria2Path2 ? aria2Path2 : "";
 };
 var toolPathEnv = (options) => {
-  const dirs = ["ffmpeg", "ffprobe", "yt-dlp", "aria2c", "deno"].map((tool) => resolveTool(options, tool)).filter(Boolean).map((toolPath) => path2.dirname(toolPath));
+  const dirs = ["ffmpeg", "ffprobe", "yt-dlp", "aria2c", "deno"].map((tool) => resolveTool(options, tool)).filter(Boolean).map((toolPath) => path3.dirname(toolPath));
   const commonToolDirs = process.platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin"];
-  return Array.from(/* @__PURE__ */ new Set([...dirs, ...commonToolDirs])).join(path2.delimiter);
+  return Array.from(/* @__PURE__ */ new Set([...dirs, ...commonToolDirs])).join(path3.delimiter);
 };
 var normalizeCookiesFilePath = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const expanded = raw.startsWith("~/") ? path2.join(os2.homedir(), raw.slice(2)) : raw;
+  const expanded = raw.startsWith("~/") ? path3.join(os2.homedir(), raw.slice(2)) : raw;
   try {
-    if (!fs.existsSync(expanded)) return "";
-    if (!fs.statSync(expanded).isFile()) return "";
+    if (!fs2.existsSync(expanded)) return "";
+    if (!fs2.statSync(expanded).isFile()) return "";
     return expanded;
   } catch {
     return "";
@@ -1096,13 +2207,13 @@ var ensureQuickTimeMp4 = async (options, inputPath, jobId, fast4k = false) => {
     return inputPath;
   }
   const outputPath = /\.mp4$/i.test(inputPath) ? inputPath : inputPath.replace(/\.[^.]+$/, "") + ".mp4";
-  const tempOutput = path2.join(path2.dirname(outputPath), `.${path2.basename(outputPath, path2.extname(outputPath))}.${crypto.randomUUID()}.mp4`);
+  const tempOutput = path3.join(path3.dirname(outputPath), `.${path3.basename(outputPath, path3.extname(outputPath))}.${crypto.randomUUID()}.mp4`);
   const encodeStart = Date.now();
   const durationSeconds = Number(probe?.format?.duration || 0);
   await encodeQuickTimeMp4(ffmpegPath2, inputPath, tempOutput, durationSeconds, jobId, fast4k);
   void writeLog(jobId, { event: "qt_encode", encode_ms: Date.now() - encodeStart });
   await replaceFile(tempOutput, outputPath);
-  if (path2.resolve(inputPath) !== path2.resolve(outputPath)) await fsp2.rm(inputPath, { force: true }).catch(() => void 0);
+  if (path3.resolve(inputPath) !== path3.resolve(outputPath)) await fsp2.rm(inputPath, { force: true }).catch(() => void 0);
   return outputPath;
 };
 var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
@@ -1113,7 +2224,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
   const timestamp = new Date(job.createdAt).toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
   await fsp2.mkdir(platformDir, { recursive: true });
   await fsp2.mkdir(options.tempDir, { recursive: true });
-  const outputTemplate = path2.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
+  const outputTemplate = path3.join(platformDir, `${timestamp}_${job.platform}_${job.quality}_%(title).140B [%(id)s].%(ext)s`);
   const ffmpegPath2 = resolveTool(options, "ffmpeg");
   const aria2Path2 = aria2cAvailable(options);
   const hasAria2 = extraArgs.includes("--no-aria2") || job.platform === "youtube" ? false : Boolean(aria2Path2);
@@ -1181,7 +2292,7 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
         TMP: options.tempDir,
         TEMP: options.tempDir,
         ELECTRON_RUN_AS_NODE: "1",
-        PATH: extraPath ? `${extraPath}${path2.delimiter}${process.env.PATH || ""}` : process.env.PATH
+        PATH: extraPath ? `${extraPath}${path3.delimiter}${process.env.PATH || ""}` : process.env.PATH
       },
       stdio: ["ignore", "pipe", "pipe"],
       shell: false
@@ -1279,11 +2390,11 @@ var runDownloadAttempt = async (options, job, url, extraArgs = []) => {
         reject(Object.assign(new Error(stderr || stdout || `yt-dlp exited with ${code}`), { stderr, stdout }));
         return;
       }
-      if (!filePath || !fs.existsSync(filePath)) {
+      if (!filePath || !fs2.existsSync(filePath)) {
         const files = await listFilesRecursive(platformDir).catch(() => []);
         filePath = files.sort((a, b) => b.modifiedAt - a.modifiedAt)[0]?.path || "";
       }
-      if (!filePath || !fs.existsSync(filePath)) {
+      if (!filePath || !fs2.existsSync(filePath)) {
         reject(new Error("Download finished but no output file was found."));
         return;
       }
@@ -1496,7 +2607,7 @@ var openLocalPath = async (filePath) => {
 var revealLocalPath = async (filePath) => {
   if (process.platform === "darwin") return execFileAsync("open", ["-R", filePath]);
   if (process.platform === "win32") return execFileAsync("explorer.exe", ["/select,", filePath]);
-  return openLocalPath(path2.dirname(filePath));
+  return openLocalPath(path3.dirname(filePath));
 };
 var listFilesRecursive = async (root) => {
   const output = [];
@@ -1504,7 +2615,7 @@ var listFilesRecursive = async (root) => {
     const entries = await fsp2.readdir(directory, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
-      const fullPath = path2.join(directory, entry.name);
+      const fullPath = path3.join(directory, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
         continue;
@@ -1514,13 +2625,13 @@ var listFilesRecursive = async (root) => {
       if (/\.zip$/i.test(entry.name)) continue;
       const stat = await fsp2.stat(fullPath).catch(() => null);
       if (!stat) continue;
-      const relativePath = path2.relative(path2.join(os2.homedir(), "Downloads"), fullPath);
+      const relativePath = path3.relative(path3.join(os2.homedir(), "Downloads"), fullPath);
       const metadata = await readSidecar(fullPath);
       output.push({
         name: entry.name,
-        title: metadata.title || path2.basename(entry.name, path2.extname(entry.name)),
+        title: metadata.title || path3.basename(entry.name, path3.extname(entry.name)),
         thumbnail: metadata.thumbnail || "",
-        platform: metadata.platform || path2.basename(path2.dirname(root)).replace(/_CreativeAssets$/i, ""),
+        platform: metadata.platform || path3.basename(path3.dirname(root)).replace(/_CreativeAssets$/i, ""),
         status: metadata.status || "completed",
         size: stat.size,
         modifiedAt: stat.mtimeMs,
@@ -1548,14 +2659,14 @@ var listDownloaderFiles = async () => {
   output.push(...await listCompletedJobFiles());
   const seen = /* @__PURE__ */ new Set();
   return output.filter((item) => {
-    const key = path2.resolve(item.path);
+    const key = path3.resolve(item.path);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   }).sort((a, b) => b.modifiedAt - a.modifiedAt);
 };
 var listCompletedJobFiles = async () => {
-  const downloadsRoot = path2.join(os2.homedir(), "Downloads");
+  const downloadsRoot = path3.join(os2.homedir(), "Downloads");
   const output = [];
   for (const job of jobs.values()) {
     if (job.status !== "completed") continue;
@@ -1566,8 +2677,8 @@ var listCompletedJobFiles = async () => {
     if (!stat?.isFile()) continue;
     const metadata = await readSidecar(filePath);
     output.push({
-      name: path2.basename(filePath),
-      title: metadata.title || result.title || job.title || path2.basename(filePath, path2.extname(filePath)),
+      name: path3.basename(filePath),
+      title: metadata.title || result.title || job.title || path3.basename(filePath, path3.extname(filePath)),
       thumbnail: metadata.thumbnail || result.thumbnail || "",
       platform: metadata.platform || result.platform || job.platform,
       status: metadata.status || "completed",
@@ -1575,7 +2686,7 @@ var listCompletedJobFiles = async () => {
       modifiedAt: stat.mtimeMs,
       path: filePath,
       displayPath: metadata.displayPath || result.displayPath || toDisplayPath(filePath),
-      relativePath: path2.relative(downloadsRoot, filePath),
+      relativePath: path3.relative(downloadsRoot, filePath),
       quality: metadata.quality || result.quality || job.quality,
       zipPath: metadata.zipPath || "",
       zipDisplayPath: metadata.zipDisplayPath || "",
@@ -1588,11 +2699,11 @@ var listCompletedJobFiles = async () => {
 };
 var removeEmptyParents = async (directory, stopAt) => {
   let current = directory;
-  while (isPathInside(current, stopAt) && path2.resolve(current) !== path2.resolve(stopAt)) {
+  while (isPathInside(current, stopAt) && path3.resolve(current) !== path3.resolve(stopAt)) {
     const entries = await fsp2.readdir(current).catch(() => null);
     if (!entries || entries.length > 0) break;
     await fsp2.rmdir(current).catch(() => void 0);
-    current = path2.dirname(current);
+    current = path3.dirname(current);
   }
 };
 var removeDirectoryIfEmpty = async (directory) => {
@@ -1600,27 +2711,27 @@ var removeDirectoryIfEmpty = async (directory) => {
   if (!entries) return;
   for (const entry of entries) {
     if (entry === ".DS_Store") {
-      await fsp2.unlink(path2.join(directory, entry)).catch(() => void 0);
+      await fsp2.unlink(path3.join(directory, entry)).catch(() => void 0);
     }
   }
   await fsp2.rmdir(directory).catch(() => void 0);
 };
 var removePlatformDownloadFolder = async (platform) => {
   const videosDir = resolvePlatformVideoAssetsDir(platform);
-  const platformRoot = path2.dirname(videosDir);
+  const platformRoot = path3.dirname(videosDir);
   await fsp2.rm(platformRoot, { recursive: true, force: true });
 };
 var cleanupListedDownloadParents = async (item) => {
   if (item.saveToWebsiteAssets && item.sourcePageUrl) {
     const websiteVideosDir = resolveCreativeAssetsDir(item.sourcePageUrl, "Videos");
     const websiteRoot = resolveCreativeAssetsDir(item.sourcePageUrl);
-    await removeEmptyParents(path2.dirname(item.path), websiteVideosDir);
+    await removeEmptyParents(path3.dirname(item.path), websiteVideosDir);
     await removeEmptyParents(websiteVideosDir, websiteRoot);
     await removeDirectoryIfEmpty(websiteRoot);
     return;
   }
   const root = resolvePlatformVideoAssetsDir(item.platform);
-  await removeEmptyParents(path2.dirname(item.path), root);
+  await removeEmptyParents(path3.dirname(item.path), root);
 };
 var completeJob = async (options, job, downloaded) => {
   const initialPath = String(downloaded?.filePath || downloaded?.downloadPath || downloaded?.localPath || "");
@@ -1655,8 +2766,8 @@ var completeJob = async (options, job, downloaded) => {
   }
   updateJob(job, { progress: 98, message: "Finalizing file..." });
   const stat = await fsp2.stat(filePath);
-  const downloadsRoot = path2.join(os2.homedir(), "Downloads");
-  const title = downloaded?.title || job.title || path2.basename(filePath, path2.extname(filePath));
+  const downloadsRoot = path3.join(os2.homedir(), "Downloads");
+  const title = downloaded?.title || job.title || path3.basename(filePath, path3.extname(filePath));
   const metadata = {
     title,
     thumbnail: downloaded?.thumbnail || "",
@@ -1665,7 +2776,7 @@ var completeJob = async (options, job, downloaded) => {
     status: "completed",
     filePath,
     displayPath: downloaded?.displayPath || toDisplayPath(filePath),
-    relativePath: path2.relative(downloadsRoot, filePath),
+    relativePath: path3.relative(downloadsRoot, filePath),
     size: stat.size,
     completedAt: (/* @__PURE__ */ new Date()).toISOString(),
     sourceUrl: job.url,
@@ -1680,8 +2791,8 @@ var completeJob = async (options, job, downloaded) => {
       ok: true,
       filePath,
       displayPath: downloaded?.displayPath || toDisplayPath(filePath),
-      relativePath: path2.relative(downloadsRoot, filePath),
-      filename: path2.basename(filePath),
+      relativePath: path3.relative(downloadsRoot, filePath),
+      filename: path3.basename(filePath),
       size: stat.size,
       quality: job.quality,
       platform: job.platform,
@@ -2028,7 +3139,7 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       for (const item of items) {
         await fsp2.unlink(item.path).catch(() => void 0);
         await fsp2.unlink(sidecarPathFor(item.path)).catch(() => void 0);
-        if (item.zipPath && isPathInside(item.zipPath, path2.join(os2.homedir(), "Downloads"))) {
+        if (item.zipPath && isPathInside(item.zipPath, path3.join(os2.homedir(), "Downloads"))) {
           await fsp2.unlink(item.zipPath).catch(() => void 0);
         }
         await cleanupListedDownloadParents(item);
@@ -2043,8 +3154,8 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   });
   app2.post("/api/downloader/open", async (req, res) => {
     const relativePath = String(req.body?.path || "");
-    const downloadsRoot = path2.join(os2.homedir(), "Downloads");
-    const filePath = path2.resolve(downloadsRoot, relativePath);
+    const downloadsRoot = path3.join(os2.homedir(), "Downloads");
+    const filePath = path3.resolve(downloadsRoot, relativePath);
     if (!relativePath || !isPathInside(filePath, downloadsRoot)) {
       return res.status(400).json({ error: "Invalid download path." });
     }
@@ -2059,8 +3170,8 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   });
   app2.post("/api/downloader/reveal", async (req, res) => {
     const relativePath = String(req.body?.path || "");
-    const downloadsRoot = path2.join(os2.homedir(), "Downloads");
-    const filePath = path2.resolve(downloadsRoot, relativePath);
+    const downloadsRoot = path3.join(os2.homedir(), "Downloads");
+    const filePath = path3.resolve(downloadsRoot, relativePath);
     if (!relativePath || !isPathInside(filePath, downloadsRoot)) {
       return res.status(400).json({ error: "Invalid download path." });
     }
@@ -2075,16 +3186,16 @@ var registerVideoDownloaderRoutes = (app2, options) => {
   });
   app2.get("/api/downloader/file", async (req, res) => {
     const relativePath = String(req.query?.path || "");
-    const downloadsRoot = path2.join(os2.homedir(), "Downloads");
+    const downloadsRoot = path3.join(os2.homedir(), "Downloads");
     const matchingJob = Array.from(jobs.values()).find((job) => job.result?.relativePath === relativePath);
-    const filePath = matchingJob?.result?.filePath || path2.resolve(downloadsRoot, relativePath);
+    const filePath = matchingJob?.result?.filePath || path3.resolve(downloadsRoot, relativePath);
     if (!relativePath || !isPathInside(filePath, downloadsRoot)) {
       return res.status(400).json({ error: "Invalid download path." });
     }
     try {
       const stat = await fsp2.stat(filePath);
       if (!stat.isFile()) throw new Error("Not a file");
-      const downloadName = sanitizeFilenamePart(path2.basename(filePath));
+      const downloadName = sanitizeFilenamePart(path3.basename(filePath));
       const asciiName = downloadName.replace(/[^\x20-\x7e]/g, "-").replace(/["\\]/g, "-");
       res.setHeader(
         "Content-Disposition",
@@ -2092,7 +3203,7 @@ var registerVideoDownloaderRoutes = (app2, options) => {
       );
       res.setHeader("Content-Length", String(stat.size));
       res.setHeader("Cache-Control", "no-store, private");
-      return fs.createReadStream(filePath).pipe(res);
+      return fs2.createReadStream(filePath).pipe(res);
     } catch {
       return res.status(404).json({ error: "Downloaded file was not found." });
     }
@@ -2142,274 +3253,6 @@ function classifyWebsiteExtraction({
     challengeWaitMs: 9e3
   };
 }
-
-// src/lib/streamUrl.ts
-var htmlEntities = {
-  amp: "&",
-  quot: '"',
-  apos: "'",
-  lt: "<",
-  gt: ">"
-};
-var isLocalHost = (host) => host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1" || host.endsWith(".local");
-var decodeEscapedUrl = (value) => {
-  let next = String(value || "").trim();
-  next = next.replace(/^["'`]+|["'`]+$/g, "");
-  next = next.replace(/\\u0026/gi, "&").replace(/\\u003d/gi, "=").replace(/\\u002f/gi, "/");
-  next = next.replace(/\\\//g, "/").replace(/\\&/g, "&");
-  next = next.replace(/(\.(?:mp4|webm|mov|mkv|m3u8|mpd|m4a|mp3|aac|wav))&(?=[a-z0-9_.-]+=)/i, "$1?");
-  next = next.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
-    const key = String(entity).toLowerCase();
-    if (key.startsWith("#x")) return String.fromCharCode(parseInt(key.slice(2), 16));
-    if (key.startsWith("#")) return String.fromCharCode(parseInt(key.slice(1), 10));
-    return htmlEntities[key] || match;
-  });
-  for (let i = 0; i < 2; i += 1) {
-    try {
-      const decoded = decodeURIComponent(next);
-      if (decoded === next || !/^https?:|^\/|^\/\//i.test(decoded)) break;
-      next = decoded;
-    } catch {
-      break;
-    }
-  }
-  return next.trim().replace(/ /g, "%20");
-};
-var normalizeDuplicateQueryMarkers = (value) => {
-  const firstQuestion = value.indexOf("?");
-  if (firstQuestion === -1) return value;
-  return `${value.slice(0, firstQuestion + 1)}${value.slice(firstQuestion + 1).replace(/\?/g, "&")}`;
-};
-var normalizeYouTubeWatchUrlLite = (rawUrl) => {
-  try {
-    const parsed = new URL(rawUrl.includes("://") ? rawUrl : `https://${rawUrl}`);
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    if (host === "youtu.be") {
-      const id = parsed.pathname.replace(/^\/+/, "").split("/")[0];
-      return id ? `https://www.youtube.com/watch?v=${id}` : rawUrl;
-    }
-    if (host === "youtube.com" || host.endsWith(".youtube.com")) {
-      const videoId = parsed.searchParams.get("v");
-      if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
-      const embedMatch = parsed.pathname.match(/\/(?:embed|shorts|live)\/([^/?#]+)/);
-      if (embedMatch?.[1]) return `https://www.youtube.com/watch?v=${embedMatch[1]}`;
-    }
-    return rawUrl;
-  } catch {
-    return rawUrl;
-  }
-};
-var recoverYouTubeWatchFromMergeQuery = (watchPart, looseVideoId) => {
-  let watchUrl = String(watchPart || "").trim();
-  const videoId = String(looseVideoId || "").trim();
-  if (watchUrl && videoId && !watchUrl.includes("v=")) {
-    watchUrl = `${watchUrl}${watchUrl.includes("?") ? "&" : "?"}v=${videoId}`;
-  }
-  return normalizeYouTubeWatchUrlLite(watchUrl);
-};
-var rebuildYouTubeMergedStreamUrl = (rawUrl, baseUrl) => {
-  try {
-    const parsed = new URL(rawUrl, baseUrl || "http://127.0.0.1");
-    if (!/\/api\/youtube-merged-stream$/i.test(parsed.pathname)) return null;
-    const watchUrl = recoverYouTubeWatchFromMergeQuery(
-      parsed.searchParams.get("url") || "",
-      parsed.searchParams.get("v")
-    );
-    if (!/youtube\.com|youtu\.be/i.test(watchUrl)) return null;
-    const params = new URLSearchParams();
-    params.set("url", watchUrl);
-    params.set("quality", parsed.searchParams.get("quality") || "fhd");
-    const inline = parsed.searchParams.get("inline");
-    if (inline) params.set("inline", inline);
-    const filename = parsed.searchParams.get("filename");
-    if (filename) params.set("filename", filename);
-    const path4 = `/api/youtube-merged-stream?${params.toString()}`;
-    if (isLocalHost(parsed.hostname) || rawUrl.startsWith("/api/")) return path4;
-    return `${parsed.protocol}//${parsed.host}${path4}`;
-  } catch {
-    return null;
-  }
-};
-var sanitizeStreamUrl = (rawUrl, baseUrl) => {
-  const raw = String(rawUrl || "").trim();
-  if (/\/api\/youtube-merged-stream(?:\?|$)/i.test(raw)) {
-    const rebuilt = rebuildYouTubeMergedStreamUrl(raw, baseUrl);
-    if (rebuilt) return rebuilt;
-  }
-  let value = decodeEscapedUrl(rawUrl);
-  if (!value || /^(?:javascript|data|blob):/i.test(value)) return null;
-  value = value.replace(/^(https?:)\/{3,}/i, "$1//");
-  value = value.replace(/^(https?:\/\/)(https?:\/\/)+/i, "$2");
-  value = normalizeDuplicateQueryMarkers(value);
-  if (value.startsWith("//")) {
-    value = `https:${value}`;
-  } else if (/^www\./i.test(value) || /^[a-z0-9.-]+\.[a-z]{2,}(?:[/:?]|$)/i.test(value)) {
-    value = `https://${value}`;
-  }
-  try {
-    const parsed = new URL(value, baseUrl || void 0);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    if (/\/api\/youtube-merged-stream$/i.test(parsed.pathname)) {
-      const rebuilt = rebuildYouTubeMergedStreamUrl(parsed.href, baseUrl);
-      if (rebuilt) return rebuilt;
-    }
-    const nestedStreamUrl = parsed.searchParams.get("url");
-    if (!isLocalHost(parsed.hostname) && /\/api\/download$/i.test(parsed.pathname) && nestedStreamUrl && /googlevideo\.com|\/videoplayback(?:\?|\/|$)|\.(?:mp4|webm|mov|mkv|m3u8|mpd)(?:\?|$)/i.test(nestedStreamUrl)) {
-      let nestedValue = nestedStreamUrl;
-      try {
-        const nestedParsed = new URL(nestedValue);
-        parsed.searchParams.forEach((paramValue, key) => {
-          if (key !== "url" && !nestedParsed.searchParams.has(key)) {
-            nestedParsed.searchParams.append(key, paramValue);
-          }
-        });
-        nestedValue = nestedParsed.href;
-      } catch {
-      }
-      const unwrapped = sanitizeStreamUrl(nestedValue, baseUrl);
-      if (unwrapped) return unwrapped;
-    }
-    parsed.hash = "";
-    if (parsed.protocol === "http:" && !isLocalHost(parsed.hostname)) {
-      parsed.protocol = "https:";
-    }
-    return parsed.href;
-  } catch {
-    return null;
-  }
-};
-var isAppRelativeMediaPath = (value) => /^\/(?:api|converted-videos|converted-audio|cached-images|cached-fonts)\//i.test(String(value || "").trim());
-var isExpiredStreamUrl = (rawUrl, graceSeconds = 90, baseUrl) => {
-  const raw = String(rawUrl || "").trim();
-  if (!raw) return true;
-  let parsed;
-  try {
-    const fallbackBase = baseUrl || (typeof window !== "undefined" ? window.location.origin : void 0) || "http://127.0.0.1";
-    parsed = new URL(raw, fallbackBase);
-  } catch {
-    return isAppRelativeMediaPath(raw) ? false : true;
-  }
-  const nowSeconds = Math.floor(Date.now() / 1e3);
-  const keys = ["expire", "expires", "exp", "X-Amz-Date"];
-  for (const key of keys) {
-    const value = parsed.searchParams.get(key);
-    if (!value) continue;
-    if (key === "X-Amz-Date") {
-      const ttl = Number(parsed.searchParams.get("X-Amz-Expires") || 0);
-      const match = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
-      if (ttl > 0 && match) {
-        const [, y, mo, d, h, mi, s] = match;
-        const issued = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)) / 1e3;
-        return issued + ttl < nowSeconds + graceSeconds;
-      }
-      continue;
-    }
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) continue;
-    const seconds = numeric > 1e10 ? Math.floor(numeric / 1e3) : numeric;
-    if (seconds < nowSeconds + graceSeconds) return true;
-  }
-  return false;
-};
-var isLikelyHttpMediaUrl = (rawUrl) => /\.(mp4|webm|mov|mkv|m3u8|mpd|m4a|mp3|aac|wav)(?:\?|$)/i.test(rawUrl) || /googlevideo\.com\/videoplayback|video\.xx\.fbcdn\.net|vimeo\.com\/progressive_redirect|\/videoplayback\?/i.test(rawUrl);
-
-// src/lib/convertRasterImage.ts
-import { createRequire } from "node:module";
-var require2 = createRequire(import.meta.url);
-var sharpModule = null;
-var loadSharp = async () => {
-  if (sharpModule) return sharpModule;
-  try {
-    const mod = await import("sharp");
-    sharpModule = mod.default || mod;
-    return sharpModule;
-  } catch {
-    try {
-      sharpModule = require2("sharp");
-      return sharpModule.default || sharpModule;
-    } catch {
-      throw new Error("Image conversion backend is unavailable. Install sharp to enable WEBP/AVIF conversion.");
-    }
-  }
-};
-var isValidRasterOutputBuffer = (buffer, format) => {
-  if (!buffer || buffer.length < 12) return false;
-  if (format === "png") {
-    return buffer[0] === 137 && buffer[1] === 80 && buffer[2] === 78 && buffer[3] === 71;
-  }
-  return buffer[0] === 255 && buffer[1] === 216;
-};
-var detectRasterFormatFromBuffer = (buffer) => {
-  if (!buffer || buffer.length < 12) return "";
-  if (buffer[0] === 255 && buffer[1] === 216) return "jpg";
-  if (buffer.slice(0, 8).toString("ascii") === "\x89PNG\r\n\n") return "png";
-  if (buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") return "webp";
-  if (buffer.slice(4, 8).toString("ascii") === "ftyp") {
-    const brand = buffer.slice(8, 12).toString("ascii");
-    if (brand.startsWith("avif") || brand.startsWith("avis")) return "avif";
-  }
-  return "";
-};
-var supportedRasterConversionTargets = (sourceFormat) => {
-  const normalized = String(sourceFormat || "").toLowerCase().replace("jpeg", "jpg");
-  if (normalized === "webp" || normalized === "avif" || normalized === "svg") return ["png", "jpg"];
-  return [];
-};
-var looksLikeSvg = (buffer) => {
-  const head = buffer.slice(0, 512).toString("utf8").trimStart();
-  return head.startsWith("<svg") || head.startsWith("<?xml") || head.includes("<svg");
-};
-var numericSvgLength = (value) => {
-  const match = String(value || "").trim().match(/^([0-9]+(?:\.[0-9]+)?)/);
-  if (!match) return 0;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-};
-var prepareSvgForSharp = (buffer) => {
-  if (!looksLikeSvg(buffer)) return buffer;
-  let svg = buffer.toString("utf8").trim();
-  if (/<font\b/i.test(svg) && !/(<path\b|<rect\b|<circle\b|<ellipse\b|<line\b|<polyline\b|<polygon\b|<image\b|<text\b)/i.test(svg)) {
-    throw new Error("SVG font files cannot be rasterized as images. Download the original SVG instead.");
-  }
-  const tagMatch = svg.match(/<svg\b[^>]*>/i);
-  if (!tagMatch) return buffer;
-  let tag = tagMatch[0];
-  if (!/\sxmlns=/.test(tag)) {
-    tag = tag.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
-  }
-  const width = numericSvgLength(tag.match(/\swidth=["']([^"']+)["']/i)?.[1] || "");
-  const height = numericSvgLength(tag.match(/\sheight=["']([^"']+)["']/i)?.[1] || "");
-  const viewBoxMatch = tag.match(/\sviewBox=["']([^"']+)["']/i);
-  const viewBoxParts = (viewBoxMatch?.[1] || "").trim().split(/[\s,]+/).map(Number).filter((part) => Number.isFinite(part));
-  const viewBoxWidth = viewBoxParts.length === 4 && viewBoxParts[2] > 0 ? viewBoxParts[2] : 0;
-  const viewBoxHeight = viewBoxParts.length === 4 && viewBoxParts[3] > 0 ? viewBoxParts[3] : 0;
-  const finalWidth = Math.ceil(width || viewBoxWidth || 1024);
-  const finalHeight = Math.ceil(height || viewBoxHeight || 1024);
-  if (!width) tag = tag.replace(/<svg\b/i, `<svg width="${finalWidth}"`);
-  if (!height) tag = tag.replace(/<svg\b/i, `<svg height="${finalHeight}"`);
-  if (!viewBoxMatch) tag = tag.replace(/<svg\b/i, `<svg viewBox="0 0 ${finalWidth} ${finalHeight}"`);
-  svg = svg.replace(tagMatch[0], tag);
-  return Buffer.from(svg, "utf8");
-};
-var convertRasterImageBuffer = async (input, targetFormat) => {
-  if (!input?.length) throw new Error("Empty image buffer");
-  const sharp = await loadSharp();
-  const preparedInput = prepareSvgForSharp(input);
-  const image = sharp(preparedInput, { failOn: "error", unlimited: true, density: 144 }).rotate();
-  const metadata = await image.metadata();
-  if (!metadata.width || !metadata.height) {
-    throw new Error("Invalid image buffer for conversion");
-  }
-  const output = targetFormat === "jpg" ? await image.flatten({ background: "#ffffff" }).jpeg({ quality: 92, mozjpeg: true }).toBuffer() : await image.png({ compressionLevel: 9 }).toBuffer();
-  if (!isValidRasterOutputBuffer(output, targetFormat)) {
-    throw new Error(`${targetFormat.toUpperCase()} conversion produced invalid output`);
-  }
-  const detected = detectRasterFormatFromBuffer(output);
-  if (detected === "webp" || detected === "avif") {
-    throw new Error(`Conversion returned ${detected} bytes instead of ${targetFormat}`);
-  }
-  return output;
-};
 
 // src/lib/generateImageThumb.ts
 var THUMB_MAX_EDGE = 320;
@@ -2481,330 +3324,29 @@ var compressScreenshotDataUrlForSheet = async (dataUrl) => {
   return compressScreenshotBufferForSheet(Buffer.from(match[2], "base64"));
 };
 
-// src/lib/api.ts
-var trimTrailingSlash = (value) => value.replace(/\/+$/, "");
-var readRuntimeApiBase = () => {
-  const globalConfig = globalThis.__CREATIVE_EXTRACTOR_CONFIG__;
-  return typeof globalConfig?.apiBaseUrl === "string" ? globalConfig.apiBaseUrl : "";
-};
-var envApiBase = import.meta.env?.VITE_API_BASE_URL || "";
-var API_BASE_URL = trimTrailingSlash(readRuntimeApiBase() || envApiBase || "");
-
-// src/lib/fontAsset.ts
-var getFontConversionOutputs = (sourceFormat) => {
-  const source = String(sourceFormat || "").toLowerCase();
-  if (source === "woff2") return ["woff2", "ttf", "woff"];
-  if (source === "woff") return ["woff", "ttf"];
-  if (source === "ttf") return ["ttf", "woff"];
-  if (source === "otf") return ["otf", "ttf", "woff"];
-  return [];
-};
-var buildFontZipEntryName = (filenameBase, format, _familyFolder = "") => {
-  const safe = sanitizeFontFilenameBase(filenameBase).replace(/\s+/g, "-").replace(/-+/g, "-") || "font";
-  const ext = String(format || "ttf").toLowerCase();
-  return `fonts/${safe}.${ext}`;
-};
-var normalizeFontStyleKey = (style) => {
-  const raw = String(style || "").trim().toLowerCase();
-  if (!raw || raw === "normal") return "normal";
-  if (raw === "italic" || raw === "oblique") return "italic";
-  return raw;
-};
-var normalizeFontWeightKey = (weight) => {
-  const raw = String(weight || "").trim().toLowerCase();
-  if (!raw || raw === "normal" || raw === "regular") return "400";
-  if (/^\d+$/.test(raw)) return String(Math.min(900, Math.max(1, Number(raw))));
-  if (raw === "bold" || raw === "bolder") return "700";
-  if (raw === "lighter") return "300";
-  return raw;
-};
-var WEIGHT_SUFFIX_TO_KEY = {
-  thin: "100",
-  extralight: "200",
-  light: "300",
-  regular: "400",
-  book: "400",
-  medium: "500",
-  semibold: "600",
-  bold: "700",
-  extrabold: "800",
-  black: "900",
-  condbold: "700"
-};
-var resolveFontIdentityFields = (font) => {
-  let family = sanitizeFontFilenameBase(
-    String(font?.family || font?.title || font?.name || "").replace(/^["']+|["']+$/g, "").trim()
-  );
-  let weight = font?.weight;
-  let style = font?.style;
-  const hyphenated = family.match(
-    /^(.+?)[- ](Thin|ExtraLight|Light|Regular|Book|Medium|SemiBold|Bold|ExtraBold|Black|CondBold)(Italic)?$/i
-  );
-  if (hyphenated) {
-    family = sanitizeFontFilenameBase(hyphenated[1].replace(/([a-z0-9])([A-Z])/g, "$1 $2"));
-    const suffixKey = hyphenated[2].toLowerCase().replace(/\s+/g, "");
-    const mapped = WEIGHT_SUFFIX_TO_KEY[suffixKey];
-    if (mapped && (!weight || String(weight).toLowerCase() === "normal" || String(weight) === "400")) {
-      weight = mapped;
-    }
-    if (hyphenated[3]) style = style || "italic";
-  }
-  return { family, weight, style };
-};
-var getFontLogicalKey = (font) => {
-  const { family, weight, style } = resolveFontIdentityFields(font);
-  if (!family || isJunkFontLabel(family)) return "";
-  return `${family}|${normalizeFontWeightKey(weight)}|${normalizeFontStyleKey(style)}`;
-};
-var scoreFontSubsetUrl = (url) => {
-  const lower = String(url || "").toLowerCase();
-  let score = 0;
-  if (/latin-ext|latn-ext/i.test(lower)) score += 8;
-  else if (/latin|latn/i.test(lower)) score += 12;
-  if (/fonts\.gstatic\.com/i.test(lower)) score += 25;
-  if (/fonts\.googleapis\.com/i.test(lower)) score += 5;
-  if (/vietnamese|vi_/i.test(lower)) score -= 10;
-  if (/cyrillic|cy_/i.test(lower)) score -= 8;
-  if (/greek|greek-ext|el_/i.test(lower)) score -= 6;
-  const subsetMatch = /[_-]s(\d)w/i.exec(lower) || /(\d)wH8/i.exec(lower);
-  if (subsetMatch) score += Number(subsetMatch[1]) / 10;
-  return score;
-};
-var scoreFontRecord = (font) => {
-  let score = 0;
-  const unicodeRange = String(font?.unicodeRange || "").toUpperCase();
-  if (/U\+0000-00FF|U\+0020-007E|U\+0000-024F/.test(unicodeRange)) score += 80;
-  else if (/U\+0100-02|LATIN/.test(unicodeRange)) score += 50;
-  if (/U\+0400|U\+0460|U\+1C80|CYRILLIC/.test(unicodeRange)) score -= 35;
-  if (/U\+0370|GREEK/.test(unicodeRange)) score -= 25;
-  const format = resolveFontSourceFormat(font);
-  if (format === "woff2") score += 30;
-  else if (format === "woff") score += 20;
-  else if (format === "ttf" || format === "otf") score += 10;
-  const assetUrl = String(font?.url || font?.cachedUrl || "");
-  score += scoreFontSubsetUrl(assetUrl);
-  if (/fonts\.gstatic\.com/i.test(assetUrl) && /\.ttf(?:[?#]|$)/i.test(assetUrl)) score += 85;
-  if (/-ttf\.ttf(\?|$)/i.test(assetUrl)) score += 18;
-  else if (/-woff\.woff(\?|$)/i.test(assetUrl)) score += 12;
-  if (/\/fonts\//i.test(assetUrl) && (format === "ttf" || format === "woff")) score += 10;
-  if (font?.cachedUrl) score += 50;
-  if (String(font?.status || "").toLowerCase() === "downloaded") score += 40;
-  return score;
-};
-var isPreferredExtractedFontFormat = (font) => {
-  const format = resolveFontSourceFormat(font);
-  return format === "woff" || format === "woff2";
-};
-var fontDedupeFormatPriority = (font) => {
-  const format = resolveFontSourceFormat(font);
-  if (format === "woff") return 50;
-  if (format === "woff2") return 40;
-  return 0;
-};
-var compareFontDedupePreference = (a, b) => {
-  const formatDelta = fontDedupeFormatPriority(b) - fontDedupeFormatPriority(a);
-  if (formatDelta !== 0) return formatDelta;
-  return scoreFontRecord(b) - scoreFontRecord(a);
-};
-var getFontFileVariantKey = (font) => {
-  const candidate = String(font?.url || font?.cachedUrl || "").trim();
-  if (!candidate || candidate.startsWith("data:")) return "";
-  try {
-    const parsed = new URL(candidate);
-    const pathWithoutExt = parsed.pathname.replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
-    if (pathWithoutExt === parsed.pathname) return "";
-    return `${parsed.hostname.replace(/^www\./i, "").toLowerCase()}${decodeURIComponent(pathWithoutExt).toLowerCase()}`;
-  } catch {
-    const pathWithoutExt = candidate.split(/[?#]/)[0].replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "");
-    if (!pathWithoutExt || pathWithoutExt === candidate.split(/[?#]/)[0]) return "";
-    return pathWithoutExt.toLowerCase();
-  }
-};
-var preferSingleFontFormatPerFileStem = (fonts) => {
-  const groups = /* @__PURE__ */ new Map();
-  const passthrough = [];
-  for (const font of fonts) {
-    const fileKey = getFontFileVariantKey(font);
-    const logicalKey = getFontLogicalKey(font);
-    const key = fileKey && logicalKey ? `${fileKey}|${logicalKey}` : fileKey;
-    if (!key) {
-      passthrough.push(font);
-      continue;
-    }
-    const bucket = groups.get(key) || [];
-    bucket.push(font);
-    groups.set(key, bucket);
-  }
-  const preferred = Array.from(groups.values()).map((group) => {
-    const sorted = [...group].sort(compareFontDedupePreference);
-    const best = sorted[0];
-    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
-    return {
-      ...merged,
-      url: best.url,
-      format: best.format || merged.format,
-      cachedUrl: best.cachedUrl || merged.cachedUrl
-    };
-  });
-  return [...passthrough, ...preferred];
-};
-var dedupeFontsByLogicalKey = (fonts) => {
-  const groups = /* @__PURE__ */ new Map();
-  for (const font of preferSingleFontFormatPerFileStem(fonts.filter(isPreferredExtractedFontFormat))) {
-    if (!font?.url) continue;
-    const key = getFontLogicalKey(font);
-    if (!key) continue;
-    const bucket = groups.get(key) || [];
-    bucket.push(font);
-    groups.set(key, bucket);
-  }
-  const deduped = [];
-  for (const group of groups.values()) {
-    const sorted = [...group].sort(compareFontDedupePreference);
-    const best = sorted[0];
-    const merged = sorted.reduce((acc, current) => mergeFontRecords(acc, current), null) || best;
-    deduped.push({
-      ...merged,
-      url: best.url,
-      format: best.format || merged.format,
-      cachedUrl: best.cachedUrl || merged.cachedUrl
-    });
-  }
-  return deduped.sort((a, b) => {
-    const familyA = buildFontDisplayName(a) || a.family || "";
-    const familyB = buildFontDisplayName(b) || b.family || "";
-    return familyA.localeCompare(familyB);
-  });
-};
-var resolveFontSourceFormat = (font) => {
-  const raw = String(font?.format || "").toLowerCase().trim();
-  if (["woff", "woff2", "ttf", "otf", "eot", "svg"].includes(raw)) return raw;
-  const candidate = String(font?.url || font?.cachedUrl || "");
-  if (/\.woff2(\?|$)/i.test(candidate)) return "woff2";
-  if (/\.woff(\?|$)/i.test(candidate)) return "woff";
-  if (/\.ttf(\?|$)/i.test(candidate)) return "ttf";
-  if (/\.otf(\?|$)/i.test(candidate)) return "otf";
-  if (/\.eot(\?|$)/i.test(candidate)) return "eot";
-  if (/\.svg(\?|$)/i.test(candidate)) return "svg";
-  return raw || "unknown";
-};
-var isJunkFontLabel = (value) => {
-  const raw = String(value || "").trim();
-  const base = raw.toLowerCase();
-  if (!base) return true;
-  if (base === "unknown" || base === "font") return true;
-  if (base.length <= 2) return true;
-  if (/^font-\d+$/i.test(base)) return true;
-  if (/^[lda](?:-\d+)?$/i.test(base)) return true;
-  if (/^[0-9a-f]{8,}$/i.test(base)) return true;
-  if (/^[0-9a-f]{8,}(?:[-_.\s]+s(?:[-_.\s]*p)?)?$/i.test(base)) return true;
-  const compact = raw.replace(/[\s.-]+/g, "");
-  const hasFamilyWord = /(sans|serif|mono|display|text|pro|std|gothic|grotesk|rounded|condensed|compressed|slab|script|din|museo|avenir|helvetica|arial|roboto|poppins|montserrat|inter|source|open|nexon|shilia)/i.test(raw);
-  if (!hasFamilyWord && /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9_-]{12,}$/.test(compact) || !hasFamilyWord && /^(?=[a-z0-9_-]*\d)[a-z0-9_-]{18,}$/i.test(compact)) return true;
-  if (/^(?=[a-z0-9_-]*\d)[a-z0-9_-]{24,}$/i.test(base)) return true;
-  if (/^(?=[a-z0-9 ._-]*\d)[a-z0-9_-]{16,}(?:[ ._-]+[a-z0-9_-]{3,})+$/i.test(base)) return true;
-  return false;
-};
-var scoreFontFamilyLabel = (value) => {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return 0;
-  if (isJunkFontLabel(trimmed)) return 1;
-  if (/^https?:\/\//i.test(trimmed)) return 1;
-  if (/[._-][0-9a-f]{8,}$/i.test(trimmed)) return 2;
-  const words = trimmed.split(/\s+/).filter(Boolean).length;
-  return 10 + Math.min(words, 4) + Math.min(trimmed.length, 48);
-};
-var sanitizeFontFilenameBase = (value) => String(value || "").trim().replace(/^["']+|["']+$/g, "").replace(/\.(?:woff2?|ttf|otf|eot|svg)$/i, "").replace(/[/\\]+/g, "-").replace(/[^\w .-]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
-var prettifyFontFamilyLabel = (value) => {
-  const cleaned = sanitizeFontFilenameBase(value);
-  if (!cleaned) return "";
-  const compactSlug = /^[a-z0-9]+(?:[-_][a-z0-9]+)+$/;
-  if (!compactSlug.test(cleaned)) return cleaned;
-  return cleaned.split(/[-_]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
-};
-var FONT_WEIGHT_LABELS = {
-  100: "Thin",
-  200: "ExtraLight",
-  300: "Light",
-  400: "Regular",
-  500: "Medium",
-  600: "SemiBold",
-  700: "Bold",
-  800: "ExtraBold",
-  900: "Black"
-};
-var normalizeFontWeightLabel = (weight) => {
-  const raw = String(weight || "").trim().toLowerCase();
-  if (!raw || raw === "normal" || raw === "regular" || raw === "400") return "Regular";
-  if (/^\d+$/.test(raw)) {
-    const num = Number(raw);
-    return FONT_WEIGHT_LABELS[num] || "";
-  }
-  if (raw === "bold" || raw === "bolder") return "Bold";
-  if (raw === "lighter") return "Light";
-  return sanitizeFontFilenameBase(raw);
-};
-var buildFontDisplayName = (font) => {
-  const identity = resolveFontIdentityFields(font);
-  const resolvedFamily = prettifyFontFamilyLabel(sanitizeFontFilenameBase(String(identity.family || "").trim()));
-  const familyCandidates = [
-    String(font?.title || "").trim(),
-    String(font?.name || "").trim(),
-    String(font?.filename || "").trim()
-  ].map((value) => sanitizeFontFilenameBase(value.replace(/^["']+|["']+$/g, ""))).map(prettifyFontFamilyLabel).filter((value) => value && !isJunkFontLabel(value));
-  const family = resolvedFamily && !isJunkFontLabel(resolvedFamily) ? resolvedFamily : familyCandidates.sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || "";
-  if (!family) return "";
-  const weight = normalizeFontWeightLabel(identity.weight);
-  const style = String(identity.style || "").trim().toLowerCase();
-  const italic = style === "italic" || style === "oblique";
-  const suffixes = [weight, italic ? "Italic" : ""].filter(Boolean);
-  return suffixes.length ? `${family} ${suffixes.join(" ")}`.trim() : family;
-};
-var mergeFontRecords = (left, right) => {
-  if (!left) return right;
-  if (!right) return left;
-  const familyCandidates = [left.family, right.family, left.title, right.title, left.name, right.name, left.filename, right.filename];
-  const family = familyCandidates.map((value) => sanitizeFontFilenameBase(String(value || "").replace(/^["']+|["']+$/g, ""))).map(prettifyFontFamilyLabel).filter((value) => value && !isJunkFontLabel(value)).sort((a, b) => scoreFontFamilyLabel(b) - scoreFontFamilyLabel(a))[0] || left.family || right.family || "Font";
-  return {
-    ...left,
-    ...right,
-    family,
-    format: right.format || left.format,
-    cssSource: right.cssSource || left.cssSource,
-    source: right.source || left.source,
-    url: left.url || right.url,
-    weight: right.weight || left.weight,
-    style: right.style || left.style,
-    filename: right.filename || left.filename,
-    originalFilename: right.originalFilename || left.originalFilename,
-    name: right.name || left.name
-  };
-};
-var pickBestFontForUrl = (fonts, url) => fonts.filter((font) => String(font?.url || "") === url).reduce((best, current) => mergeFontRecords(best, current), null);
-
 // server.ts
 var require3 = createRequire2(import.meta.url);
 var getAppRoot = () => process.env.VDX_APP_ROOT || process.cwd();
-var insightsPageEvaluate = require3(path3.join(getAppRoot(), "scripts", "insights-page-evaluate.cjs"));
+var insightsPageEvaluate = require3(path4.join(getAppRoot(), "scripts", "insights-page-evaluate.cjs"));
 var execFileAsync2 = promisify2(execFile2);
 var clearMacQuarantine = async (filePath) => {
   if (process.platform !== "darwin" || !filePath) return;
   await execFileAsync2("/usr/bin/xattr", ["-d", "com.apple.quarantine", filePath]).catch(() => void 0);
 };
 var getResourcesPath = () => process.env.VDX_RESOURCES_PATH || getAppRoot();
-var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path3.join(os3.homedir(), ".creative-asset-extractor");
+var resolveAppDataDir = () => String(process.env.VDX_USER_DATA || "").trim() || path4.join(os3.homedir(), ".creative-asset-extractor");
 var resolveWritableTempDir = () => {
   const configured = String(process.env.VDX_TEMP_DIR || "").trim();
-  const resources = path3.resolve(getResourcesPath());
-  const appRoot = path3.resolve(getAppRoot());
+  const resources = path4.resolve(getResourcesPath());
+  const appRoot = path4.resolve(getAppRoot());
   const candidate = configured || os3.tmpdir();
-  const resolved = path3.resolve(candidate);
-  const isBundlePath = [resources, appRoot].some((bundle) => resolved === bundle || resolved.startsWith(`${bundle}${path3.sep}`));
-  return isBundlePath ? path3.join(resolveAppDataDir(), "tmp") : candidate;
+  const resolved = path4.resolve(candidate);
+  const isBundlePath = [resources, appRoot].some((bundle) => resolved === bundle || resolved.startsWith(`${bundle}${path4.sep}`));
+  return isBundlePath ? path4.join(resolveAppDataDir(), "tmp") : candidate;
 };
 var writableTempDir = resolveWritableTempDir();
 try {
-  fs2.mkdirSync(writableTempDir, { recursive: true });
+  fs3.mkdirSync(writableTempDir, { recursive: true });
   process.env.TMPDIR = writableTempDir;
   process.env.TMP = writableTempDir;
   process.env.TEMP = writableTempDir;
@@ -2813,46 +3355,46 @@ try {
 var getUnpackedModulePath = (...segments) => {
   const resources = process.env.VDX_RESOURCES_PATH;
   if (resources) {
-    const unpacked = path3.join(resources, "app.asar.unpacked", ...segments);
-    if (fs2.existsSync(unpacked)) return unpacked;
+    const unpacked = path4.join(resources, "app.asar.unpacked", ...segments);
+    if (fs3.existsSync(unpacked)) return unpacked;
   }
-  return path3.join(getAppRoot(), ...segments);
+  return path4.join(getAppRoot(), ...segments);
 };
 var resolveBundledBinPath = (binaryName2) => {
   const ext = process.platform === "win32" ? ".exe" : "";
   const fileName = `${binaryName2}${ext}`;
   const candidates = [
-    path3.join(getResourcesPath(), "bin", fileName),
-    path3.join(getAppRoot(), "vendor", "bin-pack", fileName)
+    path4.join(getResourcesPath(), "bin", fileName),
+    path4.join(getAppRoot(), "vendor", "bin-pack", fileName)
   ];
-  return candidates.find((candidate) => fs2.existsSync(candidate)) || "";
+  return candidates.find((candidate) => fs3.existsSync(candidate)) || "";
 };
 var resolveFfprobePath = (ffmpegBinaryPath = "") => {
   const bundled = resolveBundledBinPath("ffprobe");
   if (bundled) return bundled;
   try {
     const installer = require3("@ffprobe-installer/ffprobe");
-    if (installer?.path && fs2.existsSync(String(installer.path))) return String(installer.path);
+    if (installer?.path && fs3.existsSync(String(installer.path))) return String(installer.path);
   } catch {
   }
-  const ffmpegDir = ffmpegBinaryPath ? path3.dirname(ffmpegBinaryPath) : "";
+  const ffmpegDir = ffmpegBinaryPath ? path4.dirname(ffmpegBinaryPath) : "";
   if (ffmpegDir) {
-    const sibling = path3.join(ffmpegDir, process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
-    if (fs2.existsSync(sibling)) return sibling;
+    const sibling = path4.join(ffmpegDir, process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
+    if (fs3.existsSync(sibling)) return sibling;
   }
   return "";
 };
 var resolveFfmpegBinaryPath = () => {
   const bundled = resolveBundledBinPath("ffmpeg");
   if (bundled) return bundled;
-  if (ffmpegPath && fs2.existsSync(String(ffmpegPath))) return String(ffmpegPath);
+  if (ffmpegPath && fs3.existsSync(String(ffmpegPath))) return String(ffmpegPath);
   const unpacked = getUnpackedModulePath("node_modules", "ffmpeg-static", "ffmpeg");
-  if (fs2.existsSync(unpacked)) return unpacked;
+  if (fs3.existsSync(unpacked)) return unpacked;
   return ffmpegPath ? String(ffmpegPath) : "";
 };
 var isPythonScriptBinary = (filePath) => {
   try {
-    const head = fs2.readFileSync(filePath, { encoding: "utf8" }).slice(0, 128);
+    const head = fs3.readFileSync(filePath, { encoding: "utf8" }).slice(0, 128);
     return /^#!.*python/i.test(head);
   } catch {
     return false;
@@ -2860,25 +3402,25 @@ var isPythonScriptBinary = (filePath) => {
 };
 var isAcceptableYtDlpBinary = (filePath) => {
   const candidate = String(filePath || "").trim();
-  if (!candidate || !fs2.existsSync(candidate) || isPythonScriptBinary(candidate)) return false;
+  if (!candidate || !fs3.existsSync(candidate) || isPythonScriptBinary(candidate)) return false;
   return true;
 };
 var resolveYtDlpPath = () => {
   const candidates = [
     resolveBundledBinPath("yt-dlp"),
-    path3.join(getAppRoot(), "vendor", "bin-pack", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
-    path3.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp")
+    path4.join(getAppRoot(), "vendor", "bin-pack", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"),
+    path4.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp")
   ];
   return candidates.find((candidate) => isAcceptableYtDlpBinary(candidate)) || "";
 };
 var resolveAria2BinaryPath = () => {
   const candidates = [
     resolveBundledBinPath("aria2c"),
-    path3.join(getAppRoot(), "vendor", "bin-pack", process.platform === "win32" ? "aria2c.exe" : "aria2c"),
-    path3.join(getResourcesPath(), "vendor", "aria2", process.platform === "win32" ? "aria2c.exe" : "aria2c"),
-    path3.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin", process.platform === "win32" ? "aria2c.exe" : "aria2c")
+    path4.join(getAppRoot(), "vendor", "bin-pack", process.platform === "win32" ? "aria2c.exe" : "aria2c"),
+    path4.join(getResourcesPath(), "vendor", "aria2", process.platform === "win32" ? "aria2c.exe" : "aria2c"),
+    path4.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin", process.platform === "win32" ? "aria2c.exe" : "aria2c")
   ];
-  return candidates.find((candidate) => candidate && fs2.existsSync(candidate)) || "";
+  return candidates.find((candidate) => candidate && fs3.existsSync(candidate)) || "";
 };
 var resolvedFfmpegPath = resolveFfmpegBinaryPath();
 var resolvedFfprobePath = resolveFfprobePath(resolvedFfmpegPath);
@@ -2899,19 +3441,19 @@ var logYouTubeMerge = (stage, details = {}) => {
   );
 };
 var findBundledChromiumExecutable = () => {
-  const chromeCacheRoot = path3.join(getResourcesPath(), "chromium", "chrome");
-  if (!fs2.existsSync(chromeCacheRoot)) return "";
+  const chromeCacheRoot = path4.join(getResourcesPath(), "chromium", "chrome");
+  if (!fs3.existsSync(chromeCacheRoot)) return "";
   const variants = process.platform === "win32" ? [{ prefix: "win64-", segments: ["chrome-win64", "chrome.exe"] }] : process.platform === "linux" ? [{ prefix: "linux-", segments: ["chrome-linux64", "chrome"] }] : process.arch === "arm64" ? [{ prefix: "mac_arm-", segments: ["chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"] }] : [{ prefix: "mac-", segments: ["chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"] }];
   try {
-    const entries = fs2.readdirSync(chromeCacheRoot);
+    const entries = fs3.readdirSync(chromeCacheRoot);
     for (const variant of variants) {
       const versionDir = entries.find((name) => {
         if (variant.prefix === "mac-") return name.startsWith("mac-") && !name.startsWith("mac_arm-");
         return name.startsWith(variant.prefix);
       });
       if (!versionDir) continue;
-      const executable = path3.join(chromeCacheRoot, versionDir, ...variant.segments);
-      if (fs2.existsSync(executable)) return executable;
+      const executable = path4.join(chromeCacheRoot, versionDir, ...variant.segments);
+      if (fs3.existsSync(executable)) return executable;
     }
     return "";
   } catch {
@@ -2942,14 +3484,14 @@ var youtubedl = wrapYtDlpWithCookieFallback(
 );
 var stageRuntimeBinary = async (sourcePath, binaryName2) => {
   const source = String(sourcePath || "").trim();
-  if (!source || !fs2.existsSync(source)) return "";
+  if (!source || !fs3.existsSync(source)) return "";
   if (!source.includes(" ")) {
     await clearMacQuarantine(source);
     return source;
   }
-  const destDir = path3.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin");
+  const destDir = path4.join(os3.homedir(), ".creative-asset-extractor", "runtime-bin");
   const destName = process.platform === "win32" ? `${binaryName2}.exe` : binaryName2;
-  const dest = path3.join(destDir, destName);
+  const dest = path4.join(destDir, destName);
   await fsp3.mkdir(destDir, { recursive: true });
   try {
     const [srcStat, destStat] = await Promise.all([fsp3.stat(source), fsp3.stat(dest).catch(() => null)]);
@@ -3019,16 +3561,16 @@ var ensureWoff2Ready = async () => {
 var app = express();
 var DEFAULT_PORT = Number(process.env.PORT || 3e3);
 var activePort = DEFAULT_PORT;
-var appCacheRoot = path3.join(resolveAppDataDir(), "cache");
-var convertedVideoDir = path3.join(writableTempDir, "creative-asset-extractor-mp4");
-var convertedAudioDir = path3.join(writableTempDir, "creative-asset-extractor-audio");
-var generatedThumbnailDir = path3.join(appCacheRoot, "thumbnails");
-var generatedImageThumbDir = path3.join(appCacheRoot, "image-thumbs");
-var cachedImageDir = path3.join(appCacheRoot, "images");
-var cachedFontDir = path3.join(appCacheRoot, "fonts");
-var cachedImageOriginalDir = path3.join(appCacheRoot, "images-original");
-var cachedFontOriginalDir = path3.join(appCacheRoot, "fonts-original");
-var downloadsDir = String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path3.join(os3.homedir(), "Downloads");
+var appCacheRoot = path4.join(resolveAppDataDir(), "cache");
+var convertedVideoDir = path4.join(writableTempDir, "creative-asset-extractor-mp4");
+var convertedAudioDir = path4.join(writableTempDir, "creative-asset-extractor-audio");
+var generatedThumbnailDir = path4.join(appCacheRoot, "thumbnails");
+var generatedImageThumbDir = path4.join(appCacheRoot, "image-thumbs");
+var cachedImageDir = path4.join(appCacheRoot, "images");
+var cachedFontDir = path4.join(appCacheRoot, "fonts");
+var cachedImageOriginalDir = path4.join(appCacheRoot, "images-original");
+var cachedFontOriginalDir = path4.join(appCacheRoot, "fonts-original");
+var downloadsDir = String(process.env.CAE_DOWNLOADS_DIR || "").trim() || path4.join(os3.homedir(), "Downloads");
 var lastExtractedSourceUrl = "";
 var activeExtractProgress = null;
 var looksLikeStandaloneAssetSourceUrl = (value) => {
@@ -3084,47 +3626,47 @@ var resolveDownloadSaveDir = (kind = "default", sourcePageUrl) => {
 var resolveVideoDownloadTargetDir = (sourcePageUrl, saveToWebsiteAssets = false) => saveToWebsiteAssets ? resolveCreativeAssetsDir(String(sourcePageUrl || lastExtractedSourceUrl || "").trim(), "Videos") : resolveDownloadSaveDir("video", String(sourcePageUrl || lastExtractedSourceUrl || "").trim());
 var resolveDownloadsTargetDir = (sourcePageUrl) => resolveVideoDownloadTargetDir(String(sourcePageUrl || lastExtractedSourceUrl || "").trim());
 var assertPathInsideDownloads = (filePath) => {
-  const resolved = path3.resolve(filePath);
-  const root = path3.resolve(downloadsDir);
-  if (resolved === root || resolved.startsWith(root + path3.sep)) return resolved;
+  const resolved = path4.resolve(filePath);
+  const root = path4.resolve(downloadsDir);
+  if (resolved === root || resolved.startsWith(root + path4.sep)) return resolved;
   throw new Error("Download path resolved outside Downloads.");
 };
 var appDataDir = resolveAppDataDir();
-var feedbackInboxPath = path3.join(appDataDir, "feedback", "inbox.jsonl");
-var feedbackConfigPath = path3.join(appDataDir, "feedback-config.json");
-var activityLogPath = path3.join(appDataDir, "logs", "activity.jsonl");
-var feedbackScreenshotDir = path3.join(appDataDir, "feedback", "screenshots");
+var feedbackInboxPath = path4.join(appDataDir, "feedback", "inbox.jsonl");
+var feedbackConfigPath = path4.join(appDataDir, "feedback-config.json");
+var activityLogPath = path4.join(appDataDir, "logs", "activity.jsonl");
+var feedbackScreenshotDir = path4.join(appDataDir, "feedback", "screenshots");
 var MAX_ACTIVITY_LOG_ENTRIES = 100;
-var bookmarksDir = path3.join(appDataDir, "bookmarks");
-var bookmarksPath = path3.join(bookmarksDir, "bookmarks.json");
-var bookmarkBackupsDir = path3.join(bookmarksDir, "backups");
+var bookmarksDir = path4.join(appDataDir, "bookmarks");
+var bookmarksPath = path4.join(bookmarksDir, "bookmarks.json");
+var bookmarkBackupsDir = path4.join(bookmarksDir, "backups");
 var cleanupDisposableStorage = async () => {
-  const legacyDataDir = path3.join(os3.homedir(), ".creative-asset-extractor");
+  const legacyDataDir = path4.join(os3.homedir(), ".creative-asset-extractor");
   const disposableAppDataPaths = [
     appCacheRoot,
-    path3.join(appDataDir, "feedback"),
-    path3.join(appDataDir, "Cache"),
-    path3.join(appDataDir, "Code Cache"),
-    path3.join(appDataDir, "GPUCache"),
-    path3.join(appDataDir, "DawnCache"),
-    path3.join(appDataDir, "DawnGraphiteCache"),
-    path3.join(appDataDir, "DawnWebGPUCache"),
-    path3.join(appDataDir, "blob_storage"),
-    path3.join(appDataDir, "VideoDecodeStats"),
-    path3.join(appDataDir, "Shared Dictionary"),
-    path3.join(appDataDir, "shared_proto_db"),
-    path3.join(appDataDir, "Service Worker", "CacheStorage"),
+    path4.join(appDataDir, "feedback"),
+    path4.join(appDataDir, "Cache"),
+    path4.join(appDataDir, "Code Cache"),
+    path4.join(appDataDir, "GPUCache"),
+    path4.join(appDataDir, "DawnCache"),
+    path4.join(appDataDir, "DawnGraphiteCache"),
+    path4.join(appDataDir, "DawnWebGPUCache"),
+    path4.join(appDataDir, "blob_storage"),
+    path4.join(appDataDir, "VideoDecodeStats"),
+    path4.join(appDataDir, "Shared Dictionary"),
+    path4.join(appDataDir, "shared_proto_db"),
+    path4.join(appDataDir, "Service Worker", "CacheStorage"),
     bookmarkBackupsDir,
-    path3.join(legacyDataDir, "cache"),
-    path3.join(legacyDataDir, "feedback"),
-    path3.join(legacyDataDir, "logs"),
-    path3.join(legacyDataDir, "bookmarks", "backups")
+    path4.join(legacyDataDir, "cache"),
+    path4.join(legacyDataDir, "feedback"),
+    path4.join(legacyDataDir, "logs"),
+    path4.join(legacyDataDir, "bookmarks", "backups")
   ];
   const disposableTempPaths = [convertedVideoDir, convertedAudioDir];
   const tempEntries = await fsp3.readdir(writableTempDir).catch(() => []);
   for (const entry of tempEntries) {
     if (/^creative-asset-extractor-(?:browser-profile|mp4|audio)/i.test(entry)) {
-      disposableTempPaths.push(path3.join(writableTempDir, entry));
+      disposableTempPaths.push(path4.join(writableTempDir, entry));
     }
   }
   await Promise.all(
@@ -3200,13 +3742,13 @@ var applyProxyAuthToPage = async (page, rawProxyUrl = activeExtractionProxyUrl) 
 };
 var loadProjectEnvFile = () => {
   const candidates = [
-    path3.join(process.cwd(), ".env"),
-    ...process.env.VDX_APP_ROOT ? [path3.join(String(process.env.VDX_APP_ROOT), ".env")] : []
+    path4.join(process.cwd(), ".env"),
+    ...process.env.VDX_APP_ROOT ? [path4.join(String(process.env.VDX_APP_ROOT), ".env")] : []
   ];
   for (const envPath of candidates) {
     try {
-      if (!fs2.existsSync(envPath)) continue;
-      const text = fs2.readFileSync(envPath, "utf8");
+      if (!fs3.existsSync(envPath)) continue;
+      const text = fs3.readFileSync(envPath, "utf8");
       for (const line of text.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;
@@ -3289,7 +3831,7 @@ var resolveFeedbackTarget = async () => {
   return null;
 };
 var appendLocalFeedbackInbox = async (payload) => {
-  await fsp3.mkdir(path3.dirname(feedbackInboxPath), { recursive: true });
+  await fsp3.mkdir(path4.dirname(feedbackInboxPath), { recursive: true });
   const entry = {
     ...payload,
     destination: "frontendtech01@gmail.com"
@@ -3298,7 +3840,7 @@ var appendLocalFeedbackInbox = async (payload) => {
 `, "utf8");
 };
 var appendActivityLogEntry = async (entry) => {
-  await fsp3.mkdir(path3.dirname(activityLogPath), { recursive: true });
+  await fsp3.mkdir(path4.dirname(activityLogPath), { recursive: true });
   const sanitized = {
     ...entry,
     timestamp: String(entry.timestamp || (/* @__PURE__ */ new Date()).toISOString())
@@ -3382,9 +3924,9 @@ var probeFeedbackSheetWebhook = async (webhookUrl) => {
 var resolveFeedbackScreenshotPath = (screenshotUrl) => {
   const raw = String(screenshotUrl || "").trim();
   if (!raw || /^https?:\/\//i.test(raw)) return null;
-  if (raw.startsWith("~/")) return path3.join(os3.homedir(), raw.slice(2));
-  if (raw.startsWith("~")) return path3.join(os3.homedir(), raw.slice(1));
-  return path3.resolve(raw);
+  if (raw.startsWith("~/")) return path4.join(os3.homedir(), raw.slice(2));
+  if (raw.startsWith("~")) return path4.join(os3.homedir(), raw.slice(1));
+  return path4.resolve(raw);
 };
 var attachScreenshotToSheetPayload = async (sheetPayload, screenshotUrl, screenshotDataUrl = "") => {
   const dataUrl = String(screenshotDataUrl || "").trim();
@@ -3411,7 +3953,7 @@ var readScreenshotAttachmentForWebhook = async (screenshotUrl) => {
 };
 var persistFeedbackConfigPatch = async (patch) => {
   const existing = await readFeedbackConfigJson() || {};
-  await fsp3.mkdir(path3.dirname(feedbackConfigPath), { recursive: true });
+  await fsp3.mkdir(path4.dirname(feedbackConfigPath), { recursive: true });
   await fsp3.writeFile(
     feedbackConfigPath,
     `${JSON.stringify({ ...existing, ...patch }, null, 2)}
@@ -3582,13 +4124,13 @@ var getFeedbackPlatformMeta = () => {
 var toSafeUserFilePart = (value) => String(value || "user").replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "user";
 var toLocalVideoDownloadUrl = (req, filename, sourcePageUrl) => {
   const targetDir = resolveDownloadsTargetDir(sourcePageUrl);
-  const relative = path3.relative(downloadsDir, path3.join(targetDir, filename));
+  const relative = path4.relative(downloadsDir, path4.join(targetDir, filename));
   return toAbsoluteAppUrl(req, `/api/download-local-video?filename=${encodeURIComponent(relative)}`);
 };
 var fileExists = async (filePath) => {
   if (!filePath) return false;
   try {
-    await fsp3.access(filePath, fs2.constants.F_OK);
+    await fsp3.access(filePath, fs3.constants.F_OK);
     return true;
   } catch {
     return false;
@@ -3935,9 +4477,9 @@ app.get("/api/bookmarks/export.html", async (_req, res) => {
 });
 var resolvePackageMeta = async () => {
   const candidates = [
-    path3.join(process.cwd(), "package.json"),
-    path3.join(getAppRoot(), "package.json"),
-    ...process.env.VDX_APP_ROOT ? [path3.join(String(process.env.VDX_APP_ROOT), "package.json")] : []
+    path4.join(process.cwd(), "package.json"),
+    path4.join(getAppRoot(), "package.json"),
+    ...process.env.VDX_APP_ROOT ? [path4.join(String(process.env.VDX_APP_ROOT), "package.json")] : []
   ];
   for (const candidate of candidates) {
     try {
@@ -4161,7 +4703,7 @@ var buildChromeTabAssetCaptureScript = () => `
         .replace(/^\\/is\\/image\\/toyota\\/toyota\\/(?=jellies\\/)/i, '/')
         .replace(/\\/{2,}/g, '/');
       if (/\\/\\d{1,3}\\/\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) return 'sequence:' + path.toLowerCase();
-      if (/(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href) && /[-_]\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) {
+      if (/(?:visualizer|threesixty|360)/i.test(parsed.pathname) && /[-_]\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) {
         return 'sequence:' + path.toLowerCase();
       }
     } catch {
@@ -4404,7 +4946,7 @@ var buildChromeTabAssetCaptureScript = () => `
         pathCount <= 120 &&
         ((hinted >= 2 && hinted <= 120 && pathCount === hinted) || commonSequenceCounts.has(pathCount))
     );
-    const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href));
+    const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:visualizer|threesixty|360)/i.test(parsed.pathname));
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
     const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
     if (!count || count > 120 || frame > count) return [];
@@ -4715,6 +5257,7 @@ var buildChromeTabAssetCaptureScript = () => `
     ok: true,
     url: location.href,
     title: document.title || location.href,
+    sequenceHtml: /(^|\\.)lexus\\.com$/i.test(location.hostname) ? document.body.outerHTML : '',
     images,
 	    fonts: [
 	      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url), source: 'stylesheet-or-network' })),
@@ -4811,7 +5354,10 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     source: font?.source || "Network",
     originalFilename: filenameFromUrlPath2(String(font?.url || ""))
   })).concat(cssFonts);
-  const rawImageRows = (Array.isArray(raw?.images) ? raw.images : []).filter((image) => {
+  const rawImageRows = [
+    ...Array.isArray(raw?.images) ? raw.images : [],
+    ...discoverLexusSequences(String(raw?.sequenceHtml || ""), pageUrl)
+  ].filter((image) => {
     const url = String(image?.url || "").trim();
     return Boolean(url) && !isJunkImageUrl(url);
   });
@@ -4856,6 +5402,10 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
         width: Number(image.width || 0) || void 0,
         height: Number(image.height || 0) || void 0,
         source: String(image.source || "").trim() || source,
+        sequenceFrame: image.sequenceFrame,
+        sequenceCount: image.sequenceCount,
+        sequenceColor: image.sequenceColor,
+        sequenceVerified: image.sequenceVerified,
         status: DEFAULT_ASSET_STATUS
       };
     })
@@ -4918,9 +5468,9 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
     isDirect: true
   }] : collapseVimeoVideosForClient(standaloneBrowserVideos);
   return {
-    images: expandedImages,
+    images: mergeExtractionImages(await resolveDuplicateImageContent(expandedImages, async (image) => decodeDataImageBuffer(String(image.url)) || (await readAssetBufferFromCache(image.cachedUrl || image.url, "image"))?.buffer || null)),
     icons: [],
-    fonts,
+    fonts: mergeExtractionFonts(fonts),
     fontUsage: Array.from(fontUsageByKey.values()),
     videos,
     colors: Array.isArray(raw?.colors) ? raw.colors : [],
@@ -4935,7 +5485,7 @@ var normalizeBrowserSessionExtraction = async (raw, sourceUrl, source) => {
 var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWaitMs = 18e3, extractionProxy = "") => {
   const initialWaitMs = Math.min(18e4, Math.max(8e3, Number(userExploreWaitMs || 18e3)));
   const executablePath = resolvePuppeteerExecutablePath();
-  const userDataDir = path3.join(appDataDir, "chromium-profile");
+  const userDataDir = path4.join(appDataDir, "chromium-profile");
   await fsp3.mkdir(userDataDir, { recursive: true });
   let browser = null;
   let recoveryUserDataDir = "";
@@ -4961,7 +5511,7 @@ var extractAssetsFromControlledBrowserSession = async (targetUrl, userExploreWai
     } catch (error) {
       const message = String(error?.message || error || "");
       if (!/opening in existing browser session|profile.*(?:use|lock)|process singleton/i.test(message)) throw error;
-      recoveryUserDataDir = path3.join(appDataDir, "chromium-recovery-profiles", `${process.pid}-${crypto2.randomUUID()}`);
+      recoveryUserDataDir = path4.join(appDataDir, "chromium-recovery-profiles", `${process.pid}-${crypto2.randomUUID()}`);
       await fsp3.mkdir(recoveryUserDataDir, { recursive: true });
       browser = await launchControlledBrowser(recoveryUserDataDir);
     }
@@ -5365,8 +5915,8 @@ async function fillEmptyBrowserExtractionFromStatic(extracted, fallbackUrl) {
     try {
       const parsed = new URL2(fallbackUrl);
       const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-      const path4 = parsed.pathname.replace(/\/+$/, "") || "/";
-      const knownVimeoId = host === "brinsupri.com" && path4 === "/about-brinsupri" && parsed.hash === "#moa-video" ? "1183479863" : host === "brinsuprihcp.com" && path4 === "/how-brinsupri-works" ? "1097923504" : "";
+      const path5 = parsed.pathname.replace(/\/+$/, "") || "/";
+      const knownVimeoId = host === "brinsupri.com" && path5 === "/about-brinsupri" && parsed.hash === "#moa-video" ? "1183479863" : host === "brinsuprihcp.com" && path5 === "/how-brinsupri-works" ? "1097923504" : "";
       return knownVimeoId ? [{
         url: `https://vimeo.com/${knownVimeoId}`,
         sourceUrl: fallbackUrl,
@@ -5471,7 +6021,7 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
         "#ffffff",
         "#000000"
       ];
-      const krogerLiveCachePath = path3.join(appDataDir, "browser-cache", "kroger-full-live-assets.json");
+      const krogerLiveCachePath = path4.join(appDataDir, "browser-cache", "kroger-full-live-assets.json");
       const browserImageCount = (browserExtracted?.images || []).length + (browserExtracted?.icons || []).length;
       const browserWasLive = browserExtracted?.extractionMeta?.websitePreview !== "recovered";
       let cachedLiveAssets = null;
@@ -5483,15 +6033,15 @@ app.post("/api/browser-tabs/chrome/extract", async (req, res) => {
           colors: browserExtracted?.colors || [],
           savedAt: (/* @__PURE__ */ new Date()).toISOString()
         };
-        await fsp3.mkdir(path3.dirname(krogerLiveCachePath), { recursive: true });
+        await fsp3.mkdir(path4.dirname(krogerLiveCachePath), { recursive: true });
         await fsp3.writeFile(krogerLiveCachePath, JSON.stringify(cachedLiveAssets), "utf8").catch(() => void 0);
       } else {
         cachedLiveAssets = await fsp3.readFile(krogerLiveCachePath, "utf8").then((text) => JSON.parse(text)).catch(() => null);
         if (!cachedLiveAssets) {
           const bundledSnapshotCandidates = [
-            path3.join(String(process.env.VDX_RESOURCES_PATH || ""), "site-snapshots", "kroger-full-live-assets.json"),
-            path3.join(getAppRoot(), "vendor", "site-snapshots", "kroger-full-live-assets.json")
-          ].filter((candidate) => candidate && !candidate.startsWith(`${path3.sep}site-snapshots`));
+            path4.join(String(process.env.VDX_RESOURCES_PATH || ""), "site-snapshots", "kroger-full-live-assets.json"),
+            path4.join(getAppRoot(), "vendor", "site-snapshots", "kroger-full-live-assets.json")
+          ].filter((candidate) => candidate && !candidate.startsWith(`${path4.sep}site-snapshots`));
           for (const snapshotPath of bundledSnapshotCandidates) {
             cachedLiveAssets = await fsp3.readFile(snapshotPath, "utf8").then((text) => JSON.parse(text)).catch(() => null);
             if (cachedLiveAssets) break;
@@ -5656,7 +6206,7 @@ app.post("/api/feedback/screenshot", async (req, res) => {
     const sourcePageUrl = readSourcePageUrl(req);
     const screenshotDir = feedbackScreenshotDir;
     await fsp3.mkdir(screenshotDir, { recursive: true });
-    const filePath = path3.join(screenshotDir, safeName);
+    const filePath = path4.join(screenshotDir, safeName);
     await fsp3.writeFile(filePath, Buffer.from(compressed.screenshotBase64, "base64"));
     return res.json({
       ok: true,
@@ -5700,9 +6250,9 @@ ${logSummary}` : suggestions,
   const removeSubmittedScreenshot = async () => {
     const filePath = resolveFeedbackScreenshotPath(payload.screenshotUrl);
     if (!filePath) return;
-    const resolved = path3.resolve(filePath);
-    const screenshotRoot = path3.resolve(feedbackScreenshotDir);
-    if (resolved.startsWith(screenshotRoot + path3.sep)) {
+    const resolved = path4.resolve(filePath);
+    const screenshotRoot = path4.resolve(feedbackScreenshotDir);
+    if (resolved.startsWith(screenshotRoot + path4.sep)) {
       await fsp3.rm(resolved, { force: true }).catch(() => void 0);
     }
   };
@@ -5752,7 +6302,7 @@ app.post("/api/responsible-use-acknowledgement", async (req, res) => {
     const userName = getCurrentUserName();
     const safeUserName = toSafeUserFilePart(userName);
     const acknowledgedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const filePath = path3.join(appDataDir, `${safeUserName}-responsible-use.json`);
+    const filePath = path4.join(appDataDir, `${safeUserName}-responsible-use.json`);
     const payload = {
       userName,
       acknowledged: true,
@@ -5840,8 +6390,8 @@ var parseGithubReleasePayload = (data) => {
 };
 var readProjectReleaseNotes = async () => {
   const candidates = [
-    path3.join(getAppRoot(), "RELEASE_NOTES.md"),
-    path3.join(process.cwd(), "RELEASE_NOTES.md")
+    path4.join(getAppRoot(), "RELEASE_NOTES.md"),
+    path4.join(process.cwd(), "RELEASE_NOTES.md")
   ];
   for (const notesPath of candidates) {
     try {
@@ -5984,7 +6534,7 @@ app.get("/api/system-check", async (_req, res) => {
       ffprobe: { ready: ffprobeReady, path: resolvedFfprobePath ? String(resolvedFfprobePath) : "" },
       ytdlp: { ready: ytdlpReady, standalone: ytdlpStandalone, path: String(ytdlpPath || "") },
       aria2: { ready: aria2Ready, path: resolvedAria2Path ? String(resolvedAria2Path) : "" },
-      resourcesBin: path3.join(getResourcesPath(), "bin"),
+      resourcesBin: path4.join(getResourcesPath(), "bin"),
       chromium: {
         ready: Boolean(warmedPuppeteerBrowser?.connected),
         warming: Boolean(puppeteerWarmupInFlight),
@@ -6122,12 +6672,12 @@ var SYSTEM_CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  path3.join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
-  path3.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Google", "Chrome", "Application", "chrome.exe"),
-  path3.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
-  path3.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
-  path3.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Microsoft", "Edge", "Application", "msedge.exe"),
-  path3.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  path4.join(process.env.PROGRAMFILES || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path4.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path4.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
+  path4.join(process.env.PROGRAMFILES || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  path4.join(process.env["PROGRAMFILES(X86)"] || process.env["ProgramFiles(x86)"] || "", "Microsoft", "Edge", "Application", "msedge.exe"),
+  path4.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "Application", "msedge.exe"),
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
@@ -6143,7 +6693,7 @@ var resolvePuppeteerExecutablePath = () => {
   ];
   for (const candidate of candidates) {
     try {
-      if (candidate && fs2.existsSync(candidate)) return candidate;
+      if (candidate && fs3.existsSync(candidate)) return candidate;
     } catch {
     }
   }
@@ -6234,18 +6784,18 @@ var waitForPageContentSettle = async (page, options = {}) => {
       let lastPendingCount = Number.POSITIVE_INFINITY;
       let stableRounds = 0;
       while (Date.now() - started < timeoutMs) {
-        const pending = Array.from(document.images || []).filter((img) => {
+        const pending2 = Array.from(document.images || []).filter((img) => {
           if (!img) return false;
           if (img.complete && img.naturalWidth > 0) return false;
           const rect = img.getBoundingClientRect();
           const hasSource = Boolean(img.currentSrc || img.src || img.getAttribute("data-src") || img.getAttribute("srcset"));
           return hasSource && rect.width > 0 && rect.height > 0;
         }).length;
-        if (pending === 0) return;
-        if (pending === lastPendingCount) stableRounds += 1;
+        if (pending2 === 0) return;
+        if (pending2 === lastPendingCount) stableRounds += 1;
         else stableRounds = 0;
         if (stableRounds >= 2) return;
-        lastPendingCount = pending;
+        lastPendingCount = pending2;
         await delay(350);
       }
     };
@@ -6474,7 +7024,7 @@ var buildKnownBlockedSiteFallbackHtml = (siteUrl, readerText = "") => {
   try {
     const parsed = new URL2(siteUrl);
     const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (host === "kroger.com") {
       const origin2 = "https://www.kroger.com";
       const images2 = [
@@ -6525,7 +7075,7 @@ var buildKnownBlockedSiteFallbackHtml = (siteUrl, readerText = "") => {
       `${origin}/wp-content/themes/landslide/img/accent-headshot.png`,
       `${origin}/wp-content/uploads/2026/01/footer.jpg`
     ]);
-    if (/\/priorities(?:\/|$)/i.test(path4)) {
+    if (/\/priorities(?:\/|$)/i.test(path5)) {
       images.add(`${origin}/wp-content/uploads/2026/01/priorities.jpg`);
     }
     const readerAssets = extractAssetsFromRawText(readerText, siteUrl);
@@ -7296,11 +7846,11 @@ var isMalformedImageCandidateUrl = (url) => {
   if (/\.(?:mp4|webm|mov|m4v|mkv|m3u8|mpd)(?:[?#]|$)/i.test(lowered)) return true;
   try {
     const parsed = new URL2(raw);
-    const path4 = parsed.pathname.replace(/\/{2,}/g, "/");
+    const path5 = parsed.pathname.replace(/\/{2,}/g, "/");
     const hasImageType = Boolean(inferImageTypeFromUrl(raw));
-    const looksLikeImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path4) || /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
+    const looksLikeImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path5) || /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
     if (!hasImageType && !looksLikeImageService) return true;
-    if (!hasImageType && /\/\d{1,3}(?:&|$)/.test(path4)) return true;
+    if (!hasImageType && /\/\d{1,3}(?:&|$)/.test(path5)) return true;
     return false;
   } catch {
     return true;
@@ -7359,8 +7909,8 @@ var isToyotaVehicleExtractionTarget = (value) => {
   try {
     const parsed = new URL2(String(value || "").trim());
     const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
-    return host.endsWith("toyota.com") && /\/(?:espanol\/)?tacoma\/?$/i.test(path4);
+    const path5 = parsed.pathname.toLowerCase();
+    return host.endsWith("toyota.com") && /\/(?:espanol\/)?tacoma\/?$/i.test(path5);
   } catch {
     return /toyota\.com\/(?:espanol\/)?tacoma\/?$/i.test(String(value || "").trim());
   }
@@ -7403,7 +7953,7 @@ var expandImageSequenceUrl = (rawUrl, baseUrl, hintedCount = 0) => {
     numericLeafMatch && pathCount >= 2 && pathCount <= MAX_IMAGE_SEQUENCE_FRAMES && (hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES && pathCount === hintedCount || commonSequenceCounts.has(pathCount))
   );
   const hasPrefixedFrameName = Boolean(
-    prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(absolute)
+    prefixedLeafMatch && /(?:visualizer|threesixty|360)/i.test(parsed.pathname)
   );
   if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
   const count = hasExplicitFrameCountPath ? pathCount : hintedCount >= 2 && hintedCount <= MAX_IMAGE_SEQUENCE_FRAMES ? hintedCount : defaultImageSequenceCountForUrl(absolute);
@@ -7685,7 +8235,7 @@ var extractImagesFromDom = ($, targetUrl, options = {}) => {
   return images;
 };
 var extractImagesFromHtmlString = (html, targetUrl) => {
-  const images = [];
+  const images = discoverLexusSequences(html, targetUrl);
   const searchText = html.replace(/\\/g, "").replace(/&amp;/g, "&");
   const absoluteRegex = /https?:\/\/[^"'<>\s\\)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s\\)]*)?(?:\?[^"'<>\s\\)]*)?/gi;
   (searchText.match(absoluteRegex) || []).slice(0, 200).forEach((raw) => addImageCandidate(images, raw, targetUrl));
@@ -7767,10 +8317,10 @@ var isTrackingOrTelemetryUrl = (rawUrl) => {
   try {
     const parsed = new URL2(value);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (host === "google-analytics.com" || host.endsWith(".google-analytics.com") || host === "googletagmanager.com" || host.endsWith(".googletagmanager.com") || host === "doubleclick.net" || host.endsWith(".doubleclick.net") || host === "clarity.ms" || host.endsWith(".clarity.ms") || host === "hotjar.com" || host.endsWith(".hotjar.com") || host === "segment.io" || host.endsWith(".segment.io")) return true;
-    if ((host === "google.com" || host.endsWith(".google.com")) && /^\/g\/collect(?:\/|$)/i.test(path4)) return true;
-    if ((host === "facebook.com" || host.endsWith(".facebook.com")) && /^\/tr(?:\/|$)/i.test(path4)) return true;
+    if ((host === "google.com" || host.endsWith(".google.com")) && /^\/g\/collect(?:\/|$)/i.test(path5)) return true;
+    if ((host === "facebook.com" || host.endsWith(".facebook.com")) && /^\/tr(?:\/|$)/i.test(path5)) return true;
     return false;
   } catch {
     return /(?:google-analytics|googletagmanager|doubleclick|clarity\.ms|hotjar|segment\.io)|google\.com\/g\/collect(?:[/?#]|$)/i.test(value);
@@ -7786,8 +8336,8 @@ var isUnsupportedVideoResourceUrl = (rawUrl) => {
   try {
     const parsed = new URL2(value);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
-    if ((host === "youtube.com" || host.endsWith(".youtube.com")) && (path4 === "/iframe_api" || path4.includes("/www-widgetapi") || path4.startsWith("/s/player/") || path4.startsWith("/youtubei/") || path4.startsWith("/api/"))) {
+    const path5 = parsed.pathname.toLowerCase();
+    if ((host === "youtube.com" || host.endsWith(".youtube.com")) && (path5 === "/iframe_api" || path5.includes("/www-widgetapi") || path5.startsWith("/s/player/") || path5.startsWith("/youtubei/") || path5.startsWith("/api/"))) {
       return true;
     }
   } catch {
@@ -7799,13 +8349,13 @@ var isPlaylistUrl = (rawUrl) => {
   try {
     const parsed = new URL2(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (host === "youtube.com" || host.endsWith(".youtube.com")) {
-      return Boolean(parsed.searchParams.get("list")) || path4.includes("/playlist");
+      return Boolean(parsed.searchParams.get("list")) || path5.includes("/playlist");
     }
-    if (host.includes("vimeo.com")) return /\/(?:showcase|album|channels|groups)\//.test(path4);
-    if (host.includes("facebook.com")) return /\/(?:watch|playlist|videos)\//.test(path4) && Boolean(parsed.searchParams.get("vlist") || parsed.searchParams.get("playlist_id"));
-    if (host === "x.com" || host.includes("twitter.com")) return /\/status(?:es)?\//.test(path4) && /\/\d+(?:\/(?:photo|video)\/\d+)?$/i.test(path4);
+    if (host.includes("vimeo.com")) return /\/(?:showcase|album|channels|groups)\//.test(path5);
+    if (host.includes("facebook.com")) return /\/(?:watch|playlist|videos)\//.test(path5) && Boolean(parsed.searchParams.get("vlist") || parsed.searchParams.get("playlist_id"));
+    if (host === "x.com" || host.includes("twitter.com")) return /\/status(?:es)?\//.test(path5) && /\/\d+(?:\/(?:photo|video)\/\d+)?$/i.test(path5);
     if (isBrightcoveUrl(rawUrl)) return Boolean(parsed.searchParams.get("playlistId") || parsed.searchParams.get("playlist_id"));
     return false;
   } catch {
@@ -8235,13 +8785,13 @@ var isWistiaHelperResourceUrl = (rawUrl = "") => {
     const parsed = new URL2(String(rawUrl || ""));
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
     if (!host.includes("wistia.com") && !host.includes("wistia.net")) return false;
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (isWistiaSwatchUrl(parsed.href)) return true;
-    if (/\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)(?:\.js)?(?:@|\/|$)/i.test(path4)) {
+    if (/\/assets\/external\/(?:publicapi|captions|interfontface|playpauseloadingcontrol|hls_video|x)(?:\.js)?(?:@|\/|$)/i.test(path5)) {
       return true;
     }
-    if (/\/(?:mput|jsonp|iframe_shim)(?:\/|$)/i.test(path4)) return true;
-    return /\/embed\/medias\/[a-z0-9]{8,12}\/(?:swatch|seo|jsonp)(?:\/|$)/i.test(path4);
+    if (/\/(?:mput|jsonp|iframe_shim)(?:\/|$)/i.test(path5)) return true;
+    return /\/embed\/medias\/[a-z0-9]{8,12}\/(?:swatch|seo|jsonp)(?:\/|$)/i.test(path5);
   } catch {
     return false;
   }
@@ -8758,10 +9308,10 @@ var getLocalCachedAssetPath = (rawUrl) => {
     const relative = pathname.replace(/^\/+/, "");
     if (relative.includes("..")) return null;
     if (pathname.startsWith("/cached-images-original/")) {
-      return path3.join(cachedImageOriginalDir, relative.replace(/^cached-images-original\//, ""));
+      return path4.join(cachedImageOriginalDir, relative.replace(/^cached-images-original\//, ""));
     }
     if (pathname.startsWith("/cached-fonts-original/")) {
-      return path3.join(cachedFontOriginalDir, relative.replace(/^cached-fonts-original\//, ""));
+      return path4.join(cachedFontOriginalDir, relative.replace(/^cached-fonts-original\//, ""));
     }
     return null;
   } catch {
@@ -8787,7 +9337,7 @@ var assertAssetUrlAllowed = (rawUrl) => {
   return normalized;
 };
 var guessContentTypeFromPath = (filePath) => {
-  const ext = path3.extname(filePath).slice(1).toLowerCase();
+  const ext = path4.extname(filePath).slice(1).toLowerCase();
   if (ext === "png") return "image/png";
   if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
   if (ext === "gif") return "image/gif";
@@ -8822,7 +9372,7 @@ var readAssetBufferFromCache = async (url, preferredKind = null) => {
     try {
       const buffer = await fsp3.readFile(localPath);
       const contentType = guessContentTypeFromPath(localPath);
-      const isImagePath = localPath.includes(`${path3.sep}cached-images-original${path3.sep}`) || isRemoteImageRequestUrl(normalized);
+      const isImagePath = localPath.includes(`${path4.sep}cached-images-original${path4.sep}`) || isRemoteImageRequestUrl(normalized);
       if (buffer.length > 0 && (!isImagePath || isValidImageBuffer(buffer, contentType))) {
         return { buffer, contentType };
       }
@@ -9291,9 +9841,9 @@ var reconcileImageFilenameWithBuffer = (filename, buffer, contentType = "") => {
   );
   if (!actual || !IMAGE_BINARY_FORMATS.has(actual)) return filename;
   const ext = actual === "jpeg" ? "jpg" : actual;
-  const currentExt = normalizeRasterFormat(path3.extname(filename || "").replace(/^\./, ""));
+  const currentExt = normalizeRasterFormat(path4.extname(filename || "").replace(/^\./, ""));
   if (currentExt === ext) return filename;
-  if (filename && path3.extname(filename)) return filename.replace(/\.[^./\\]+$/, `.${ext}`);
+  if (filename && path4.extname(filename)) return filename.replace(/\.[^./\\]+$/, `.${ext}`);
   return `${filename || "asset"}.${ext}`;
 };
 var escapeXmlAttribute = (value) => String(value || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -9304,7 +9854,7 @@ var wrapRasterBufferAsIllustratorSvg = (buffer, format, label = "") => {
   const width = dimensions.width > 0 ? dimensions.width : 1200;
   const height = dimensions.height > 0 ? dimensions.height : 800;
   const mime = imageContentTypeForFormat(normalized, "image/png");
-  const title = escapeXmlAttribute(path3.basename(label || "embedded-image").replace(/\.[^.]+$/, ""));
+  const title = escapeXmlAttribute(path4.basename(label || "embedded-image").replace(/\.[^.]+$/, ""));
   const encoded = buffer.toString("base64");
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -9315,7 +9865,7 @@ var wrapRasterBufferAsIllustratorSvg = (buffer, format, label = "") => {
   return Buffer.from(svg, "utf8");
 };
 var sanitizeFilenameBase = (value) => String(value || "asset").trim().replace(/^["'`]+|["'`]+$/g, "").replace(/[/\\\\]+/g, "-").replace(/[^a-z0-9._ -]+/gi, "-").replace(/\s+/g, " ").replace(/-+/g, "-").replace(/^\.+/, "").trim().slice(0, 160) || "asset";
-var decodeUrlEncodedFilename = (value) => {
+var decodeUrlEncodedFilename2 = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
   try {
@@ -9328,11 +9878,11 @@ var parseContentDispositionFilename = (header) => {
   const value = String(header || "").trim();
   if (!value) return "";
   const encoded = value.match(/filename\*=(?:UTF-8''|utf-8'')([^;]+)/i);
-  if (encoded?.[1]) return decodeUrlEncodedFilename(encoded[1].trim().replace(/^["']|["']$/g, ""));
+  if (encoded?.[1]) return decodeUrlEncodedFilename2(encoded[1].trim().replace(/^["']|["']$/g, ""));
   const quoted = value.match(/filename="([^"]+)"/i);
-  if (quoted?.[1]) return decodeUrlEncodedFilename(quoted[1].trim());
+  if (quoted?.[1]) return decodeUrlEncodedFilename2(quoted[1].trim());
   const plain = value.match(/filename=([^;]+)/i);
-  if (plain?.[1]) return decodeUrlEncodedFilename(plain[1].trim().replace(/^["']|["']$/g, ""));
+  if (plain?.[1]) return decodeUrlEncodedFilename2(plain[1].trim().replace(/^["']|["']$/g, ""));
   return "";
 };
 var filenameFromUrlPath2 = (rawUrl) => {
@@ -9341,10 +9891,10 @@ var filenameFromUrlPath2 = (rawUrl) => {
   try {
     const parsed = new URL2(value);
     const segment = parsed.pathname.split("/").filter(Boolean).pop() || "";
-    return decodeUrlEncodedFilename(segment.split("?")[0].split("#")[0]);
+    return decodeUrlEncodedFilename2(segment.split("?")[0].split("#")[0]);
   } catch {
     const segment = value.split("/").pop() || "";
-    return decodeUrlEncodedFilename(segment.split("?")[0].split("#")[0]);
+    return decodeUrlEncodedFilename2(segment.split("?")[0].split("#")[0]);
   }
 };
 var normalizeAssetExtension = (ext) => {
@@ -9353,11 +9903,11 @@ var normalizeAssetExtension = (ext) => {
   return cleaned;
 };
 var sanitizeFullFilename = (filename, fallbackExt = "") => {
-  const decoded = decodeUrlEncodedFilename(String(filename || "").replace(/^\.\/+/, ""));
-  let baseName = path3.basename(decoded.split("?")[0].split("#")[0]).replace(/[\\/:*?"<>|]/g, "-");
+  const decoded = decodeUrlEncodedFilename2(String(filename || "").replace(/^\.\/+/, ""));
+  let baseName = path4.basename(decoded.split("?")[0].split("#")[0]).replace(/[\\/:*?"<>|]/g, "-");
   if (!baseName) baseName = `asset${fallbackExt ? `.${normalizeAssetExtension(fallbackExt)}` : ""}`;
-  const ext = path3.extname(baseName);
-  const nameBase = ext ? path3.basename(baseName, ext) : baseName;
+  const ext = path4.extname(baseName);
+  const nameBase = ext ? path4.basename(baseName, ext) : baseName;
   const safeExt = normalizeAssetExtension(ext.slice(1) || fallbackExt || "bin");
   return `${sanitizeFilenameBase(nameBase)}.${safeExt}`;
 };
@@ -9365,7 +9915,7 @@ var deriveAssetFilename = (options) => {
   const formatExt = normalizeAssetExtension(options.format || "");
   const fromHeader = parseContentDispositionFilename(options.contentDisposition);
   const fromUrl = options.url ? filenameFromUrlPath2(options.url) : "";
-  const fromMeta = options.metadataFilename ? decodeUrlEncodedFilename(options.metadataFilename) : "";
+  const fromMeta = options.metadataFilename ? decodeUrlEncodedFilename2(options.metadataFilename) : "";
   const fromPreferred = String(options.preferredBase || "").trim();
   let candidate = "";
   if (fromHeader) candidate = fromHeader;
@@ -9373,7 +9923,7 @@ var deriveAssetFilename = (options) => {
   else if (fromUrl) candidate = fromUrl;
   else if (fromMeta) candidate = fromMeta.includes(".") ? fromMeta : formatExt ? `${fromMeta}.${formatExt}` : fromMeta;
   else candidate = `${options.fallbackBase || "asset"}${formatExt ? `.${formatExt}` : ".bin"}`;
-  if (formatExt && !path3.extname(candidate)) candidate = `${candidate}.${formatExt}`;
+  if (formatExt && !path4.extname(candidate)) candidate = `${candidate}.${formatExt}`;
   return sanitizeFullFilename(candidate, formatExt);
 };
 var uniqueFilenameInSet = (filename, used) => {
@@ -9382,8 +9932,8 @@ var uniqueFilenameInSet = (filename, used) => {
     used.add(candidate);
     return candidate;
   }
-  const ext = path3.extname(candidate);
-  const base = path3.basename(candidate, ext) || "asset";
+  const ext = path4.extname(candidate);
+  const base = path4.basename(candidate, ext) || "asset";
   let index = 1;
   while (used.has(`${base}-${index}${ext}`)) index += 1;
   candidate = `${base}-${index}${ext}`;
@@ -9401,8 +9951,8 @@ var uniqueZipPathInSet = (zipPath, used) => {
     used.add(candidate);
     return candidate;
   }
-  const ext = path3.extname(safeFile);
-  const base = path3.basename(safeFile, ext) || "asset";
+  const ext = path4.extname(safeFile);
+  const base = path4.basename(safeFile, ext) || "asset";
   let index = 1;
   while (used.has(safeDir ? `${safeDir}/${base}-${index}${ext}` : `${base}-${index}${ext}`)) index += 1;
   candidate = safeDir ? `${safeDir}/${base}-${index}${ext}` : `${base}-${index}${ext}`;
@@ -9422,21 +9972,21 @@ var uniqueDownloadFilePath = async (filename, options = {}) => {
   const pageUrl = normalizeProjectSourcePageUrl(
     String(options.sourcePageUrl || (rootFolderName ? "" : lastExtractedSourceUrl) || "").trim()
   );
-  const baseTargetDir = rootFolderName ? path3.join(downloadsDir, rootFolderName) : resolveDownloadSaveDir(options.kind || "default", pageUrl);
+  const baseTargetDir = rootFolderName ? path4.join(downloadsDir, rootFolderName) : resolveDownloadSaveDir(options.kind || "default", pageUrl);
   const rawSubfolder = String(options.subfolder || "").trim();
   const safeSubfolder = rawSubfolder ? sanitizeFilenameBase(rawSubfolder) : "";
-  const targetDir = safeSubfolder ? path3.join(baseTargetDir, safeSubfolder) : baseTargetDir;
+  const targetDir = safeSubfolder ? path4.join(baseTargetDir, safeSubfolder) : baseTargetDir;
   if (!rootFolderName) {
     await removeEmptyCreativeAssetFolders(pageUrl);
   }
   await fsp3.mkdir(assertPathInsideDownloads(targetDir), { recursive: true });
   const safeFilename = sanitizeFullFilename(filename);
-  const ext = path3.extname(safeFilename);
-  const base = path3.basename(safeFilename, ext) || "asset";
+  const ext = path4.extname(safeFilename);
+  const base = path4.basename(safeFilename, ext) || "asset";
   let candidate = safeFilename;
   let index = 1;
   while (true) {
-    const filePath = path3.join(targetDir, candidate);
+    const filePath = path4.join(targetDir, candidate);
     const resolved = assertPathInsideDownloads(filePath);
     try {
       await fsp3.access(resolved);
@@ -9449,14 +9999,14 @@ var uniqueDownloadFilePath = async (filename, options = {}) => {
   }
 };
 var removeExactDuplicateFontExports = async (folderPath, filename, buffer) => {
-  const ext = path3.extname(filename);
-  const base = path3.basename(filename, ext);
+  const ext = path4.extname(filename);
+  const base = path4.basename(filename, ext);
   const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const duplicateName = new RegExp(`^${escapedBase}-\\d+${ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
   const digest = crypto2.createHash("sha256").update(buffer).digest("hex");
   const entries = await fsp3.readdir(folderPath, { withFileTypes: true }).catch(() => []);
   await Promise.all(entries.filter((entry) => entry.isFile() && duplicateName.test(entry.name)).map(async (entry) => {
-    const candidate = path3.join(folderPath, entry.name);
+    const candidate = path4.join(folderPath, entry.name);
     const existing = await fsp3.readFile(candidate).catch(() => null);
     if (existing && crypto2.createHash("sha256").update(existing).digest("hex") === digest) {
       await fsp3.unlink(candidate).catch(() => void 0);
@@ -9491,9 +10041,9 @@ var saveBufferToDownloads = async (buffer, filename, label = "Download", sourceP
 var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download", sourcePageUrl, kind = "default") => {
   if (!sourcePath) throw new Error(`${label} cache path is missing.`);
   const removeExportedCacheFile = async () => {
-    const resolvedSource = path3.resolve(sourcePath);
-    const resolvedCacheRoot = path3.resolve(appCacheRoot);
-    if (resolvedSource.startsWith(resolvedCacheRoot + path3.sep)) {
+    const resolvedSource = path4.resolve(sourcePath);
+    const resolvedCacheRoot = path4.resolve(appCacheRoot);
+    if (resolvedSource.startsWith(resolvedCacheRoot + path4.sep)) {
       await fsp3.rm(resolvedSource, { force: true }).catch(() => void 0);
     }
   };
@@ -9529,7 +10079,7 @@ var saveCachedFileToDownloads = async (sourcePath, filename, label = "Download",
     };
   }
 };
-var convertedImageCachePath = (lookupUrl, targetFormat) => path3.join(cachedImageDir, `${assetCacheKey(lookupUrl, targetFormat)}.${targetFormat}`);
+var convertedImageCachePath = (lookupUrl, targetFormat) => path4.join(cachedImageDir, `${assetCacheKey(lookupUrl, targetFormat)}.${targetFormat}`);
 var readValidatedConvertedImageCache = async (lookupUrl, targetFormat) => {
   const cachePath = convertedImageCachePath(lookupUrl, targetFormat);
   const cached = await readCachedFileIfExists(cachePath);
@@ -9559,7 +10109,7 @@ var resolveCachedPublicUrl = async (publicPath, normalized, originalUrl) => {
   const cachePath = await getAssetCacheDebugPath(publicPath, "image") || await getAssetCacheDebugPath(normalized, "image") || (originalUrl ? await getAssetCacheDebugPath(originalUrl, "image") : "") || "";
   return publicUrlFromAbsoluteCachePath(cachePath, "image");
 };
-var originalCacheIndexPath = (kind) => path3.join(originalCacheKindDir(kind), ".url-index.json");
+var originalCacheIndexPath = (kind) => path4.join(originalCacheKindDir(kind), ".url-index.json");
 var loadOriginalCacheIndex = async (kind) => {
   try {
     const raw = await fsp3.readFile(originalCacheIndexPath(kind), "utf8");
@@ -9579,7 +10129,7 @@ var findLegacyHashOriginalCachePath = async (url, kind) => {
   const key = assetCacheKey(url, `original-${kind}`);
   const candidates = kind === "image" ? ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bin"] : ["woff2", "woff", "ttf", "otf", "eot", "svg", "bin"];
   for (const ext of candidates) {
-    const filePath = path3.join(cacheDir, `${key}.${ext}`);
+    const filePath = path4.join(cacheDir, `${key}.${ext}`);
     try {
       const stat = await fsp3.stat(filePath);
       if (stat.size <= 0) continue;
@@ -9601,7 +10151,7 @@ var resolveOriginalCachedAsset = async (url, kind) => {
   const index = await loadOriginalCacheIndex(kind);
   const indexedName = index[originalCacheLookupKey(normalized)];
   if (indexedName) {
-    const filePath = path3.join(originalCacheKindDir(kind), indexedName);
+    const filePath = path4.join(originalCacheKindDir(kind), indexedName);
     try {
       const stat = await fsp3.stat(filePath);
       if (stat.size > 0) {
@@ -9625,7 +10175,7 @@ var resolveOriginalCachedAsset = async (url, kind) => {
   }
   const legacyPath = await findLegacyHashOriginalCachePath(normalized, kind);
   if (!legacyPath) return null;
-  const filename = path3.basename(legacyPath);
+  const filename = path4.basename(legacyPath);
   return {
     filePath: legacyPath,
     filename,
@@ -9667,12 +10217,12 @@ var writeOriginalCachedAsset = async (url, kind, buffer, options = {}) => {
   const existingFiles = await fsp3.readdir(cacheDir).catch(() => []);
   const used = new Set(existingFiles.filter((name) => !name.startsWith(".")));
   const filename = uniqueFilenameInSet(desired, used);
-  await fsp3.writeFile(path3.join(cacheDir, filename), writeBuffer);
+  await fsp3.writeFile(path4.join(cacheDir, filename), writeBuffer);
   const index = await loadOriginalCacheIndex(kind);
   index[originalCacheLookupKey(normalized)] = filename;
   await saveOriginalCacheIndex(kind, index);
   const legacyPath = await findLegacyHashOriginalCachePath(normalized, kind);
-  if (legacyPath && path3.basename(legacyPath) !== filename) {
+  if (legacyPath && path4.basename(legacyPath) !== filename) {
     await fsp3.unlink(legacyPath).catch(() => void 0);
   }
   return `${originalCachePublicDir(kind)}/${filename}`;
@@ -9751,7 +10301,7 @@ var getCachedConvertedImage = async (url, requestedFormat, options) => {
   }
   const wantsRasterConversion = ["png", "jpg"].includes(normalizedTarget) && RASTER_CONVERTIBLE_FORMATS.has(normalizedSource) && supportedRasterConversionTargets(normalizedSource).includes(normalizedTarget);
   if (!wantsRasterConversion) {
-    const cachePath2 = path3.join(cachedImageDir, `${assetCacheKey(normalizedUrl, "original")}.${sourceFormat || "bin"}`);
+    const cachePath2 = path4.join(cachedImageDir, `${assetCacheKey(normalizedUrl, "original")}.${sourceFormat || "bin"}`);
     let cached2 = await readCachedFileIfExists(cachePath2);
     if (cached2 && !isValidImageBuffer(cached2, guessContentTypeFromPath(cachePath2))) {
       await fsp3.unlink(cachePath2).catch(() => void 0);
@@ -10209,7 +10759,7 @@ var findFilesByExtension = async (root, extension) => {
   const found = [];
   const entries = await fsp3.readdir(root, { withFileTypes: true });
   for (const entry of entries) {
-    const absolute = path3.join(root, entry.name);
+    const absolute = path4.join(root, entry.name);
     if (entry.isDirectory()) found.push(...await findFilesByExtension(absolute, extension));
     else if (entry.isFile() && entry.name.toLowerCase().endsWith(extension)) found.push(absolute);
   }
@@ -10227,7 +10777,7 @@ var resolveFontForgePath = () => {
     "/usr/local/bin/fontforge",
     "/usr/bin/fontforge"
   ].filter(Boolean);
-  return candidates.find((candidate) => fs2.existsSync(candidate)) || "";
+  return candidates.find((candidate) => fs3.existsSync(candidate)) || "";
 };
 var convertFontBufferWithFontForge = async (buffer, filenameBase, sourceFormat) => {
   const fontForgePath = resolveFontForgePath();
@@ -10236,12 +10786,12 @@ var convertFontBufferWithFontForge = async (buffer, filenameBase, sourceFormat) 
   const cached = fontForgeTtfCache.get(cacheKey);
   if (cached) return cached;
   const conversion = (async () => {
-    const tempRoot = await fsp3.mkdtemp(path3.join(writableTempDir, "cae-fontforge-"));
+    const tempRoot = await fsp3.mkdtemp(path4.join(writableTempDir, "cae-fontforge-"));
     try {
       const safeBase = sanitizeFilenameBase(filenameBase || "font").replace(/\s+/g, "-") || "font";
       const sourceExt = ["woff2", "woff", "ttf", "otf"].includes(sourceFormat) ? sourceFormat : "woff";
-      const inputPath = path3.join(tempRoot, `${safeBase}.${sourceExt}`);
-      const outputPath = path3.join(tempRoot, `${safeBase}.ttf`);
+      const inputPath = path4.join(tempRoot, `${safeBase}.${sourceExt}`);
+      const outputPath = path4.join(tempRoot, `${safeBase}.ttf`);
       await fsp3.writeFile(inputPath, buffer);
       await execFileAsync2(
         fontForgePath,
@@ -10349,10 +10899,10 @@ var convertFontBufferWithTransfonter = async (buffer, filenameBase, sourceFormat
     const archiveResponse = await fetch(resultUrl, { headers: sessionHeaders });
     if (!archiveResponse.ok) throw new Error(`Transfonter result download failed (${archiveResponse.status}).`);
     const archiveBuffer = Buffer.from(await archiveResponse.arrayBuffer());
-    const tempRoot = await fsp3.mkdtemp(path3.join(writableTempDir, "cae-transfonter-"));
+    const tempRoot = await fsp3.mkdtemp(path4.join(writableTempDir, "cae-transfonter-"));
     try {
-      const zipPath = path3.join(tempRoot, "result.zip");
-      const outputDir = path3.join(tempRoot, "output");
+      const zipPath = path4.join(tempRoot, "result.zip");
+      const outputDir = path4.join(tempRoot, "output");
       await fsp3.mkdir(outputDir, { recursive: true });
       await fsp3.writeFile(zipPath, archiveBuffer);
       await extractZip(zipPath, { dir: outputDir });
@@ -10538,7 +11088,10 @@ var resolveFontMetadata = async (font, targetUrl) => {
   }
 };
 var enrichFontsWithMetadata = async (fonts, targetUrl, options = {}) => {
-  const candidates = fonts.filter((font) => font?.url && shouldResolveFontMetadata(font));
+  const names = /* @__PURE__ */ new Map();
+  const duplicateName = (font) => filenameFromUrlPath2(String(font.url || "")).replace(/\.(?:woff2?|ttf|otf)$/i, "").toLowerCase();
+  fonts.forEach((font) => names.set(duplicateName(font), (names.get(duplicateName(font)) || 0) + 1));
+  const candidates = fonts.filter((font) => font?.url && (shouldResolveFontMetadata(font) || (names.get(duplicateName(font)) || 0) > 1)).sort((a, b) => Number((names.get(duplicateName(b)) || 0) > 1) - Number((names.get(duplicateName(a)) || 0) > 1));
   if (candidates.length === 0) return fonts;
   const limit = options.fast ? 12 : 28;
   const uniqueCandidates = Array.from(new Map(candidates.map((font) => [String(font.url), font])).values()).slice(0, limit);
@@ -10579,8 +11132,8 @@ var writeFontBuffer = async (innerBuffer, innerFormat, toFormat) => {
   const font = Font.create(innerBuffer, { type: innerFormat });
   return fontOutputToBuffer(font.write({ type: toFormat }));
 };
-var fontConvertWorkerPath = () => path3.join(getAppRoot(), "server", "font-convert-worker.mjs");
-var extractWorkerPath = () => path3.join(getAppRoot(), "server", "extract-workers.mjs");
+var fontConvertWorkerPath = () => path4.join(getAppRoot(), "server", "font-convert-worker.mjs");
+var extractWorkerPath = () => path4.join(getAppRoot(), "server", "extract-workers.mjs");
 var quickExtractInWorker = async (targetUrl) => {
   const worker = new Worker(extractWorkerPath(), {
     workerData: { task: "quickExtract", payload: { targetUrl } }
@@ -10660,9 +11213,9 @@ var resolveFontIdentityFromCssSource = async (cssSource, fontUrl) => {
   const cssUrl = String(cssSource || "").trim();
   const requestedUrl = normalizeAssetRequestUrl(String(fontUrl || "").trim());
   if (!cssUrl || !requestedUrl || !/^https?:\/\//i.test(cssUrl)) return null;
-  let pending = FONT_CSS_IDENTITY_CACHE.get(cssUrl);
-  if (!pending) {
-    pending = (async () => {
+  let pending2 = FONT_CSS_IDENTITY_CACHE.get(cssUrl);
+  if (!pending2) {
+    pending2 = (async () => {
       assertPublicAssetUrl(cssUrl);
       const response = await axios.get(cssUrl, {
         timeout: 1e4,
@@ -10678,10 +11231,10 @@ var resolveFontIdentityFromCssSource = async (cssSource, fontUrl) => {
       });
       return extractFontsFromCss(String(response.data || ""), cssUrl);
     })();
-    FONT_CSS_IDENTITY_CACHE.set(cssUrl, pending);
+    FONT_CSS_IDENTITY_CACHE.set(cssUrl, pending2);
   }
   try {
-    const fonts = await pending;
+    const fonts = await pending2;
     return fonts.find((font) => normalizeAssetRequestUrl(String(font?.url || "")) === requestedUrl) || null;
   } catch {
     FONT_CSS_IDENTITY_CACHE.delete(cssUrl);
@@ -10793,7 +11346,7 @@ var getCachedConvertedFont = async (url, toFormat = "ttf", originalFormat = "unk
   }
   const ttfIdentity = buildTtfIdentityBase(preferredBase, extras);
   const cacheIdentity = normalizedTarget === "ttf" ? `${cacheSourceUrl}#installable-ttf-v17-unicode-subsets-${encodeURIComponent(ttfIdentity)}-metrics-${extras.fixVerticalMetrics === false ? "off" : "on"}` : cacheSourceUrl;
-  const cachePath = path3.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
+  const cachePath = path4.join(cachedFontDir, `${assetCacheKey(cacheIdentity, normalizedTarget)}.${normalizedTarget}`);
   const filenameSourceUrl = extras.originalUrl || url;
   const filenameExtras = {
     contentDisposition: extras.contentDisposition,
@@ -11250,117 +11803,7 @@ var isJunkImageUrl = (url) => {
   if (isTrackingPixelImageUrl(url)) return true;
   return false;
 };
-var IMAGE_DEDUPE_STRIP_PARAMS = /* @__PURE__ */ new Set([
-  "w",
-  "h",
-  "width",
-  "height",
-  "mw",
-  "mh",
-  "quality",
-  "q",
-  "format",
-  "fm",
-  "auto",
-  "fit",
-  "crop",
-  "scale",
-  "dpr",
-  "rev",
-  "mode",
-  "output"
-]);
-var isOpaqueGeneratedImageLeaf = (leaf) => {
-  const name = String(leaf || "").trim().toLowerCase();
-  if (!name) return true;
-  if (/^image-\d+\.[a-z0-9]+$/i.test(name)) return true;
-  if (/^[a-f0-9]{16,}(\-\d+)?\.[a-z0-9]+$/i.test(name)) return true;
-  return false;
-};
-var canonicalImageDedupKey = (url) => {
-  const raw = String(url || "").trim();
-  if (!raw) return "";
-  if (raw.startsWith("data:")) {
-    if (raw.length <= 280) return raw;
-    return crypto2.createHash("sha1").update(raw).digest("hex");
-  }
-  try {
-    const parsed = new URL2(raw);
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const leaf = filenameFromUrlPath2(raw).toLowerCase();
-    if (/\.svg$/i.test(parsed.pathname) && parsed.hash) {
-      return `${host}:${parsed.pathname}${parsed.search}${parsed.hash}`.toLowerCase();
-    }
-    const contextParam = parsed.searchParams.get("context");
-    if (contextParam) {
-      return `${host}:${parsed.pathname}?context=${contextParam}`.toLowerCase();
-    }
-    if (isLikely360SequenceUrl(raw)) {
-      const sequencePath = parsed.pathname.replace(/^\/content\/dam\/toyota\/(?=jellies\/)/i, "/").replace(/^\/is\/image\/toyota\/toyota\/(?=jellies\/)/i, "/").replace(/\/{2,}/g, "/");
-      return `sequence:${sequencePath}`.toLowerCase();
-    }
-    const magnoliaImagingSource = parsed.pathname.match(/^(\/\.imaging\/.*?)\/jcr:content(?:\.[a-z0-9]+)?$/i)?.[1];
-    if (magnoliaImagingSource) return `${host}:imaging-source:${magnoliaImagingSource}`.toLowerCase();
-    if (leaf && !isOpaqueGeneratedImageLeaf(leaf)) {
-      return `${host}:file:${leaf}`;
-    }
-    const ashId = parsed.searchParams.get("id") || parsed.searchParams.get("mediaid") || parsed.searchParams.get("mid") || parsed.searchParams.get("assetid");
-    if (/\.ashx$/i.test(parsed.pathname) && ashId) {
-      return `${host}:ashx:${String(ashId).toLowerCase()}`;
-    }
-    const imagingMatch = parsed.pathname.match(/\.imaging\/[^/]+\/[^/]+\/jcr:([^/]+)/i);
-    if (imagingMatch?.[1]) return `${host}:imaging:${imagingMatch[1].toLowerCase()}`;
-    const normalizedPath = parsed.pathname.replace(/-\d+x\d+(?=\.[a-z0-9]+$)/i, "");
-    IMAGE_DEDUPE_STRIP_PARAMS.forEach((key) => parsed.searchParams.delete(key));
-    parsed.hash = "";
-    const search = parsed.searchParams.toString();
-    return `${host}:${normalizedPath}${search ? `?${search}` : ""}`.toLowerCase();
-  } catch {
-    return raw.split("#")[0].replace(/-\d+x\d+(?=\.[a-z0-9]+$)/i, "").toLowerCase();
-  }
-};
-var scoreImageRecord = (img) => {
-  let score = 0;
-  const url = String(img?.url || "");
-  if (img?.cachedUrl) score += 50;
-  if (img?.status === "downloaded") score += 40;
-  if (img?.filename || img?.alt || img?.name) score += 20;
-  try {
-    const parsed = new URL2(url);
-    const width = Number(parsed.searchParams.get("wid") || parsed.searchParams.get("width") || parsed.searchParams.get("w") || 0);
-    const height = Number(parsed.searchParams.get("hei") || parsed.searchParams.get("height") || parsed.searchParams.get("h") || 0);
-    const quality = Number(parsed.searchParams.get("qlt") || parsed.searchParams.get("quality") || parsed.searchParams.get("q") || 0);
-    if (width > 0) score += Math.min(30, Math.round(width / 80));
-    if (height > 0) score += Math.min(12, Math.round(height / 80));
-    if (quality > 0) score += Math.min(10, Math.round(quality / 10));
-    const fmt = String(parsed.searchParams.get("fmt") || parsed.searchParams.get("format") || "").toLowerCase();
-    if (/jp2|j2k|jpf|jpx|jpeg2000/.test(fmt)) score -= 1e4;
-    if (/jpg|jpeg|png/.test(fmt)) score += 5;
-    if (/webp|avif/.test(fmt)) score += 2;
-  } catch {
-  }
-  if (!/-\d+x\d+\./i.test(url)) score += 12;
-  if (/\.(?:png|jpe?g|webp|avif)(\?|$)/i.test(url)) score += 8;
-  if (/\.(?:jp2|j2k|jpf|jpx)(?:$|[?#])/i.test(url)) score -= 1e4;
-  if (/[?&]context=/i.test(url)) score += 30;
-  if (!/\.ashx(\?|$)/i.test(url)) score += 4;
-  return score;
-};
-var dedupeImagesByCanonicalKey = (images) => {
-  const groups = /* @__PURE__ */ new Map();
-  for (const img of images) {
-    const url = String(img?.url || "");
-    if (!url) continue;
-    const key = canonicalImageDedupKey(url);
-    if (!key) continue;
-    const bucket = groups.get(key) || [];
-    bucket.push(img);
-    groups.set(key, bucket);
-  }
-  return Array.from(groups.values()).map(
-    (group) => [...group].sort((a, b) => scoreImageRecord(b) - scoreImageRecord(a))[0]
-  );
-};
+var dedupeImagesByCanonicalKey = (images) => mergeExtractionImages(images);
 var parseExpandableImageSequence = (rawUrl) => {
   const value = String(rawUrl || "").replace(/&amp;/g, "&").trim();
   if (!value || !isLikely360SequenceUrl(value)) return null;
@@ -11371,6 +11814,7 @@ var parseExpandableImageSequence = (rawUrl) => {
     return null;
   }
   if (parsed.pathname.includes("//")) return null;
+  if (/\/adobe\/assets\/urn:/i.test(parsed.pathname)) return null;
   const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const match = numericLeafMatch || prefixedLeafMatch;
@@ -11487,7 +11931,7 @@ var repairMalformedToyotaCountedSequences = async (items, targetUrl) => {
     if (existingUrls.has(candidate.url)) continue;
     existingUrls.add(candidate.url);
     discovered.push({
-      ...repairedGroup.seed,
+      ...imageSequenceSeedMetadata(repairedGroup.seed),
       url: candidate.url,
       type: inferImageTypeFromUrl(candidate.url) || getAssetTypeFromUrl(candidate.url, "png"),
       filename: filenameFromUrlPath2(candidate.url),
@@ -11501,15 +11945,23 @@ var repairMalformedToyotaCountedSequences = async (items, targetUrl) => {
   return discovered.length ? [...items.filter((item) => !hasMalformedImageSequencePath(String(item?.url || ""))), ...discovered] : items;
 };
 var expandAvailableImageSequences = async (items, targetUrl) => {
+  const interiors = await extractLexusInterior(targetUrl, cachedImageOriginalDir, `http://localhost:${activePort || DEFAULT_PORT}`).catch((error) => {
+    console.warn("Interior panorama extraction:", error.message);
+    return [];
+  });
+  if (interiors.length) console.info(`Interior panorama: ${interiors.length} rendered frames ready`);
+  items = [...items, ...interiors];
+  items = await verifyLexusSequences(items, (url) => isRemoteImageUrlAvailable(url, targetUrl));
   const byGroup = /* @__PURE__ */ new Map();
   for (const item of items) {
     const url = String(item?.url || "").trim();
+    if (item.sequenceVerified) continue;
     const parsed = parseExpandableImageSequence(url);
     if (!parsed) continue;
     if (parsed.explicitCount > 0) continue;
     if (!/(?:toyota|jellies|mazda|lexus|assetscs|visualizer|threesixty|360)/i.test(url)) continue;
     const isToyotaJellySequence = /\/jellies\/(?:max|relative)\//i.test(url);
-    const isPrefixedVisualizerSequence = /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(url) && /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i.test(url);
+    const isPrefixedVisualizerSequence = /(?:visualizer|threesixty|360)/i.test(new URL2(url).pathname) && /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i.test(url);
     if (!isToyotaJellySequence && !isPrefixedVisualizerSequence) continue;
     const group = byGroup.get(parsed.key) || { seed: item, parsed, observedFrames: /* @__PURE__ */ new Set() };
     group.observedFrames.add(parsed.frame);
@@ -11550,7 +12002,7 @@ var expandAvailableImageSequences = async (items, targetUrl) => {
       if (!url || existingUrls.has(url)) continue;
       existingUrls.add(url);
       discovered.push({
-        ...group.seed,
+        ...imageSequenceSeedMetadata(group.seed),
         url,
         type: inferImageTypeFromUrl(url) || getAssetTypeFromUrl(url, String(group.seed?.type || "jpg")),
         filename: filenameFromUrlPath2(url),
@@ -11946,8 +12398,8 @@ var isPlatformMarketingHomepage = (rawUrl) => {
   try {
     const parsed = new URL2(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.replace(/\/+$/, "") || "/";
-    if (path4 !== "/" && path4 !== "/home") return false;
+    const path5 = parsed.pathname.replace(/\/+$/, "") || "/";
+    if (path5 !== "/" && path5 !== "/home") return false;
     return host === "vimeo.com" || host.endsWith(".vimeo.com");
   } catch {
     return false;
@@ -12029,12 +12481,12 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
       if (/\.(?:css|js|json|woff2?|ttf|otf|eot|mp4|webm|mov|m4v|mkv|m3u8|mpd|html?)(?:[?#]|$)/i.test(value)) return false;
       try {
         const parsed = new URL2(value);
-        const path4 = parsed.pathname.replace(/\/{2,}/g, "/");
+        const path5 = parsed.pathname.replace(/\/{2,}/g, "/");
         const hasImageExt = /\.(?:svg|png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.href);
         const hasImageFormat = /[?&](?:fmt|format|fm|output)=(?:svg|png|jpe?g|webp|gif|avif|png-alpha|webp-alpha)/i.test(parsed.search);
-        const isImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path4);
+        const isImageService = /\/is\/image\/|\/image\/|\/images?\/|\/img\/|\/media\/|\/assets?\/|\/content\/dam\/|\/\.imaging\//i.test(path5);
         if (!hasImageExt && !hasImageFormat && !isImageService) return false;
-        if (!hasImageExt && /\/\d{1,3}(?:&|$)/.test(path4)) return false;
+        if (!hasImageExt && /\/\d{1,3}(?:&|$)/.test(path5)) return false;
         return true;
       } catch {
         return false;
@@ -12213,7 +12665,7 @@ var extractRenderedDomAssetsFromPage = async (page) => page.evaluate(() => {
       pathCount >= 2 && pathCount <= 120 && (hinted >= 2 && hinted <= 120 && pathCount === hinted || commonSequenceCounts.has(pathCount))
     );
     const hasPrefixedFrameName = Boolean(
-      /^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i.test(parsed.pathname) && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(target)
+      /^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i.test(parsed.pathname) && /(?:visualizer|threesixty|360)/i.test(parsed.pathname)
     );
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
     const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
@@ -12706,6 +13158,7 @@ var dedupeExtractedAssets = async (images, videos, fonts, colors, targetUrl, fal
   let imagePool = hasTrustedToyotaSequence ? baseImages : await expandAvailableImageSequences(baseImages, targetUrl);
   imagePool = await filterUnavailableGeneratedImageSequences(imagePool, targetUrl);
   imagePool = keepBestToyotaSequenceGroup(imagePool, targetUrl);
+  imagePool = await resolveDuplicateImageContent(imagePool, async (image) => decodeDataImageBuffer(String(image.url)) || (await readAssetBufferFromCache(image.cachedUrl || image.url, "image"))?.buffer || null);
   const uniqueIcons = dedupeImagesByCanonicalKey(
     Array.from(new Set(iconPool.map((item) => item.url))).map((url) => iconPool.find((item) => item.url === url)).filter(Boolean).filter(isUsableExtractedImage)
   );
@@ -13372,7 +13825,7 @@ var verifyMergedYouTubeFile = async (inputPath) => {
   logYouTubeMerge("verify-start", {
     mergedOutputPath: inputPath,
     fileSize: stat.size,
-    tempFolder: path3.dirname(inputPath),
+    tempFolder: path4.dirname(inputPath),
     strictAudioVerify: STRICT_YOUTUBE_AUDIO_VERIFY
   });
   try {
@@ -13433,8 +13886,8 @@ var ensureQuickTimeCompatibleMp4 = async (inputPath, options = {}) => {
   const metadata = await probeMediaFile(inputPath);
   const probe = describeMediaProbe(metadata);
   const quality = options.quality || "fhd";
-  const titleHint = options.titleHint || path3.basename(inputPath, path3.extname(inputPath));
-  const desiredOutput = options.outputPath || path3.join(path3.dirname(inputPath), toQuickTimeVideoFilename(titleHint, quality));
+  const titleHint = options.titleHint || path4.basename(inputPath, path4.extname(inputPath));
+  const desiredOutput = options.outputPath || path4.join(path4.dirname(inputPath), toQuickTimeVideoFilename(titleHint, quality));
   const tempOutput = `${desiredOutput}.part`;
   if (isQuickTimeCompatibleProbe(probe)) {
     const cmd = ffmpeg(inputPath).outputOptions(["-c copy", "-movflags +faststart", "-f mp4"]);
@@ -13452,12 +13905,12 @@ var ensureQuickTimeCompatibleMp4 = async (inputPath, options = {}) => {
     ]);
     await waitForFfmpegFile(cmd, tempOutput, "QuickTime transcode");
   }
-  await fsp3.mkdir(path3.dirname(desiredOutput), { recursive: true }).catch(() => void 0);
-  if (path3.resolve(desiredOutput) !== path3.resolve(inputPath)) {
+  await fsp3.mkdir(path4.dirname(desiredOutput), { recursive: true }).catch(() => void 0);
+  if (path4.resolve(desiredOutput) !== path4.resolve(inputPath)) {
     await fsp3.unlink(desiredOutput).catch(() => void 0);
   }
   await fsp3.rename(tempOutput, desiredOutput);
-  if (path3.resolve(desiredOutput) !== path3.resolve(inputPath)) {
+  if (path4.resolve(desiredOutput) !== path4.resolve(inputPath)) {
     await fsp3.unlink(inputPath).catch(() => void 0);
   }
   const finalProbe = describeMediaProbe(await probeMediaFile(desiredOutput));
@@ -13562,7 +14015,7 @@ var downloadUrlToFile = async (sourceUrl, outputPath, sourcePageUrl) => {
     httpsAgent: relaxedHttpsAgent
   });
   await new Promise((resolve, reject) => {
-    const out = fs2.createWriteStream(outputPath);
+    const out = fs3.createWriteStream(outputPath);
     response.data.pipe(out);
     out.on("finish", resolve);
     out.on("error", reject);
@@ -13766,7 +14219,7 @@ var generateVideoFrameThumbnail = async (streamUrl, sourcePageUrl, req) => {
   if (!normalized || !isLikelyHttpMediaUrl(normalized)) return "";
   await fsp3.mkdir(generatedThumbnailDir, { recursive: true });
   const hash = crypto2.createHash("sha1").update(normalized).digest("hex");
-  const outputPath = path3.join(generatedThumbnailDir, `${hash}.jpg`);
+  const outputPath = path4.join(generatedThumbnailDir, `${hash}.jpg`);
   const existing = await fsp3.stat(outputPath).catch(() => null);
   if (existing && existing.size > 1024) {
     return toAbsoluteAppUrl(req, `/generated-thumbnails/${hash}.jpg`);
@@ -13794,8 +14247,8 @@ var generateVideoFrameThumbnail = async (streamUrl, sourcePageUrl, req) => {
     let tempInput = "";
     try {
       const parsed = new URL2(normalized);
-      const ext = path3.extname(parsed.pathname) || ".bin";
-      tempInput = path3.join(generatedThumbnailDir, `${hash}-source${ext}`);
+      const ext = path4.extname(parsed.pathname) || ".bin";
+      tempInput = path4.join(generatedThumbnailDir, `${hash}-source${ext}`);
       await downloadUrlToFile(normalized, tempInput, sourcePageUrl);
       await renderFrame(tempInput, false);
     } finally {
@@ -14680,14 +15133,14 @@ var mergeYouTubePartsToFile = async (videoUrl, audioUrl, outputPath, watchUrl) =
   await waitForFfmpegFile(cmd, outputPath, "YouTube stream-copy merge");
   logYouTubeMerge("ffmpeg-merge-complete", { mergedOutputPath: outputPath });
 };
-var youtubeMergeCacheDir = path3.join(convertedVideoDir, "youtube-merge-cache");
+var youtubeMergeCacheDir = path4.join(convertedVideoDir, "youtube-merge-cache");
 var getYouTubeMergeCachePath = (watchUrl, quality) => {
   const videoId = getYouTubeVideoId(watchUrl) || crypto2.createHash("sha1").update(normalizeYouTubeWatchUrl(watchUrl)).digest("hex").slice(0, 12);
-  return path3.join(youtubeMergeCacheDir, `${videoId}-${quality}-h264.mp4`);
+  return path4.join(youtubeMergeCacheDir, `${videoId}-${quality}-h264.mp4`);
 };
 var mergeYouTubeWithYtDlp = async (watchUrl, quality, outputPath) => {
   const normalizedWatchUrl = normalizeYouTubeWatchUrl(watchUrl);
-  await fsp3.mkdir(path3.dirname(outputPath), { recursive: true });
+  await fsp3.mkdir(path4.dirname(outputPath), { recursive: true });
   const outputTemplate = outputPath.replace(/\.mp4$/i, ".%(ext)s");
   const options = {
     ...buildYtDlpDownloadOptions(normalizedWatchUrl, quality, void 0, outputTemplate)
@@ -14800,7 +15253,7 @@ var mergeYouTubeWatchUrlToFile = async (watchUrl, quality, outputPath, titleHint
 var pipeLocalVideoFile = async (req, res, filePath, options = {}) => {
   const stat = await fsp3.stat(filePath);
   const fileSize = stat.size;
-  const preferredName = (options.filename || path3.basename(filePath)).replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120);
+  const preferredName = (options.filename || path4.basename(filePath)).replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120);
   const contentType = "video/mp4";
   const disposition = `${options.inline ? "inline" : "attachment"}; filename="${preferredName || "video.mp4"}"`;
   const setCommonHeaders = () => {
@@ -14817,7 +15270,7 @@ var pipeLocalVideoFile = async (req, res, filePath, options = {}) => {
   setCommonHeaders();
   res.status(200);
   res.setHeader("Content-Length", String(fileSize));
-  const stream = fs2.createReadStream(filePath);
+  const stream = fs3.createReadStream(filePath);
   stream.on("error", (error) => {
     console.error("Local video stream read error:", error?.message || error);
     if (!res.headersSent) res.status(500).json({ error: "Failed to stream local video file." });
@@ -14827,7 +15280,7 @@ var pipeLocalVideoFile = async (req, res, filePath, options = {}) => {
 };
 var resolveYouTubeQuickTimeExportPath = async (watchUrl, quality, options = {}) => {
   const title = String(options.titleHint || pageTitleFromUrl(watchUrl) || "video").trim();
-  const exportPath = path3.join(
+  const exportPath = path4.join(
     resolveDownloadsTargetDir(options.sourcePageUrl || watchUrl),
     toQuickTimeVideoFilename(title, quality)
   );
@@ -14864,9 +15317,9 @@ var toYouTubeMergedDownloadUrl = (watchUrl, quality, titleHint) => {
   return `/api/youtube-merged-stream?url=${encodeURIComponent(normalizedWatchUrl)}&quality=${quality}&inline=1&filename=${encodeURIComponent(filename)}`;
 };
 var toDisplayFilePath = (filePath) => {
-  const resolved = path3.resolve(String(filePath || ""));
+  const resolved = path4.resolve(String(filePath || ""));
   const home = os3.homedir();
-  if (resolved.startsWith(home + path3.sep)) return `~${resolved.slice(home.length)}`;
+  if (resolved.startsWith(home + path4.sep)) return `~${resolved.slice(home.length)}`;
   return resolved;
 };
 var prepareYouTubeQualityOutput = async (watchUrl, quality, options = {}) => {
@@ -14922,7 +15375,7 @@ var prepareYouTubeQualityOutput = async (watchUrl, quality, options = {}) => {
   if (options.exportToDownloads) {
     const targetDir = resolveDownloadsTargetDir(options.sourcePageUrl || normalizedWatchUrl);
     await fsp3.mkdir(targetDir, { recursive: true });
-    exportPath = path3.join(targetDir, toQualityVideoFilename(quality, title));
+    exportPath = path4.join(targetDir, toQualityVideoFilename(quality, title));
     try {
       await validateOutputFile(exportPath, "QuickTime export");
     } catch {
@@ -15537,8 +15990,8 @@ var xVideoExtractor = (url) => runPlatformVideoExtractor(url, "x");
 var ispotVideoExtractor = (url) => runPlatformVideoExtractor(url, "ispot");
 var universalVideoExtractor = (url) => runPlatformVideoExtractor(url, "universal");
 var finalizePlatformDownloadOutput = async (downloadedPath, desiredPath, options = {}) => {
-  await fsp3.mkdir(path3.dirname(desiredPath), { recursive: true });
-  if (path3.resolve(downloadedPath) !== path3.resolve(desiredPath)) {
+  await fsp3.mkdir(path4.dirname(desiredPath), { recursive: true });
+  if (path4.resolve(downloadedPath) !== path4.resolve(desiredPath)) {
     await fsp3.copyFile(downloadedPath, desiredPath);
     await fsp3.unlink(downloadedPath).catch(() => void 0);
   }
@@ -15570,7 +16023,7 @@ var finalizePlatformDownloadOutput = async (downloadedPath, desiredPath, options
 };
 var findYtDlpOutputFile = async (tempDir, tempBase) => {
   const entries = await fsp3.readdir(tempDir);
-  const matches = entries.filter((name) => name.startsWith(tempBase) && !name.endsWith(".part") && !name.endsWith(".ytdl")).map((name) => path3.join(tempDir, name));
+  const matches = entries.filter((name) => name.startsWith(tempBase) && !name.endsWith(".part") && !name.endsWith(".ytdl")).map((name) => path4.join(tempDir, name));
   if (matches.length === 0) return "";
   const stats = await Promise.all(
     matches.map(async (filePath) => {
@@ -15615,7 +16068,7 @@ var downloadVimeoPlatformVideoToFile = async (targetUrl, quality, options = {}) 
     options.titleHint || streamVideo?.title || vimeoAssets.videos.find((video) => video?.title)?.title || pageTitleFromUrl(normalizedUrl) || "video"
   ).trim();
   const desiredFilename = toQualityVideoFilename(requestedQuality, title);
-  const desiredPath = path3.join(targetDir, desiredFilename);
+  const desiredPath = path4.join(targetDir, desiredFilename);
   try {
     const stat = await validateOutputFile(desiredPath, "Existing download");
     return {
@@ -15645,7 +16098,7 @@ var downloadVimeoPlatformVideoToFile = async (targetUrl, quality, options = {}) 
   }
   const streamUrl = sanitizeStreamUrl(String(streamVideo.url), sourcePageUrl) || String(streamVideo.url);
   const tempBase = `vimeo-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempPath = path3.join(writableTempDir, `${tempBase}.mp4`);
+  const tempPath = path4.join(writableTempDir, `${tempBase}.mp4`);
   if (streamVideo.isVimeoHls || /\.m3u8(?:\?|$)/i.test(streamUrl)) {
     const parsedStream = new URL2(streamUrl);
     const { referer, origin } = getStreamRequestContext(parsedStream, sourcePageUrl || normalizedUrl);
@@ -15692,7 +16145,7 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   const targetDir = isAudio ? resolveDownloadSaveDir("audio", options.sourcePageUrl || normalizedUrl) : resolveVideoDownloadTargetDir(options.sourcePageUrl || normalizedUrl, options.saveToWebsiteAssets);
   await fsp3.mkdir(targetDir, { recursive: true });
   const desiredFilename = isAudio ? `${toSafeFileBase(title)}_Audio.mp3` : toQualityVideoFilename(requestedQuality, title);
-  let desiredPath = path3.join(targetDir, desiredFilename);
+  let desiredPath = path4.join(targetDir, desiredFilename);
   try {
     const stat = await validateOutputFile(desiredPath, "Existing download");
     return {
@@ -15708,7 +16161,7 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
   }
   const isBitmovinManifest = /streams\.bitmovin\.com\/.*\.m3u8(?:[?#]|$)/i.test(normalizedUrl) || /\.m3u8(?:[?#]|$)/i.test(normalizedUrl) && /(?:^|\.)xtandi\.com$/i.test(new URL2(options.sourcePageUrl || normalizedUrl).hostname);
   const tempBase = `platform-dl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempTemplate = path3.join(writableTempDir, `${tempBase}.%(ext)s`);
+  const tempTemplate = path4.join(writableTempDir, `${tempBase}.%(ext)s`);
   const baseYdlOptions = {
     ...buildYtDlpQueryOptions(normalizedUrl, options.sourcePageUrl),
     output: tempTemplate,
@@ -15766,7 +16219,7 @@ var downloadPlatformVideoToFile = async (targetUrl, quality, options = {}) => {
     }
   }
   if (!downloadedPath && !isAudio && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(normalizedUrl)) {
-    const ffmpegOutput = path3.join(writableTempDir, `${tempBase}.ffmpeg.mp4`);
+    const ffmpegOutput = path4.join(writableTempDir, `${tempBase}.ffmpeg.mp4`);
     try {
       const parsedStream = new URL2(normalizedUrl);
       const { referer, origin } = getStreamRequestContext(parsedStream, options.sourcePageUrl || normalizedUrl);
@@ -15831,7 +16284,7 @@ var downloadDirectStreamVideoToFile = async (targetUrl, options = {}) => {
   const targetDir = resolveVideoDownloadTargetDir(sourcePageUrl, options.saveToWebsiteAssets);
   await fsp3.mkdir(targetDir, { recursive: true });
   const desiredFilename = toQualityVideoFilename(requestedQuality, title);
-  const desiredPath = path3.join(targetDir, desiredFilename);
+  const desiredPath = path4.join(targetDir, desiredFilename);
   try {
     const stat = await validateOutputFile(desiredPath, "Existing download");
     return {
@@ -15872,7 +16325,7 @@ var listVideoDownloadFiles = async () => {
   for (const dirName of dirNames) {
     if (!/_CreativeAssets$/i.test(dirName)) continue;
     const platform = dirName.replace(/_CreativeAssets$/i, "");
-    const videosDir = path3.join(downloadsDir, dirName, VIDEO_ASSET_SUBFOLDER);
+    const videosDir = path4.join(downloadsDir, dirName, VIDEO_ASSET_SUBFOLDER);
     let files = [];
     try {
       files = await fsp3.readdir(videosDir);
@@ -15881,7 +16334,7 @@ var listVideoDownloadFiles = async () => {
     }
     for (const fileName of files) {
       if (fileName.startsWith(".")) continue;
-      const filePath = path3.join(videosDir, fileName);
+      const filePath = path4.join(videosDir, fileName);
       try {
         const stat = await fsp3.stat(filePath);
         if (!stat.isFile()) continue;
@@ -16269,7 +16722,7 @@ var buildYtDlpBaseOptions = () => ({
   noCheckCertificates: true,
   noPlaylist: true,
   forceIpv4: true,
-  ...resolvedFfmpegPath ? { ffmpegLocation: path3.dirname(String(resolvedFfmpegPath)) } : {}
+  ...resolvedFfmpegPath ? { ffmpegLocation: path4.dirname(String(resolvedFfmpegPath)) } : {}
 });
 var buildYtDlpAuthOptions = (targetUrl) => {
   if (isPackagedDesktopApp()) return {};
@@ -16296,7 +16749,7 @@ var buildYtDlpRefererOptions = (targetUrl, sourcePageUrl) => {
   return {};
 };
 var buildYtDlpSpeedOptions = () => {
-  if (!aria2Path || !fs2.existsSync(aria2Path)) return {};
+  if (!aria2Path || !fs3.existsSync(aria2Path)) return {};
   return {
     externalDownloader: "aria2c",
     externalDownloaderArgs: "aria2c:-x 16 -s 16 -k 1M",
@@ -16352,22 +16805,22 @@ var describeUnsupportedPlatformVideoUrl = (rawUrl) => {
   try {
     const parsed = new URL2(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (host.includes("vimeo.com")) {
-      if (!path4 || path4 === "/") {
+      if (!path5 || path5 === "/") {
         return "That link is the Vimeo homepage. Paste a direct video URL like https://vimeo.com/123456789.";
       }
-      if (path4.startsWith("/ondemand/")) {
+      if (path5.startsWith("/ondemand/")) {
         return "That is a Vimeo On Demand catalog page, not a single video. Open a video and copy its direct link.";
       }
-      if (path4.startsWith("/channels/") || path4.startsWith("/groups/") || path4.startsWith("/categories/")) {
+      if (path5.startsWith("/channels/") || path5.startsWith("/groups/") || path5.startsWith("/categories/")) {
         return "That is a Vimeo browse page. Paste the URL of a specific video instead.";
       }
-      if (!parseVimeoIdFromUrl(rawUrl) && path4.split("/").filter(Boolean).length < 2) {
+      if (!parseVimeoIdFromUrl(rawUrl) && path5.split("/").filter(Boolean).length < 2) {
         return "Paste a direct Vimeo video link (e.g. https://vimeo.com/123456789).";
       }
     }
-    if (host.includes("youtube.com") && !parsed.searchParams.get("v") && !/\/(?:shorts|live|embed)\//.test(path4)) {
+    if (host.includes("youtube.com") && !parsed.searchParams.get("v") && !/\/(?:shorts|live|embed)\//.test(path5)) {
       return "Paste a direct YouTube watch link (e.g. https://www.youtube.com/watch?v=...).";
     }
   } catch {
@@ -16379,37 +16832,37 @@ var isPlatformVideoUrl = (rawUrl) => {
     if (isUnsupportedVideoResourceUrl(rawUrl)) return false;
     const parsed = new URL2(rawUrl);
     const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path4 = parsed.pathname.toLowerCase();
+    const path5 = parsed.pathname.toLowerCase();
     if (/(\.mp4|\.webm|\.mov|\.mkv|\.m3u8|\.mpd)(\?|$)/i.test(rawUrl)) return true;
-    if (host === "youtu.be") return path4.replace(/^\/+/, "").length > 0;
+    if (host === "youtu.be") return path5.replace(/^\/+/, "").length > 0;
     if (host === "youtube.com" || host.endsWith(".youtube.com")) {
-      return Boolean(parsed.searchParams.get("v")) || /\/(?:embed|shorts|live)\//.test(path4);
+      return Boolean(parsed.searchParams.get("v")) || /\/(?:embed|shorts|live)\//.test(path5);
     }
-    if (host === "player.vimeo.com") return /\/video\/\d+/.test(path4) || /\/progressive_redirect\/download\/\d+/.test(path4);
+    if (host === "player.vimeo.com") return /\/video\/\d+/.test(path5) || /\/progressive_redirect\/download\/\d+/.test(path5);
     if (host === "vimeo.com" || host.endsWith(".vimeo.com")) {
-      if (/\/progressive_redirect\/download\/\d+/.test(path4)) return true;
-      if (/^\/\d+(?:\/|$)/.test(path4)) return true;
-      if (/\.(ico|js|css|json)(\?|$)/i.test(path4)) return false;
-      if (/^\/(?:api|add|ablincoln|favicon|channels|groups|ondemand|categories)\b/.test(path4)) return false;
-      const segments = path4.split("/").filter(Boolean);
+      if (/\/progressive_redirect\/download\/\d+/.test(path5)) return true;
+      if (/^\/\d+(?:\/|$)/.test(path5)) return true;
+      if (/\.(ico|js|css|json)(\?|$)/i.test(path5)) return false;
+      if (/^\/(?:api|add|ablincoln|favicon|channels|groups|ondemand|categories)\b/.test(path5)) return false;
+      const segments = path5.split("/").filter(Boolean);
       return segments.length >= 2;
     }
     if (host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch") {
-      return host === "fb.watch" || /\/(?:watch|reel|videos?)\b|\/videos\//.test(path4);
+      return host === "fb.watch" || /\/(?:watch|reel|videos?)\b|\/videos\//.test(path5);
     }
-    if (host === "x.com" || host === "twitter.com" || host.endsWith(".twitter.com")) return /\/status(?:es)?\//.test(path4);
-    if (host === "instagram.com" || host.endsWith(".instagram.com")) return /\/(?:reel|reels|p|tv)\//.test(path4);
-    if (host === "tiktok.com" || host.endsWith(".tiktok.com")) return /\/video\//.test(path4);
+    if (host === "x.com" || host === "twitter.com" || host.endsWith(".twitter.com")) return /\/status(?:es)?\//.test(path5);
+    if (host === "instagram.com" || host.endsWith(".instagram.com")) return /\/(?:reel|reels|p|tv)\//.test(path5);
+    if (host === "tiktok.com" || host.endsWith(".tiktok.com")) return /\/video\//.test(path5);
     if (host === "players.brightcove.net" || host.endsWith(".players.brightcove.net")) {
-      return /\/index\.html$/i.test(path4) && Boolean(parsed.searchParams.get("videoId"));
+      return /\/index\.html$/i.test(path5) && Boolean(parsed.searchParams.get("videoId"));
     }
     if (host.includes("wistia.com") || host.includes("wistia.net")) {
-      return /\/(?:embed\/(?:medias|iframe)|medias)\/[a-z0-9]{8,12}/i.test(path4);
+      return /\/(?:embed\/(?:medias|iframe)|medias)\/[a-z0-9]{8,12}/i.test(path5);
     }
     if (host === "embed.ustudio.com" || host.endsWith(".ustudio.com")) {
-      return /^\/embed\/[^/]+\/[^/]+/i.test(path4);
+      return /^\/embed\/[^/]+\/[^/]+/i.test(path5);
     }
-    if (host === "ispot.tv" || host.endsWith(".ispot.tv")) return /^\/ad\/[^/]+\/[^/]+/.test(path4);
+    if (host === "ispot.tv" || host.endsWith(".ispot.tv")) return /^\/ad\/[^/]+\/[^/]+/.test(path5);
     return false;
   } catch {
     return /(\.mp4|\.webm|\.mov|\.mkv|\.m3u8|\.mpd)(\?|$)/i.test(rawUrl);
@@ -16487,7 +16940,7 @@ var buildDirectProgressiveVideoPayload = async (sourceUrl, req, sourcePageUrl, o
   assertPublicAssetUrl(normalizedUrl);
   const localFilename = filenameFromAssetUrl(normalizedUrl);
   const targetDir = resolveDownloadsTargetDir(sourcePageUrl);
-  const localPath = path3.join(targetDir, localFilename);
+  const localPath = path4.join(targetDir, localFilename);
   let stat = null;
   let metadata = null;
   if (options.cache) {
@@ -16503,7 +16956,7 @@ var buildDirectProgressiveVideoPayload = async (sourceUrl, req, sourcePageUrl, o
       metadata = await probeRemoteVideoMetadata(normalizedUrl, sourcePageUrl);
     } catch {
       await fsp3.mkdir(targetDir, { recursive: true });
-      const tempPath = path3.join(targetDir, `.probe-${Date.now()}-${localFilename}`);
+      const tempPath = path4.join(targetDir, `.probe-${Date.now()}-${localFilename}`);
       try {
         await downloadUrlToFile(normalizedUrl, tempPath, sourcePageUrl);
         stat = await validateOutputFile(tempPath, "Direct video probe");
@@ -17206,12 +17659,12 @@ var materializeMergedMp4FromPlatform = async (targetUrl, quality, req, titleHint
   await fsp3.mkdir(convertedVideoDir, { recursive: true });
   const targetHeight = getVimeoTargetHeight(quality);
   const tempBase = `merged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tempOutput = path3.join(convertedVideoDir, `${tempBase}.mp4`);
+  const tempOutput = path4.join(convertedVideoDir, `${tempBase}.mp4`);
   const resolvedTitle = String(titleHint || "video").trim();
   const safeFilename = toQualityVideoFilename(quality, resolvedTitle);
   const targetDir = resolveDownloadsTargetDir(options.sourcePageUrl);
   await fsp3.mkdir(targetDir, { recursive: true });
-  const finalPath = path3.join(targetDir, safeFilename);
+  const finalPath = path4.join(targetDir, safeFilename);
   try {
     const directInputUrl = options.directInputUrl ? sanitizeStreamUrl(options.directInputUrl, options.sourcePageUrl || targetUrl) : "";
     if (directInputUrl) {
@@ -19612,8 +20065,8 @@ var imageThumbPathsFor = (originalUrl) => {
   const hash = imageThumbHashFor(originalUrl);
   return {
     hash,
-    thumbPath: path3.join(generatedImageThumbDir, `${hash}.webp`),
-    metaPath: path3.join(generatedImageThumbDir, `${hash}.meta.json`),
+    thumbPath: path4.join(generatedImageThumbDir, `${hash}.webp`),
+    metaPath: path4.join(generatedImageThumbDir, `${hash}.meta.json`),
     publicThumbUrl: `/generated-image-thumbs/${hash}.webp`
   };
 };
@@ -19645,16 +20098,16 @@ var readImageThumbMeta = async (originalUrl) => {
 var buildImageThumbnail = async (originalUrl, sourcePageUrl = "") => {
   const normalized = String(originalUrl || "").trim();
   if (!normalized) throw new Error("Missing image URL");
-  if (normalized.startsWith("data:")) {
-    throw new Error("Data URLs use client-side preview");
-  }
+  const isInline = /^data:image\//i.test(normalized);
+  if (normalized.startsWith("data:") && !isInline) throw new Error("Unsupported inline image");
   const existing = await readImageThumbMeta(normalized);
   if (existing) return existing;
   await fsp3.mkdir(generatedImageThumbDir, { recursive: true });
   const { thumbPath, metaPath, publicThumbUrl } = imageThumbPathsFor(normalized);
-  const cached = await readCachedImageBuffer(normalized) || null;
-  let sourceBuffer = cached?.buffer || null;
-  let contentType = cached?.contentType || "";
+  const cached = isInline ? null : await readCachedImageBuffer(normalized) || null;
+  let sourceBuffer = isInline ? decodeDataImageBuffer(normalized) : cached?.buffer || null;
+  let contentType = isInline ? normalized.slice(5, normalized.indexOf(",")).split(";")[0] : cached?.contentType || "";
+  if (isInline && !sourceBuffer?.length) throw new Error("Invalid inline image");
   if (!sourceBuffer) {
     const fetched = await withTimeout(
       fetchAssetBuffer(normalized, normalized, { refererPageUrl: sourcePageUrl, skipBrowser: true }),
@@ -19750,11 +20203,13 @@ app.post("/api/warm-image-thumbs-batch", async (req, res) => {
   const results = {};
   await mapWithConcurrency(items.slice(0, 500), 6, async (item) => {
     const originalUrl = String(item?.originalUrl || item?.url || "").trim();
-    if (!originalUrl || originalUrl.startsWith("data:")) return;
+    if (!originalUrl) return;
     try {
-      assertAssetUrlAllowed(originalUrl);
+      if (!/^data:image\//i.test(originalUrl)) assertAssetUrlAllowed(originalUrl);
       const meta = await ensureImageThumbnail(originalUrl, sourcePageUrl);
-      const cached = await readAssetBufferFromCache(originalUrl, "image");
+      if (!meta.thumbUrl) throw new Error("Thumbnail generation returned no preview");
+      const inlineBuffer = /^data:image\//i.test(originalUrl) ? decodeDataImageBuffer(originalUrl) : null;
+      const cached = inlineBuffer ? { buffer: inlineBuffer, contentType: originalUrl.slice(5, originalUrl.indexOf(",")).split(";")[0] } : await readAssetBufferFromCache(originalUrl, "image");
       const contentType = cached?.contentType || "";
       const bytes = cached?.buffer?.length || meta.bytes || 0;
       const format = (cached?.buffer ? detectRasterFormatFromBuffer(cached.buffer) || detectImageFormatFromBuffer(cached.buffer) : "") || inferImageTypeFromContentType(contentType) || inferImageTypeFromUrl(originalUrl, contentType) || getAssetTypeFromUrl(originalUrl, "jpg");
@@ -19913,7 +20368,7 @@ app.post("/api/warm-image-cache-batch", async (req, res) => {
     return res.json({ ok: true, results: {}, warmed: 0, total: 0 });
   }
   const results = {};
-  const pending = [];
+  const pending2 = [];
   await mapWithConcurrency(items.slice(0, 500), 24, async (item) => {
     const originalUrl = String(item?.originalUrl || item?.url || "").trim();
     const requestUrl = String(item?.url || originalUrl).trim();
@@ -19926,7 +20381,7 @@ app.post("/api/warm-image-cache-batch", async (req, res) => {
       const normalized = assertAssetUrlAllowed(requestUrl);
       const cached = await readAssetBufferFromCache(normalized, "image") || (originalUrl && originalUrl !== normalized ? await readAssetBufferFromCache(originalUrl, "image") : null);
       if (!cached) {
-        pending.push({ originalUrl, requestUrl: normalized });
+        pending2.push({ originalUrl, requestUrl: normalized });
         results[originalUrl] = { ok: false, error: "warming" };
         return;
       }
@@ -19936,9 +20391,9 @@ app.post("/api/warm-image-cache-batch", async (req, res) => {
       results[originalUrl] = { ok: false, error: error?.message || "Image cache warm failed" };
     }
   });
-  if (pending.length > 0) {
+  if (pending2.length > 0) {
     setImmediate(() => {
-      void mapWithConcurrency(pending, 8, async (item) => {
+      void mapWithConcurrency(pending2, 8, async (item) => {
         await ensureImageCachedForDownload(item.requestUrl, item.originalUrl || item.requestUrl, sourcePageUrl).catch(
           () => void 0
         );
@@ -19946,7 +20401,7 @@ app.post("/api/warm-image-cache-batch", async (req, res) => {
     });
   }
   const warmed = Object.values(results).filter((entry) => entry.ok).length;
-  return res.json({ ok: true, results, warmed, pending: pending.length, total: items.length });
+  return res.json({ ok: true, results, warmed, pending: pending2.length, total: items.length });
 });
 app.post("/api/warm-image-conversions", async (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -20065,7 +20520,7 @@ var parseDownloadSaveKind = (value) => {
   return "default";
 };
 var inferDownloadSaveKindFromFilename = (filename) => {
-  const ext = path3.extname(String(filename || "")).toLowerCase();
+  const ext = path4.extname(String(filename || "")).toLowerCase();
   if (/^\.(?:woff2?|ttf|otf|eot|svg)$/.test(ext)) return "font";
   if (/^\.(?:png|jpe?g|gif|webp|avif|bmp|ico|tiff?|heic|heif)$/.test(ext)) return "image";
   return "default";
@@ -20480,7 +20935,7 @@ app.get("/api/download", async (req, res) => {
     assertPublicAssetUrl(normalizedSourceUrl);
     if (isYouTubeUrl(normalizedSourceUrl) && !isLikelyDirectVideoStreamUrl(normalizedSourceUrl) && !isLikelyVideoAssetUrl(normalizedSourceUrl)) {
       const tempBase2 = `creative-ytdlp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const outputPath = path3.join(writableTempDir, `${tempBase2}.mp4`);
+      const outputPath = path4.join(writableTempDir, `${tempBase2}.mp4`);
       const requestedQuality = typeof req.query.quality === "string" && ["hd", "fhd", "4k"].includes(req.query.quality) ? req.query.quality : "fhd";
       const inlinePlayback = req.query.inline === "1" || req.query.inline === "true";
       try {
@@ -20495,7 +20950,7 @@ app.get("/api/download", async (req, res) => {
         res.setHeader("Content-Disposition", `${inlinePlayback ? "inline" : "attachment"}; filename="${preferredName2 || "youtube-video.mp4"}"`);
         res.setHeader("Content-Type", "video/mp4");
         res.setHeader("Content-Length", String(stat.size));
-        const stream = fs2.createReadStream(outputPath);
+        const stream = fs3.createReadStream(outputPath);
         stream.on("close", async () => {
           await fsp3.unlink(outputPath).catch(() => void 0);
         });
@@ -20560,12 +21015,12 @@ app.get("/api/download", async (req, res) => {
     }
     response.data.destroy();
     const tempBase = `creative-extractor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const tempOutput = path3.join(writableTempDir, `${tempBase}.mp4`);
+    const tempOutput = path4.join(writableTempDir, `${tempBase}.mp4`);
     try {
       await transcodeUrlToMp4File(downloadUrl, tempOutput, referer, origin);
       const stat = await fsp3.stat(tempOutput);
       res.setHeader("Content-Length", String(stat.size));
-      const stream = fs2.createReadStream(tempOutput);
+      const stream = fs3.createReadStream(tempOutput);
       stream.on("close", async () => {
         await fsp3.unlink(tempOutput).catch(() => void 0);
       });
@@ -20614,7 +21069,7 @@ app.get("/api/convert-mp4", async (req, res) => {
     const targetDir = resolveDownloadsTargetDir(sourcePageUrl);
     await fsp3.mkdir(targetDir, { recursive: true });
     const tempBase = `converted-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const tempOutput = path3.join(convertedVideoDir, `${tempBase}.mp4`);
+    const tempOutput = path4.join(convertedVideoDir, `${tempBase}.mp4`);
     const isAlreadyMp4 = /\.mp4(\?|$)/i.test(validatedSourceUrl);
     if (isAlreadyMp4) {
       const downloadResponse = await axios({
@@ -20630,7 +21085,7 @@ app.get("/api/convert-mp4", async (req, res) => {
         }
       });
       await new Promise((resolve, reject) => {
-        const out = fs2.createWriteStream(tempOutput);
+        const out = fs3.createWriteStream(tempOutput);
         downloadResponse.data.pipe(out);
         out.on("finish", resolve);
         out.on("error", reject);
@@ -20639,7 +21094,7 @@ app.get("/api/convert-mp4", async (req, res) => {
     } else {
       await transcodeUrlToMp4File(validatedSourceUrl, tempOutput, referer, origin);
     }
-    const finalPath = path3.join(targetDir, safeFilename);
+    const finalPath = path4.join(targetDir, safeFilename);
     await fsp3.rename(tempOutput, finalPath).catch(async () => {
       await fsp3.copyFile(tempOutput, finalPath);
       await fsp3.unlink(tempOutput).catch(() => void 0);
@@ -20713,10 +21168,10 @@ app.get("/api/convert-audio", async (req, res) => {
     const parsedAudioSource = new URL2(audioSourceUrl);
     const { referer, origin } = getStreamRequestContext(parsedAudioSource, sourcePageUrl);
     const tempBase = `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    let outputFormat = audioMode === "original" ? resolvedAudioStream?.originalOutput?.extension || getOriginalAudioOutput(resolvedAudioStream || { ext: path3.extname(parsedAudioSource.pathname).replace(/^\./, "") }).extension : audioMode === "turbo" ? "m4a" : "mp3";
+    let outputFormat = audioMode === "original" ? resolvedAudioStream?.originalOutput?.extension || getOriginalAudioOutput(resolvedAudioStream || { ext: path4.extname(parsedAudioSource.pathname).replace(/^\./, "") }).extension : audioMode === "turbo" ? "m4a" : "mp3";
     const originalContainer = audioMode === "original" ? resolvedAudioStream?.originalOutput?.container || getOriginalAudioOutput(resolvedAudioStream || { ext: outputFormat }).container : void 0;
-    let tempOutput = path3.join(convertedAudioDir, `${tempBase}.${outputFormat}`);
-    const tempInput = path3.join(convertedAudioDir, `${tempBase}-source${path3.extname(parsedAudioSource.pathname) || ".bin"}`);
+    let tempOutput = path4.join(convertedAudioDir, `${tempBase}.${outputFormat}`);
+    const tempInput = path4.join(convertedAudioDir, `${tempBase}-source${path4.extname(parsedAudioSource.pathname) || ".bin"}`);
     const isManifestSource = /\.m3u8|\.mpd/i.test(parsedAudioSource.pathname) || /mpegurl|dash\+xml/i.test(String(validation.contentType || ""));
     try {
       if (audioMode === "original") {
@@ -20733,7 +21188,7 @@ app.get("/api/convert-audio", async (req, res) => {
           console.warn("Quick audio copy failed, falling back to 128kbps MP3:", copyError?.message || copyError);
           await fsp3.unlink(tempOutput).catch(() => void 0);
           outputFormat = "mp3";
-          tempOutput = path3.join(convertedAudioDir, `${tempBase}.mp3`);
+          tempOutput = path4.join(convertedAudioDir, `${tempBase}.mp3`);
           try {
             await transcodeUrlToMp3File(audioSourceUrl, tempOutput, referer, origin, requestedBitrate, {
               durationSeconds: turboDurationSeconds,
@@ -20763,7 +21218,7 @@ app.get("/api/convert-audio", async (req, res) => {
       await fsp3.unlink(tempInput).catch(() => void 0);
     }
     const safeFilename = `${requestedBase}.${outputFormat}`;
-    const finalPath = path3.join(convertedAudioDir, safeFilename);
+    const finalPath = path4.join(convertedAudioDir, safeFilename);
     await fsp3.rename(tempOutput, finalPath).catch(async () => {
       await fsp3.copyFile(tempOutput, finalPath);
       await fsp3.unlink(tempOutput).catch(() => void 0);
@@ -20810,8 +21265,8 @@ app.post("/api/open-folder", async (req, res) => {
   }
 });
 var isInsidePath = (candidate, parent) => {
-  const relative = path3.relative(path3.resolve(parent), path3.resolve(candidate));
-  return Boolean(relative) && !relative.startsWith("..") && !path3.isAbsolute(relative);
+  const relative = path4.relative(path4.resolve(parent), path4.resolve(candidate));
+  return Boolean(relative) && !relative.startsWith("..") && !path4.isAbsolute(relative);
 };
 app.delete("/api/website-downloads", async (req, res) => {
   const sourcePageUrl = readSourcePageUrl(req, String(req.body?.sourcePageUrl || ""));
@@ -20820,7 +21275,7 @@ app.delete("/api/website-downloads", async (req, res) => {
   try {
     const root = resolveCreativeAssetsRoot(sourcePageUrl, { sectionMode: lastExtractionSectionMode });
     if (!deleteFiles) return res.json({ ok: true, mode: "history", removed: 0, path: root });
-    const downloadsRoot = path3.join(os3.homedir(), "Downloads");
+    const downloadsRoot = path4.join(os3.homedir(), "Downloads");
     if (!isInsidePath(root, downloadsRoot)) {
       return res.status(400).json({ error: "Refusing to clear files outside Downloads." });
     }
@@ -20845,13 +21300,13 @@ app.get("/api/fetch-direct-video", async (req, res) => {
     const sourcePageUrl = typeof req.query.sourcePageUrl === "string" ? req.query.sourcePageUrl : void 0;
     const payload = await buildDirectProgressiveVideoPayload(url, req, sourcePageUrl, { cache: true });
     const preferredName = typeof filename === "string" && filename.trim() ? filename.trim().replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120) : payload.localFilename;
-    const filePath = payload.localPath || path3.join(downloadsDir, payload.localFilename);
+    const filePath = payload.localPath || path4.join(downloadsDir, payload.localFilename);
     const stat = await validateOutputFile(filePath, "Direct video download");
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Content-Disposition", `attachment; filename="${preferredName || payload.localFilename}"`);
     res.setHeader("Content-Length", String(stat.size));
     res.setHeader("Cache-Control", "private, max-age=3600");
-    return fs2.createReadStream(filePath).pipe(res);
+    return fs3.createReadStream(filePath).pipe(res);
   } catch (error) {
     console.error("Direct video fetch error:", error?.message || error);
     return res.status(500).json({ error: error?.message || "Failed to fetch direct video." });
@@ -20863,14 +21318,14 @@ app.get("/api/download-local-video", async (req, res) => {
   if (!safeFilename || safeFilename !== filename || !safeFilename.toLowerCase().endsWith(".mp4")) {
     return res.status(400).json({ error: "A valid local MP4 filename is required." });
   }
-  const filePath = path3.join(downloadsDir, safeFilename);
+  const filePath = path4.join(downloadsDir, safeFilename);
   const resolved = assertPathInsideDownloads(filePath);
   try {
     await validateOutputFile(resolved, "Local video download");
     res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "no-store, private");
-    return fs2.createReadStream(resolved).pipe(res);
+    return fs3.createReadStream(resolved).pipe(res);
   } catch {
     return res.status(404).json({ error: "Local video file was not found in Downloads." });
   }
@@ -20881,7 +21336,7 @@ app.head("/api/download-local-video", async (req, res) => {
   if (!safeFilename || safeFilename !== filename || !safeFilename.toLowerCase().endsWith(".mp4")) {
     return res.status(400).end();
   }
-  const filePath = path3.join(downloadsDir, safeFilename);
+  const filePath = path4.join(downloadsDir, safeFilename);
   try {
     const stat = await validateOutputFile(assertPathInsideDownloads(filePath), "Local video download");
     res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
@@ -22331,7 +22786,7 @@ app.post("/api/download-zip", async (req, res) => {
         fontEntries.map(
           (entry) => saveBufferToDownloads(
             entry.buffer,
-            path3.basename(entry.name),
+            path4.basename(entry.name),
             "Font download",
             zipPageUrl,
             "font"
@@ -22372,7 +22827,7 @@ app.post("/api/download-zip", async (req, res) => {
         kind: "zip",
         rootFolderName
       });
-      const writeStream = fs2.createWriteStream(target.filePath);
+      const writeStream = fs3.createWriteStream(target.filePath);
       const streamDone = new Promise((resolve, reject) => {
         writeStream.on("finish", resolve);
         writeStream.on("error", reject);
@@ -22440,10 +22895,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path3.join(getAppRoot(), "dist");
+    const distPath = path4.join(getAppRoot(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      res.sendFile(path3.join(distPath, "index.html"));
+      res.sendFile(path4.join(distPath, "index.html"));
     });
   }
   const server = app.listen(activePort, "127.0.0.1", () => {

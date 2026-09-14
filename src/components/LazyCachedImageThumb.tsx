@@ -56,7 +56,7 @@ const sanitizeInlineSvgDataUrl = (url: string) => {
     : url;
 };
 
-const buildThumbCandidates = (
+export const buildThumbCandidates = (
   img: { url?: string; cachedUrl?: string; dataUrl?: string; thumbnailUrl?: string; type?: string; mimeType?: string; filename?: string; source?: string },
   _sourcePageUrl: string
 ) => {
@@ -80,6 +80,11 @@ const buildThumbCandidates = (
   const isGeneratedFontAwesomeSvg =
     source.includes('font-awesome-icon-svg') ||
     (String((img as any)?.filename || '').toLowerCase().endsWith('.svg') && source.includes('font-awesome'));
+
+  // Generated previews apply to inline/data assets as well as remote URLs.
+  if (generatedThumbnail) {
+    addCandidate(/^(?:https?:|data:|blob:)/i.test(generatedThumbnail) ? generatedThumbnail : apiUrl(generatedThumbnail));
+  }
 
   if (embeddedDataUrl.startsWith('data:image/')) {
     addCandidate(sanitizeInlineSvgDataUrl(embeddedDataUrl));
@@ -114,9 +119,6 @@ const buildThumbCandidates = (
       /\/jellies\/(?:max|relative)\//i.test(originalUrl);
     const thumbPreview = buildImageThumbRequest(img, _sourcePageUrl);
     const fallbackPreview = buildImagePreviewRequest(img, _sourcePageUrl);
-    if (generatedThumbnail) {
-      addCandidate(generatedThumbnail.startsWith('http') ? generatedThumbnail : apiUrl(generatedThumbnail));
-    }
     if (!isSvgAsset && thumbPreview) addCandidate(apiUrl(thumbPreview));
     if (isSvgAsset && fallbackPreview) addCandidate(apiUrl(fallbackPreview));
     addCandidate(originalUrl);
@@ -149,6 +151,7 @@ export default function LazyCachedImageThumb({
   const reportedFailedRef = useRef(false);
   const candidates = useMemo(() => {
     const fallbackCandidates = buildThumbCandidates(img, sourcePageUrl);
+    if (generatedThumbnail) return fallbackCandidates;
     return validatedPreview
       ? [validatedPreview, ...fallbackCandidates.filter((candidate) => candidate !== validatedPreview)]
       : fallbackCandidates;
@@ -163,7 +166,7 @@ export default function LazyCachedImageThumb({
   useEffect(() => {
     let cancelled = false;
     setValidatedPreview('');
-    if (!assetKey || assetKey.startsWith('data:') || embeddedDataUrl.startsWith('data:image/')) return () => {
+    if (!assetKey || generatedThumbnail || assetKey.startsWith('data:') || embeddedDataUrl.startsWith('data:image/')) return () => {
       cancelled = true;
     };
 

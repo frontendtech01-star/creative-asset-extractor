@@ -67,7 +67,9 @@
     "setup:feedback": "node scripts/setup-google-feedback.mjs",
     "sync:ftp": "bash scripts/sync-ftp.sh",
     "size": "du -sh dist node_modules 2>/dev/null || true",
-    "smoke:kesimpta": "tsx scripts/smoke-kesimpta.mjs"
+    "smoke:360": "tsx scripts/smoke-360-sequences.mjs",
+    "smoke:kesimpta": "tsx scripts/smoke-kesimpta.mjs",
+    "smoke:interior-360": "tsx scripts/smoke-interior-360.mjs"
   },
   "build": {
     "appId": "com.creativeassetextractor.desktop",

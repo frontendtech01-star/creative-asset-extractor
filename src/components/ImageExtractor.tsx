@@ -1,3 +1,4 @@
+import { imageSequenceFolder } from '../lib/imageSequenceDownload';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Download, Image as ImageIcon, Search, Filter } from 'lucide-react';
 import { apiFetch } from '../lib/api';
@@ -29,7 +30,7 @@ const getImageSequenceFrame = (img: any) => {
       explicitCount >= 2 &&
       (hasSequenceSource || commonSequenceCounts.has(explicitCount))
   );
-  const hasPrefixedFrameName = Boolean(prefixedFrameMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(url));
+  const hasPrefixedFrameName = Boolean(prefixedFrameMatch && /(?:visualizer|threesixty|360)/i.test(url.split(/[?#]/)[0]));
   if (!hasSequenceSource && !hasExplicitCountPath && !hasPrefixedFrameName) return null;
   const frame = Number(img?.sequenceFrame || explicitCountMatch?.[2] || prefixedFrameMatch?.[1] || 0);
   if (!Number.isFinite(frame) || frame < 1) return null;
@@ -67,6 +68,7 @@ const getImageSequenceGroupKey = (img: any) => {
 const getImageSequenceLabel = (img: any) => {
   const frameInfo = getImageSequenceFrame(img);
   if (!frameInfo) return '';
+  if (img?.sequenceColor) return `360 ${img.sequenceColor}`;
   const url = String(img?.url || '').trim();
   try {
     const parsed = new URL(url);
@@ -272,7 +274,7 @@ export default function ImageExtractor({
           filenameBase: frameName,
           filename: `${frameName}.${ext}`,
           metadataFilename: `${frameName}.${ext}`,
-          zipEntryName: `Images/360_Sequence/${frameName}.${ext}`,
+          zipEntryName: `Images/360_Sequence/${imageSequenceFolder(getImageSequenceGroupKey(img), getImageSequenceLabel(img))}/${frameName}.${ext}`,
         };
       });
       const response = await apiFetch('/api/download-zip', {
@@ -399,7 +401,7 @@ export default function ImageExtractor({
           >
             <div className="aspect-square bg-zinc-100 relative">
               <LazyCachedImageThumb
-                img={img}
+                img={{ ...img, thumbnailUrl: thumbMetaByKey[key]?.thumbUrl || img.thumbnailUrl }}
                 sourcePageUrl={sourcePageUrl}
                 alt={`Extracted ${idx}`}
                 fallbackLabel={filename}

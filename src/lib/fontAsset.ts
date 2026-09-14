@@ -43,8 +43,8 @@ export const getFontSelectionKey = (font: { url?: string; family?: string; weigh
   const url = String(font?.url || '').trim();
   const variation = String(font?.variationWeight ?? '').trim();
   const italic = font?.variationItalic ? '#ital=1' : '';
-  if (!url.startsWith('data:')) return variation ? `${url}#wght=${variation}${italic}` : `${url}${italic}`;
-  return `inline-font:${String(font?.family || '').trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url.length}`;
+  if (!url.startsWith('data:')) return variation ? `${url}#wght=${variation}${italic}` : `${url}#face=${normalizeFontWeightKey(font.weight)}:${normalizeFontStyleKey(font.style)}${italic}`;
+  return `inline-font:${String(font?.family || '').trim()}:${normalizeFontWeightKey(font?.weight)}:${normalizeFontStyleKey(font?.style)}:${url}`;
 };
 
 export const normalizeFontStyleKey = (style: string | undefined) => {
@@ -79,14 +79,16 @@ const WEIGHT_SUFFIX_TO_KEY: Record<string, string> = {
 
 /** Split CSS families like Barlow-Bold or BarlowCondensed-SemiBoldItalic into family + weight + style. */
 export const resolveFontIdentityFields = (font: {
+  assetName?: string;
   family?: string;
   title?: string;
   name?: string;
   weight?: string | number;
   style?: string;
 }) => {
+  const label = [font?.family, font?.title, font?.name].find(value => value && !isJunkFontLabel(String(value))) || '';
   let family = sanitizeFontFilenameBase(
-    String(font?.family || font?.title || font?.name || '')
+    String(label).replace(/\.(?:woff2?|ttf|otf|eot)$/i, '')
       .replace(/^["']+|["']+$/g, '')
       .trim()
   );
@@ -103,14 +105,16 @@ export const resolveFontIdentityFields = (font: {
     if (mapped && (!weight || String(weight).toLowerCase() === 'normal' || String(weight) === '400')) {
       weight = mapped;
     }
-    if (hyphenated[3]) style = style || 'italic';
+    if (hyphenated[3] && (!style || style === 'normal')) style = 'italic';
   }
 
-  return { family, weight, style };
+  if (/[- ]Italic$/i.test(family)) { family = family.replace(/[- ]Italic$/i, ''); if (!style || style === 'normal') style = 'italic'; }
+  return { family: family.replace(/\s+/g, ' ').trim(), weight, style };
 };
 
 /** Stable identity for @font-face rows (ignores Google Fonts subset file URLs). */
 export const getFontLogicalKey = (font: {
+  assetName?: string;
   family?: string;
   title?: string;
   name?: string;
@@ -119,7 +123,7 @@ export const getFontLogicalKey = (font: {
 }) => {
   const { family, weight, style } = resolveFontIdentityFields(font);
   if (!family || isJunkFontLabel(family)) return '';
-  return `${family}|${normalizeFontWeightKey(weight)}|${normalizeFontStyleKey(style)}`;
+  return `${family.toLowerCase()}|${normalizeFontWeightKey(weight)}|${normalizeFontStyleKey(style)}`;
 };
 
 export const scoreFontSubsetUrl = (url: string) => {
@@ -362,6 +366,7 @@ export const normalizeFontWeightLabel = (weight: string | number | undefined) =>
 export const buildFontDisplayName = (font: {
   url?: string;
   cachedUrl?: string;
+  assetName?: string;
   family?: string;
   title?: string;
   name?: string;
@@ -369,6 +374,7 @@ export const buildFontDisplayName = (font: {
   weight?: string | number;
   style?: string;
 }) => {
+  if (font.assetName) return font.assetName;
   const identity = resolveFontIdentityFields(font);
   const resolvedFamily = prettifyFontFamilyLabel(sanitizeFontFilenameBase(String(identity.family || '').trim()));
   const familyCandidates = [
@@ -395,6 +401,7 @@ export const buildFontDisplayName = (font: {
 export const getFontFamilyFolderName = (font: {
   url?: string;
   cachedUrl?: string;
+  assetName?: string;
   family?: string;
   title?: string;
   name?: string;
@@ -468,6 +475,7 @@ export const pickBestFontForUrl = (fonts: any[], url: string) =>
 export const getFontFilenameBase = (font: {
   url?: string;
   cachedUrl?: string;
+  assetName?: string;
   family?: string;
   title?: string;
   name?: string;

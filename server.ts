@@ -1,3 +1,9 @@
+import { resolveDuplicateImageContent } from './server/duplicate-image-content';
+import { mergeExtractionFonts } from './src/lib/extractionFontIdentity';
+import { mergeExtractionImages } from './src/lib/extractionImageIdentity';
+import { extractLexusInterior } from './server/lexus-interior';
+import { imageSequenceSeedMetadata } from './server/image-sequence-metadata';
+import { discoverLexusSequences, verifyLexusSequences } from './server/lexus-sequences';
 import { extractKalturaVideosFromHtml } from './server/kaltura';
 import express from 'express';
 import { countryProxyStatus, resolveCountryProxy } from './server/country-proxy';
@@ -1768,7 +1774,7 @@ const buildChromeTabAssetCaptureScript = () => `
         .replace(/^\\/is\\/image\\/toyota\\/toyota\\/(?=jellies\\/)/i, '/')
         .replace(/\\/{2,}/g, '/');
       if (/\\/\\d{1,3}\\/\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) return 'sequence:' + path.toLowerCase();
-      if (/(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href) && /[-_]\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) {
+      if (/(?:visualizer|threesixty|360)/i.test(parsed.pathname) && /[-_]\\d{1,3}\\.(?:png|jpe?g|webp|avif)$/i.test(path)) {
         return 'sequence:' + path.toLowerCase();
       }
     } catch {
@@ -2011,7 +2017,7 @@ const buildChromeTabAssetCaptureScript = () => `
         pathCount <= 120 &&
         ((hinted >= 2 && hinted <= 120 && pathCount === hinted) || commonSequenceCounts.has(pathCount))
     );
-    const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(parsed.href));
+    const hasPrefixedFrameName = Boolean(prefixedLeafMatch && /(?:visualizer|threesixty|360)/i.test(parsed.pathname));
     if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
     const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
     if (!count || count > 120 || frame > count) return [];
@@ -2322,6 +2328,7 @@ const buildChromeTabAssetCaptureScript = () => `
     ok: true,
     url: location.href,
     title: document.title || location.href,
+    sequenceHtml: /(^|\\.)lexus\\.com$/i.test(location.hostname) ? document.body.outerHTML : '',
     images,
 	    fonts: [
 	      ...Array.from(fontUrls).map((url) => ({ url, name: filenameFromUrl(url, 'font'), format: typeFromUrl(url), source: 'stylesheet-or-network' })),
@@ -2433,7 +2440,8 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
       originalFilename: filenameFromUrlPath(String(font?.url || '')),
     }))
     .concat(cssFonts);
-  const rawImageRows = (Array.isArray(raw?.images) ? raw.images : [])
+  const rawImageRows = [...(Array.isArray(raw?.images) ? raw.images : []),
+    ...discoverLexusSequences(String(raw?.sequenceHtml || ''), pageUrl)]
     .filter((image: any) => {
       const url = String(image?.url || '').trim();
       return Boolean(url) && !isJunkImageUrl(url);
@@ -2486,6 +2494,10 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
         width: Number(image.width || 0) || undefined,
         height: Number(image.height || 0) || undefined,
         source: String(image.source || '').trim() || source,
+        sequenceFrame: image.sequenceFrame,
+        sequenceCount: image.sequenceCount,
+        sequenceColor: image.sequenceColor,
+        sequenceVerified: image.sequenceVerified,
         status: DEFAULT_ASSET_STATUS,
       };
       })
@@ -2592,9 +2604,10 @@ const normalizeBrowserSessionExtraction = async (raw: any, sourceUrl: string, so
     : collapseVimeoVideosForClient(standaloneBrowserVideos);
 
   return {
-    images: expandedImages,
+    images: mergeExtractionImages(await resolveDuplicateImageContent(expandedImages, async image =>
+      decodeDataImageBuffer(String(image.url)) || (await readAssetBufferFromCache(image.cachedUrl || image.url, 'image'))?.buffer || null)),
     icons: [],
-    fonts,
+    fonts: mergeExtractionFonts(fonts),
     fontUsage: Array.from(fontUsageByKey.values()),
     videos,
     colors: Array.isArray(raw?.colors) ? raw.colors : [],
@@ -5627,7 +5640,7 @@ const expandImageSequenceUrl = (rawUrl: string, baseUrl: string, hintedCount = 0
   );
   const hasPrefixedFrameName = Boolean(
     prefixedLeafMatch &&
-      /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(absolute)
+      /(?:visualizer|threesixty|360)/i.test(parsed.pathname)
   );
   // Do not infer a full Toyota/Lexus 360 sequence from ordinary jelly
   // product images like /limited/7582/3u5/1.png. Toyota often exposes only
@@ -5999,7 +6012,7 @@ const extractImagesFromDom = ($: any, targetUrl: string, options: { scoped?: boo
 };
 
 const extractImagesFromHtmlString = (html: string, targetUrl: string) => {
-  const images: any[] = [];
+  const images: any[] = discoverLexusSequences(html, targetUrl);
   const searchText = html.replace(/\\/g, '').replace(/&amp;/g, '&');
 
   const absoluteRegex = /https?:\/\/[^"'<>\s\\)]+\.(?:svg|png|jpe?g|webp|gif|avif)(?:\/[^"'<>\s\\)]*)?(?:\?[^"'<>\s\\)]*)?/gi;
@@ -9776,7 +9789,11 @@ const resolveFontMetadata = async (font: any, targetUrl: string) => {
 };
 
 const enrichFontsWithMetadata = async (fonts: any[], targetUrl: string, options: { fast?: boolean } = {}) => {
-  const candidates = fonts.filter((font) => font?.url && shouldResolveFontMetadata(font));
+  const names = new Map<string, number>();
+  const duplicateName = (font: any) => filenameFromUrlPath(String(font.url || '')).replace(/\.(?:woff2?|ttf|otf)$/i, '').toLowerCase();
+  fonts.forEach(font => names.set(duplicateName(font), (names.get(duplicateName(font)) || 0) + 1));
+  const candidates = fonts.filter(font => font?.url && (shouldResolveFontMetadata(font) || (names.get(duplicateName(font)) || 0) > 1))
+    .sort((a, b) => Number((names.get(duplicateName(b)) || 0) > 1) - Number((names.get(duplicateName(a)) || 0) > 1));
   if (candidates.length === 0) return fonts;
   const limit = options.fast ? 12 : 28;
   const uniqueCandidates = Array.from(new Map(candidates.map((font) => [String(font.url), font])).values()).slice(0, limit);
@@ -10818,21 +10835,7 @@ const scoreImageRecord = (img: any) => {
   return score;
 };
 
-const dedupeImagesByCanonicalKey = (images: any[]) => {
-  const groups = new Map<string, any[]>();
-  for (const img of images) {
-    const url = String(img?.url || '');
-    if (!url) continue;
-    const key = canonicalImageDedupKey(url);
-    if (!key) continue;
-    const bucket = groups.get(key) || [];
-    bucket.push(img);
-    groups.set(key, bucket);
-  }
-  return Array.from(groups.values()).map((group) =>
-    [...group].sort((a, b) => scoreImageRecord(b) - scoreImageRecord(a))[0]
-  );
-};
+const dedupeImagesByCanonicalKey = (images: any[]) => mergeExtractionImages(images);
 
 const parseExpandableImageSequence = (rawUrl: string) => {
   const value = String(rawUrl || '').replace(/&amp;/g, '&').trim();
@@ -10844,6 +10847,9 @@ const parseExpandableImageSequence = (rawUrl: string) => {
     return null;
   }
   if (parsed.pathname.includes('//')) return null;
+  // Adobe asset IDs resolve independently of the display filename. Renaming
+  // an ordinary photo therefore returns the same bytes for every fake frame.
+  if (/\/adobe\/assets\/urn:/i.test(parsed.pathname)) return null;
   const numericLeafMatch = parsed.pathname.match(/^(.*\/)(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const prefixedLeafMatch = parsed.pathname.match(/^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i);
   const match = numericLeafMatch || prefixedLeafMatch;
@@ -10976,7 +10982,7 @@ const repairMalformedToyotaCountedSequences = async (items: any[], targetUrl: st
       if (existingUrls.has(candidate.url)) continue;
       existingUrls.add(candidate.url);
       discovered.push({
-        ...repairedGroup.seed,
+        ...imageSequenceSeedMetadata(repairedGroup.seed),
         url: candidate.url,
         type: inferImageTypeFromUrl(candidate.url) || getAssetTypeFromUrl(candidate.url, 'png'),
         filename: filenameFromUrlPath(candidate.url),
@@ -10992,16 +10998,22 @@ const repairMalformedToyotaCountedSequences = async (items: any[], targetUrl: st
 };
 
 const expandAvailableImageSequences = async (items: any[], targetUrl: string) => {
+  const interiors = await extractLexusInterior(targetUrl, cachedImageOriginalDir, `http://localhost:${activePort || DEFAULT_PORT}`)
+    .catch((error) => { console.warn('Interior panorama extraction:', error.message); return []; });
+  if (interiors.length) console.info(`Interior panorama: ${interiors.length} rendered frames ready`);
+  items = [...items, ...interiors];
+  items = await verifyLexusSequences(items, (url) => isRemoteImageUrlAvailable(url, targetUrl));
   const byGroup = new Map<string, { seed: any; parsed: NonNullable<ReturnType<typeof parseExpandableImageSequence>>; observedFrames: Set<number> }>();
   for (const item of items) {
     const url = String(item?.url || '').trim();
+    if (item.sequenceVerified) continue;
     const parsed = parseExpandableImageSequence(url);
     if (!parsed) continue;
     if (parsed.explicitCount > 0) continue;
     if (!/(?:toyota|jellies|mazda|lexus|assetscs|visualizer|threesixty|360)/i.test(url)) continue;
     const isToyotaJellySequence = /\/jellies\/(?:max|relative)\//i.test(url);
     const isPrefixedVisualizerSequence =
-      /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(url) &&
+      /(?:visualizer|threesixty|360)/i.test(new URL(url).pathname) &&
       /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif)(?:[?#]|$)/i.test(url);
     if (!isToyotaJellySequence && !isPrefixedVisualizerSequence) continue;
     const group = byGroup.get(parsed.key) || { seed: item, parsed, observedFrames: new Set<number>() };
@@ -11061,7 +11073,7 @@ const expandAvailableImageSequences = async (items: any[], targetUrl: string) =>
       if (!url || existingUrls.has(url)) continue;
       existingUrls.add(url);
       discovered.push({
-        ...group.seed,
+        ...imageSequenceSeedMetadata(group.seed),
         url,
         type: inferImageTypeFromUrl(url) || getAssetTypeFromUrl(url, String(group.seed?.type || 'jpg')),
         filename: filenameFromUrlPath(url),
@@ -11837,7 +11849,7 @@ const extractRenderedDomAssetsFromPage = async (
       );
       const hasPrefixedFrameName = Boolean(
         /^(.*[-_])(\d{1,3})(\.(?:png|jpe?g|webp|avif))$/i.test(parsed.pathname) &&
-          /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(target)
+          /(?:visualizer|threesixty|360)/i.test(parsed.pathname)
       );
       if (!hasExplicitFrameCountPath && !hasPrefixedFrameName) return [];
       const count = hasExplicitFrameCountPath ? pathCount : Number(countHint || 0);
@@ -12444,6 +12456,8 @@ const dedupeExtractedAssets = async (
     : await expandAvailableImageSequences(baseImages, targetUrl);
   imagePool = await filterUnavailableGeneratedImageSequences(imagePool, targetUrl);
   imagePool = keepBestToyotaSequenceGroup(imagePool, targetUrl);
+  imagePool = await resolveDuplicateImageContent(imagePool, async image =>
+    decodeDataImageBuffer(String(image.url)) || (await readAssetBufferFromCache(image.cachedUrl || image.url, 'image'))?.buffer || null);
   const uniqueIcons = dedupeImagesByCanonicalKey(
     Array.from(new Set(iconPool.map((item) => item.url)))
       .map((url) => iconPool.find((item) => item.url === url))
@@ -21163,9 +21177,8 @@ const buildImageThumbnail = async (
 ): Promise<ImageThumbMeta> => {
   const normalized = String(originalUrl || '').trim();
   if (!normalized) throw new Error('Missing image URL');
-  if (normalized.startsWith('data:')) {
-    throw new Error('Data URLs use client-side preview');
-  }
+  const isInline = /^data:image\//i.test(normalized);
+  if (normalized.startsWith('data:') && !isInline) throw new Error('Unsupported inline image');
 
   const existing = await readImageThumbMeta(normalized);
   if (existing) return existing;
@@ -21173,10 +21186,11 @@ const buildImageThumbnail = async (
   await fsp.mkdir(generatedImageThumbDir, { recursive: true });
   const { thumbPath, metaPath, publicThumbUrl } = imageThumbPathsFor(normalized);
 
-  const cached = (await readCachedImageBuffer(normalized)) || null;
+  const cached = isInline ? null : (await readCachedImageBuffer(normalized)) || null;
 
-  let sourceBuffer = cached?.buffer || null;
-  let contentType = cached?.contentType || '';
+  let sourceBuffer = isInline ? decodeDataImageBuffer(normalized) : cached?.buffer || null;
+  let contentType = isInline ? normalized.slice(5, normalized.indexOf(',')).split(';')[0] : cached?.contentType || '';
+  if (isInline && !sourceBuffer?.length) throw new Error('Invalid inline image');
 
   if (!sourceBuffer) {
     const fetched = await withTimeout(
@@ -21284,11 +21298,13 @@ app.post('/api/warm-image-thumbs-batch', async (req, res) => {
 
   await mapWithConcurrency(items.slice(0, 500), 6, async (item: any) => {
     const originalUrl = String(item?.originalUrl || item?.url || '').trim();
-    if (!originalUrl || originalUrl.startsWith('data:')) return;
+    if (!originalUrl) return;
     try {
-      assertAssetUrlAllowed(originalUrl);
+      if (!/^data:image\//i.test(originalUrl)) assertAssetUrlAllowed(originalUrl);
       const meta = await ensureImageThumbnail(originalUrl, sourcePageUrl);
-      const cached = await readAssetBufferFromCache(originalUrl, 'image');
+      if (!meta.thumbUrl) throw new Error('Thumbnail generation returned no preview');
+      const inlineBuffer = /^data:image\//i.test(originalUrl) ? decodeDataImageBuffer(originalUrl) : null;
+      const cached = inlineBuffer ? { buffer: inlineBuffer, contentType: originalUrl.slice(5, originalUrl.indexOf(',')).split(';')[0] } : await readAssetBufferFromCache(originalUrl, 'image');
       const contentType = cached?.contentType || '';
       const bytes = cached?.buffer?.length || meta.bytes || 0;
       const format =

@@ -17,10 +17,12 @@ const IMAGE_VARIANT_QUERY_PARAMS = new Set([
   'width',
   'h',
   'height',
+  'wid',
+  'hei',
+  'qlt',
   'q',
   'quality',
   'fit',
-  'crop',
   'dpr',
   'fm',
   'format',
@@ -46,7 +48,7 @@ const looksLikeImageSequenceAsset = (img: any, rawUrl: string) => {
   }
 
   return (
-    /(?:lexus|assetscs|visualizer|threesixty|360)/i.test(rawUrl) &&
+    /(?:visualizer|threesixty|360)/i.test(rawUrl.split(/[?#]/)[0]) &&
     /[-_]\d{1,3}\.(?:png|jpe?g|webp|avif|gif)(?:[?#]|$)/i.test(rawUrl)
   );
 };
@@ -104,6 +106,7 @@ export const getImageDedupeKey = (img: any) => {
 
   try {
     const parsed = new URL(rawUrl);
+    const symbol = /\.svg$/i.test(parsed.pathname) ? parsed.hash : '';
     parsed.hash = '';
 
     Array.from(parsed.searchParams.keys()).forEach((key) => {
@@ -124,7 +127,7 @@ export const getImageDedupeKey = (img: any) => {
     const pathname = normalizeImageVariantPath(decodeURIComponent(parsed.pathname));
     const prefix = isSequence ? 'sequence' : 'url';
 
-    return `${prefix}:${host}${pathname}${parsed.search}`;
+    return `${prefix}:${host}${pathname}${parsed.search}${symbol}`;
   } catch {
     const clean = rawUrl
       .split('#')[0]
@@ -275,9 +278,10 @@ const looksLikeGeneratedFilename = (name: string) => {
 
 /** Human-readable label for cards (prefer original URL filename over cache hash names). */
 export const getImageDisplayName = (
-  img: { url?: string; cachedUrl?: string; filename?: string; name?: string; alt?: string },
+  img: { url?: string; cachedUrl?: string; assetName?: string; filename?: string; name?: string; alt?: string },
   index = 0
 ) => {
+  if (img.assetName) return img.assetName;
   const candidates = [
     String(img?.filename || '').trim(),
     String(img?.name || '').trim(),
@@ -362,9 +366,10 @@ export const formatImageMetaLine = (img: { width?: number; height?: number; byte
 };
 
 export const imageFilenameBase = (
-  img: { url?: string; cachedUrl?: string; filename?: string; name?: string },
+  img: { url?: string; cachedUrl?: string; assetName?: string; filename?: string; name?: string },
   index = 0
 ) => {
+  if (img.assetName) return img.assetName.replace(/\.[^/.]+$/, '');
   const remote = String(img?.url || '').trim();
   if (remote.startsWith('data:image/svg')) return `inline-svg-${index + 1}`;
   const fromUrl = filenameFromUrlPath(remote);
@@ -378,9 +383,10 @@ export const imageFilenameBase = (
 };
 
 export const getOriginalImageDownloadFilename = (
-  img: { url?: string; filename?: string; name?: string; type?: string },
+  img: { url?: string; assetName?: string; filename?: string; name?: string; type?: string },
   index = 0
 ) => {
+  if (img.assetName) return img.assetName;
   const fromUrl = filenameFromUrlPath(String(img?.url || '').trim());
   if (fromUrl && fromUrl.includes('.')) return fromUrl;
   const metadata = String(img?.filename || img?.name || '').trim();
@@ -407,7 +413,7 @@ export const buildImageZipItem = (
     type?: string;
     mimeType?: string;
     status?: string;
-    filename?: string;
+    assetName?: string; filename?: string;
     name?: string;
     id?: string;
   },
@@ -431,7 +437,7 @@ export const buildImageZipItem = (
     toFormat?: string;
     selectedFormat?: string;
     filenameBase?: string;
-    filename?: string;
+    assetName?: string; filename?: string;
     originalUrl?: string;
     metadataFilename?: string;
     mimeType?: string;

@@ -87,6 +87,23 @@ support remains separate; no proxy service or credentials are bundled.
 | `npm run dist:win` | Build a Windows NSIS installer |
 | `npm run dist:linux` | Build a Linux AppImage |
 
+## 360° color sequences
+
+Use **Extract from Chrome** and let the exterior viewer load. Lexus visualizers
+are detected from their rendered frame images and nearby color swatches. The
+extractor checks each color/frame URL before adding it to **360 Image Sequences**;
+unavailable variants are omitted. The NX Hybrid viewer exposes eight colors and
+18 angles per color. Colors and frame counts come from the page, not a fixed list.
+
+Select the sequences in Images and use **Download Selected**. Each sequence gets
+its own ZIP folder, so equal frame numbers from different colors or wheels do not
+collide. Static extraction can discover these variants only when the HTML already
+contains the viewer markup. This complements the existing numbered-sequence
+support; it does not reconstruct WebGL-only vehicle models.
+
+Run `npm run smoke:360` for offline regressions, or
+`QC_LIVE=1 npm run smoke:360` to also verify JPEG downloads for all eight NX colors.
+
 ## Project Map
 
 This is the working application folder. Keep the source, runtime tools, and

@@ -1,0 +1,754 @@
+{
+  "hideEmptyContext": false,
+  "id": "model_visualizer_interior",
+  "selectedTabId": "hybrid",
+  "v2Visualizer": true,
+  "tabVariant": "pill",
+  "tabTheme": "lightGray",
+  "expandEnabled": false,
+  "fullWidthImages": true,
+  "hasCategoryTabs": true,
+  "overlaySwatchDrawerIsOpenedLabel": "CLOSE",
+  "overlaySwatchDrawerIsClosedLabel": "OPEN",
+  "cursorIconSlides": {
+    "iconDefaultValue": false
+  },
+  "cursorIcon360": {
+    "iconDefaultValue": false
+  },
+  "cursorIconPano": {
+    "iconDefaultValue": false
+  },
+  "toggleIconSlides": {
+    "iconDefaultValue": false
+  },
+  "toggleIconPano": {
+    "iconDefaultValue": false
+  },
+  "angleImageInfos": [],
+  "visualizerTabs": [
+    {
+      "id": "nx",
+      "label": "NX",
+      "visualizerManifestTabId": "nx",
+      "selected": false,
+      "visualizerTabBespokeFields": {
+        "basePrice": 0,
+        "handingPrice": 0,
+        "cta": {
+          "theme": "PrimaryWhite",
+          "type": "button",
+          "target": "_blank",
+          "isActive": false,
+          "disabled": false
+        }
+      },
+      "visualizerInnerTabs": [
+        {
+          "id": "interior",
+          "label": "INTERIOR",
+          "type": "interior",
+          "numAngles": 6,
+          "is360Variant": false,
+          "slideIndicatorType": "DOTS",
+          "assetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350/interior/{{activeInteriorSwatch}}",
+          "videoAsset": {},
+          "panoAssetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350/interior/{{activeInteriorSwatch}}/{{pano}}/{position}.png",
+          "panoViews": [
+            {
+              "id": "front",
+              "labelTitle": "View 1",
+              "startingXCoord": -14,
+              "startingYCoord": 360,
+              "degreesLeft": 0,
+              "degreesRight": 0,
+              "startingZoomPercentage": 1.0,
+              "disclaimer": {}
+            }
+          ],
+          "mobileImageProfile": "extend=-378,-507,-378,-507&hei=600&wid=750&qlt=100",
+          "desktopImageProfile": "extend=-17,-585,-17,-585&hei=628&wid=1440&qlt=100",
+          "overlayMobileImageProfile": "extend=-377,-334,-377,-334&hei=800&wid=750&qlt=100",
+          "overlayDesktopImageProfile": "extend=-5,-454,-11,-451&hei=1080&wid=1920&qlt=100",
+          "panoMobileImageProfile": "wid=1000",
+          "panoDesktopImageProfile": "wid=2000",
+          "panoOverlayMobileImageProfile": "wid=1000",
+          "panoOverlayDesktopImageProfile": "wid=2000",
+          "startAngleNum": 0,
+          "startingModifierIndex": 0,
+          "startingSwatchIndex": 0,
+          "swatches": [
+            {
+              "id": "black-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA22"
+              ],
+              "label": "Black NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:d8cef4aa-fc24-471f-8d6f-4a39e5f8e563/as/EA22.png?width=120&height=120&dpr=2",
+                    "alt": "Black NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA42"
+              ],
+              "label": "Palomino NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:cec79d36-d327-43f7-9ab9-210ea5ce2788/as/EA42.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA32"
+              ],
+              "label": "Rioja Red NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:1a9098f2-1ef3-4fcb-9481-c923c5e8ce0e/as/EA32.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "black-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA21"
+              ],
+              "label": "Black NuLuxe and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:0edd5a62-a598-4903-9fe8-ecf5b38c55fa/as/EA21.png?width=120&height=120&dpr=2",
+                    "alt": "Black NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA41"
+              ],
+              "label": "Palomino NuLuxe and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bc6b187e-ad6b-4472-bf5c-982d62ca452e/as/EA41.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA31"
+              ],
+              "label": "Rioja Red NuLuxe and Black Prism trim  (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:225fa1ff-e981-4345-821c-2a9b70836185/as/EA31.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "black-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA20"
+              ],
+              "label": "Black leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:824a61c5-3084-429b-b108-ea78b73f2337/as/LA20.png?width=120&height=120&dpr=2",
+                    "alt": "Black leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "macadamia-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA03",
+                "LA00"
+              ],
+              "label": "Macadamia leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bec310dd-6005-4439-8680-2c96501e74a0/as/LA03.png?width=120&height=120&dpr=2",
+                    "alt": "Macadamia leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA40"
+              ],
+              "label": "Palomino leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:545bfcf7-d64f-4295-b665-30807bdde19f/as/LA40.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA30"
+              ],
+              "label": "Rioja Red leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:cbe74349-62eb-4f24-ab95-a4db887fec84/as/LA30.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "nxh",
+      "label": "NX HYBRID",
+      "visualizerManifestTabId": "nxh",
+      "selected": false,
+      "visualizerTabBespokeFields": {
+        "basePrice": 0,
+        "handingPrice": 0,
+        "cta": {
+          "theme": "PrimaryWhite",
+          "type": "button",
+          "target": "_blank",
+          "isActive": false,
+          "disabled": false
+        }
+      },
+      "visualizerInnerTabs": [
+        {
+          "id": "interior",
+          "label": "INTERIOR",
+          "type": "interior",
+          "numAngles": 6,
+          "is360Variant": false,
+          "slideIndicatorType": "DOTS",
+          "assetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350h/interior/{{activeInteriorSwatch}}",
+          "videoAsset": {},
+          "panoAssetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350h/interior/{{activeInteriorSwatch}}/{{pano}}/{position}.png",
+          "panoViews": [
+            {
+              "id": "front",
+              "labelTitle": "View 1",
+              "startingXCoord": -14,
+              "startingYCoord": 360,
+              "degreesLeft": 0,
+              "degreesRight": 0,
+              "startingZoomPercentage": 1.0,
+              "disclaimer": {}
+            }
+          ],
+          "mobileImageProfile": "extend=-378,-507,-378,-507&hei=600&wid=750&qlt=100",
+          "desktopImageProfile": "extend=-17,-585,-17,-585&hei=628&wid=1440&qlt=100",
+          "overlayMobileImageProfile": "extend=-377,-334,-377,-334&hei=800&wid=750&qlt=100",
+          "overlayDesktopImageProfile": "extend=-5,-454,-11,-451&hei=1080&wid=1920&qlt=100",
+          "panoMobileImageProfile": "wid=1000",
+          "panoDesktopImageProfile": "wid=2000",
+          "panoOverlayMobileImageProfile": "wid=1000",
+          "panoOverlayDesktopImageProfile": "wid=2000",
+          "startAngleNum": 0,
+          "startingModifierIndex": 0,
+          "startingSwatchIndex": 0,
+          "swatches": [
+            {
+              "id": "black-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA22"
+              ],
+              "label": "Black NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:d8cef4aa-fc24-471f-8d6f-4a39e5f8e563/as/EA22.png?width=120&height=120&dpr=2",
+                    "alt": "Black NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA42"
+              ],
+              "label": "Palomino NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:cec79d36-d327-43f7-9ab9-210ea5ce2788/as/EA42.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-nuluxe-and-stippled-black-trim",
+              "productCodes": [
+                "EA32"
+              ],
+              "label": "Rioja Red NuLuxe and Stippled Black trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:1a9098f2-1ef3-4fcb-9481-c923c5e8ce0e/as/EA32.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red NuLuxe\u00ae and Stippled Black trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "black-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA21"
+              ],
+              "label": "Black NuLuxe and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:0edd5a62-a598-4903-9fe8-ecf5b38c55fa/as/EA21.png?width=120&height=120&dpr=2",
+                    "alt": "Black NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA41"
+              ],
+              "label": "Palomino NuLuxe and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bc6b187e-ad6b-4472-bf5c-982d62ca452e/as/EA41.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-nuluxe-and-black-prism-trim",
+              "productCodes": [
+                "EA31"
+              ],
+              "label": "Rioja Red NuLuxe and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:225fa1ff-e981-4345-821c-2a9b70836185/as/EA31.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red NuLuxe\u00ae and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "black-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA20"
+              ],
+              "label": "Black leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:824a61c5-3084-429b-b108-ea78b73f2337/as/LA20.png?width=120&height=120&dpr=2",
+                    "alt": "Black leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "macadamia-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA03",
+                "LA00"
+              ],
+              "label": "Macadamia leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bec310dd-6005-4439-8680-2c96501e74a0/as/LA03.png?width=120&height=120&dpr=2",
+                    "alt": "Macadamia leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA40"
+              ],
+              "label": "Palomino leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:545bfcf7-d64f-4295-b665-30807bdde19f/as/LA40.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA30"
+              ],
+              "label": "Rioja Red leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:cbe74349-62eb-4f24-ab95-a4db887fec84/as/LA30.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "nxphev",
+      "label": "NX PLUG-IN HYBRID",
+      "visualizerManifestTabId": "nxphev",
+      "selected": false,
+      "visualizerTabBespokeFields": {
+        "basePrice": 0,
+        "handingPrice": 0,
+        "cta": {
+          "theme": "PrimaryWhite",
+          "type": "button",
+          "target": "_blank",
+          "isActive": false,
+          "disabled": false
+        }
+      },
+      "visualizerInnerTabs": [
+        {
+          "id": "interior",
+          "label": "INTERIOR",
+          "type": "interior",
+          "numAngles": 6,
+          "is360Variant": false,
+          "slideIndicatorType": "DOTS",
+          "assetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/450h-plus/interior/{{activeInteriorSwatch}}",
+          "videoAsset": {},
+          "panoAssetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/450h-plus/interior/{{activeInteriorSwatch}}/{{pano}}/{position}.png",
+          "panoViews": [
+            {
+              "id": "front",
+              "labelTitle": "View 1",
+              "startingXCoord": -14,
+              "startingYCoord": 360,
+              "degreesLeft": 0,
+              "degreesRight": 0,
+              "startingZoomPercentage": 1.0,
+              "disclaimer": {}
+            }
+          ],
+          "mobileImageProfile": "extend=-378,-507,-378,-507&hei=600&wid=750&qlt=100",
+          "desktopImageProfile": "extend=-17,-585,-17,-585&hei=628&wid=1440&qlt=100",
+          "overlayMobileImageProfile": "extend=-377,-334,-377,-334&hei=800&wid=750&qlt=100",
+          "overlayDesktopImageProfile": "extend=-5,-454,-11,-451&hei=1080&wid=1920&qlt=100",
+          "panoMobileImageProfile": "wid=1000",
+          "panoDesktopImageProfile": "wid=2000",
+          "panoOverlayMobileImageProfile": "wid=1000",
+          "panoOverlayDesktopImageProfile": "wid=2000",
+          "startAngleNum": 0,
+          "startingModifierIndex": 0,
+          "startingSwatchIndex": 0,
+          "swatches": [
+            {
+              "id": "black-leather-and-black-prism-trim",
+              "productCodes": [
+                "LA21"
+              ],
+              "label": "Black leather and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:0edd5a62-a598-4903-9fe8-ecf5b38c55fa/as/EA21.png?width=120&height=120&dpr=2",
+                    "alt": "Black leather and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-leather-and-black-prism-trim",
+              "productCodes": [
+                "LA41"
+              ],
+              "label": "Palomino leather and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bc6b187e-ad6b-4472-bf5c-982d62ca452e/as/EA41.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino leather and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-leather-and-black-prism-trim",
+              "productCodes": [
+                "LA31"
+              ],
+              "label": "Rioja Red leather and Black Prism trim (Premium)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:225fa1ff-e981-4345-821c-2a9b70836185/as/EA31.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red leather and Black Prism trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "black-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA20"
+              ],
+              "label": "Black leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:824a61c5-3084-429b-b108-ea78b73f2337/as/LA20.png?width=120&height=120&dpr=2",
+                    "alt": "Black leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "macadamia-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA03",
+                "LA00"
+              ],
+              "label": "Macadamia leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:bec310dd-6005-4439-8680-2c96501e74a0/as/LA03.png?width=120&height=120&dpr=2",
+                    "alt": "Macadamia leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "palomino-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA40"
+              ],
+              "label": "Palomino leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:545bfcf7-d64f-4295-b665-30807bdde19f/as/LA40.png?width=120&height=120&dpr=2",
+                    "alt": "Palomino leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "rioja-red-leather-and-black-open-pore-wood-trim",
+              "productCodes": [
+                "LA30"
+              ],
+              "label": "Rioja Red leather and Black Open-Pore Wood trim (Luxury)",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:cbe74349-62eb-4f24-ab95-a4db887fec84/as/LA30.png?width=120&height=120&dpr=2",
+                    "alt": "Rioja Red leather and Black Open-Pore Wood trim"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fsport",
+      "label": "NX F SPORT",
+      "visualizerManifestTabId": "fsport",
+      "selected": false,
+      "visualizerTabBespokeFields": {
+        "basePrice": 0,
+        "handingPrice": 0,
+        "cta": {
+          "theme": "PrimaryWhite",
+          "type": "button",
+          "target": "_blank",
+          "isActive": false,
+          "disabled": false
+        }
+      },
+      "visualizerInnerTabs": [
+        {
+          "id": "interior",
+          "label": "INTERIOR",
+          "type": "interior",
+          "numAngles": 6,
+          "is360Variant": false,
+          "slideIndicatorType": "DOTS",
+          "assetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350-f-sport/interior/{{activeInteriorSwatch}}",
+          "videoAsset": {},
+          "panoAssetPathStructure": "{{dynamicMediaURL}}/lexus/images/models/nx/2026/visualizer-1/350-f-sport/interior/{{activeInteriorSwatch}}/{{pano}}/{position}.png",
+          "panoViews": [
+            {
+              "id": "front",
+              "labelTitle": "View 1",
+              "startingXCoord": -14,
+              "startingYCoord": 360,
+              "degreesLeft": 0,
+              "degreesRight": 0,
+              "startingZoomPercentage": 1.0,
+              "disclaimer": {}
+            }
+          ],
+          "mobileImageProfile": "extend=-378,-507,-378,-507&hei=600&wid=750&qlt=100",
+          "desktopImageProfile": "extend=-17,-585,-17,-585&hei=628&wid=1440&qlt=100",
+          "overlayMobileImageProfile": "extend=-377,-334,-377,-334&hei=800&wid=750&qlt=100",
+          "overlayDesktopImageProfile": "extend=-5,-454,-11,-451&hei=1080&wid=1920&qlt=100",
+          "panoMobileImageProfile": "wid=1000",
+          "panoDesktopImageProfile": "wid=2000",
+          "panoOverlayMobileImageProfile": "wid=1000",
+          "panoOverlayDesktopImageProfile": "wid=2000",
+          "startAngleNum": 0,
+          "startingModifierIndex": 0,
+          "startingSwatchIndex": 0,
+          "swatches": [
+            {
+              "id": "black-nuluxe-and-dark-graphite-aluminum-trim",
+              "productCodes": [
+                "EB23"
+              ],
+              "label": "Black NuLuxe and Dark Graphite Aluminum trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:c16873c1-9a76-424b-8c42-fb77ed1c805c/as/EB23.png?width=120&height=120&dpr=2",
+                    "alt": "Black NuLuxe\u00ae and Dark Graphite Aluminum trim"
+                  }
+                }
+              }
+            },
+            {
+              "id": "circuit-red-nuluxe-and-dark-graphite-aluminum-trim",
+              "productCodes": [
+                "EB33"
+              ],
+              "label": "Circuit Red NuLuxe and Dark Graphite Aluminum trim",
+              "asset": {
+                "image": {
+                  "eagerLoad": false,
+                  "desktop": {
+                    "src": "https://delivery.lcom.assetscs.lexus.com/adobe/assets/urn:aaid:aem:32ef86d3-4adb-43f0-9ac5-a30b8f2c7b48/as/EB33.png?width=120&height=120&dpr=2",
+                    "alt": "Circuit Red NuLuxe\u00ae and Dark Graphite Aluminum trim"
+                  }
+                }
+              }
+            },
+            {}
+          ]
+        }
+      ]
+    }
+  ],
+  "toggleList": [
+    {
+      "id": "360GalleryToggle",
+      "defaultValue": false,
+      "valueOffLabel": "360&deg; View",
+      "valueOnLabel": "Gallery View",
+      "iconOn": {
+        "color": "#000",
+        "src": "/content/dam/lexus/images/icons/visualizer/Gallery-icon.svg",
+        "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 39.3 29.19\">\n  <path\n    d=\"m29.93,24.23h-15.74c-1.69,0-3.07-1.35-3.07-3.01v-7.07c0-1.66,1.38-3.01,3.07-3.01h3.06c.3-1.35,1.53-2.36,3-2.36h3.63c1.47,0,2.7,1.01,3,2.36h3.06c1.69,0,3.07,1.35,3.07,3.01v7.07c0,1.66-1.38,3.01-3.07,3.01Zm-15.74-11.8c-.98,0-1.78.77-1.78,1.72v7.07c0,.95.8,1.72,1.78,1.72h15.74c.98,0,1.78-.77,1.78-1.72v-7.07c0-.95-.8-1.72-1.78-1.72h-4.28v-.64c0-.95-.8-1.72-1.78-1.72h-3.63c-.98,0-1.78.77-1.78,1.72v.64h-4.28Z\" />\n  <path\n    d=\"m22.05,21.61c-2.5,0-4.53-2.03-4.53-4.53s2.03-4.53,4.53-4.53,4.53,2.03,4.53,4.53-2.03,4.53-4.53,4.53Zm0-7.77c-1.79,0-3.24,1.45-3.24,3.24s1.45,3.24,3.24,3.24,3.24-1.45,3.24-3.24-1.45-3.24-3.24-3.24Z\" />\n  <circle cx=\"29.16\" cy=\"15.25\" r=\"1.32\" />\n  <path\n    d=\"m36.49,4.15V0H0v26.38h4.7v2.81h34.6V4.15h-2.81ZM1.25,25.13V1.25h33.99v2.9H4.7v20.98H1.25Zm36.8,2.81H5.95V5.4h32.1v22.53Z\" />\n</svg>"
+      },
+      "iconOff": {
+        "color": "#000",
+        "src": "/content/dam/lexus/images/icons/visualizer/360-icon.svg",
+        "markup": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 34.81 20.86\">\n  <path d=\"m2.69,12.23l1.39.49.43-2.17-2.22.38L.06,11.32l1.7.59C.69,12.78.09,13.74,0,14.76c-.13,1.73,1.3,3.38,4,4.64,2.71,1.26,6.38,1.41,10.34,1.46v-.12c-3.44-.06-7.13-.78-9.66-1.95C.64,16.9.12,14.42,2.69,12.23Z\"/>\n  <path d=\"m34.8,6.1c.13-1.73-1.3-3.38-4-4.64C28.09.2,24.42.06,20.46,0v.12c3.44.06,7.13.78,9.66,1.95,4.06,1.89,4.58,4.38,2.01,6.56l-1.39-.49-.43,2.17,2.22-.38,2.22-.38-1.7-.59c1.06-.87,1.66-1.84,1.74-2.85Z\"/>\n  <polygon points=\"30.31 10.31 30.31 10.31 30.3 10.31 30.31 10.31\"/>\n  <path d=\"m10.84,13.03c-.8,0-1.53-.27-2.03-.63l-.55.78c.51.4,1.44.74,2.59.74,2.14,0,2.7-1.32,2.7-2.27s-.49-1.5-1.14-1.81c.48-.25.91-.8.91-1.48s-.33-1.98-2.3-1.98c-1.49,0-2.21.87-2.47,1.45l.83.44c.26-.45.78-.98,1.63-.98,1.07,0,1.33.72,1.33,1.04,0,.69-.61,1.11-1.32,1.11h-.92v.88h.91c.75,0,1.54.32,1.54,1.32,0,.68-.52,1.39-1.71,1.39Z\"/>\n  <path d=\"m22.56,6.38c-1.76,0-2.66,1.65-2.66,3.79,0,2.52,1.18,3.75,2.61,3.75,1.78,0,2.67-1.65,2.67-3.81,0-2.03-.8-3.73-2.62-3.73Zm-.05,6.6c-1.06,0-1.56-1.48-1.56-2.82s.42-2.84,1.59-2.84c1.23,0,1.58,1.55,1.58,2.85s-.37,2.81-1.61,2.81Z\"/>\n  <path d=\"m16.9,9.1c-.42,0-.87.18-1.19.51.17-.43.9-1.54,1.02-1.74l.85-1.37h-1.1l-1.01,1.67c-.44.75-1.02,1.86-1.02,3.25,0,1.57,1.04,2.5,2.35,2.5,1.43,0,2.38-1.08,2.38-2.37s-.81-2.45-2.28-2.45Zm-.07,3.98c-.75,0-1.39-.63-1.39-1.61,0-.83.56-1.52,1.4-1.52.75,0,1.35.63,1.35,1.58,0,.83-.54,1.55-1.36,1.55Z\"/>\n  <path d=\"m26.81,4.86c-.83,0-1.5.67-1.5,1.5s.67,1.5,1.5,1.5,1.5-.67,1.5-1.5-.67-1.5-1.5-1.5Zm0,2.36c-.47,0-.86-.38-.86-.86s.38-.86.86-.86.86.38.86.86-.38.86-.86.86Z\"/>\n</svg>"
+      }
+    },
+    {
+      "id": "ViewsToggle",
+      "defaultValue": false,
+      "valueOffLabel": "View 1",
+      "valueOnLabel": "View 2",
+      "iconOn": {
+        "color": "#000",
+        "src": "/content/dam/lexus/images/icons/visualizer/View-2.svg",
+        "markup": "<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" x=\"0px\" y=\"0px\"\n\t viewBox=\"0 0 37 10\" style=\"enable-background:new 0 0 37 10;\" xml:space=\"preserve\">\n<g>\n\t<path d=\"M36.4,9.5h-5.9l3.8-4.8c0.5-0.6,0.6-1.1,0.6-1.4c0-1.2-1-1.6-1.6-1.6c-1.2,0-1.6,0.8-1.6,1.7h-1.2c0-1.9,1.2-2.9,2.8-2.9\n\t\tc1.4,0,2.8,0.8,2.8,2.7c0,0.6-0.2,1.3-0.8,2l-2.5,3.1h3.5V9.5z\"/>\n\t<path d=\"M27.7,0.7l-2.5,8.8h-0.8l-1.8-5.9c-0.1-0.2-0.1-0.4-0.1-0.4s0,0.3-0.1,0.4l-1.8,5.9h-0.8l-2.3-8.8h1.2l1.5,5.8\n\t\tc0,0.2,0.1,0.4,0.1,0.4s0-0.2,0.1-0.4l1.8-5.8H23l1.8,5.8c0,0.1,0.1,0.4,0.1,0.4s0-0.2,0.1-0.4l1.6-5.8H27.7z\"/>\n\t<path d=\"M16.4,9.5h-5.2V0.7h4.9v1.1h-3.7v2.8h3.6v1.1h-3.6v2.6h3.9V9.5z\"/>\n\t<path d=\"M9.5,9.5H8.2V0.7h1.2V9.5z\"/>\n\t<path d=\"M7,0.7L3.9,9.5H3.2L0.1,0.7h1.2l2.2,6.4c0,0.1,0.1,0.3,0.1,0.3s0-0.2,0.1-0.3l2.2-6.4H7z\"/>\n</g>\n</svg>\n"
+      },
+      "iconOff": {
+        "color": "#000",
+        "src": "/content/dam/lexus/images/icons/visualizer/View-1.svg",
+        "markup": "<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" x=\"0px\" y=\"0px\"\n\t viewBox=\"0 0 37 10\" style=\"enable-background:new 0 0 37 10;\" xml:space=\"preserve\">\n<path d=\"M8.3,0.5L5,10H4.2L0.9,0.5h1.3l2.4,6.9c0,0.1,0.1,0.3,0.1,0.3s0-0.2,0.1-0.3l2.4-6.9H8.3z M10.9,10H9.6V0.5h1.3V10z\n\t M18.4,10h-5.6V0.5h5.3v1.2h-4v3h3.9V6h-3.9v2.8h4.3V10z M30.6,0.5L27.9,10H27l-1.9-6.3C25,3.4,25,3.2,25,3.2S25,3.5,24.9,3.7\n\tl-2,6.3h-0.9l-2.5-9.5h1.3l1.7,6.2c0,0.2,0.1,0.4,0.1,0.4s0.1-0.2,0.1-0.4l2-6.2h0.9l1.9,6.3c0,0.1,0.1,0.4,0.1,0.4s0-0.2,0.1-0.4\n\tl1.8-6.3H30.6z M36.6,10h-1.3V2.5c-0.3,0.3-1.3,0.8-1.9,0.8V2.1c0.8-0.1,1.9-0.7,2.4-1.6h0.9V10z\"/>\n</svg>\n"
+      }
+    }
+  ],
+  ":type": "lexus/components/visualizer"
+}

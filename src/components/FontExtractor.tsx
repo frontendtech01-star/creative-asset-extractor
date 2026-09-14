@@ -1,3 +1,4 @@
+import { mergeExtractionFonts } from '../lib/extractionFontIdentity';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Download, Search, Type } from 'lucide-react';
 import { apiFetch, apiUrl } from '../lib/api';
@@ -233,52 +234,7 @@ export default function FontExtractor({
     }
   };
 
-  const displayFonts = useMemo(() => {
-    const byUrl = new Map<string, any>();
-
-    fonts.forEach((font) => {
-      const selectionKey = getFontSelectionKey(font);
-      if (!selectionKey) return;
-
-      const urlKey = selectionKey.toLowerCase();
-      const current = byUrl.get(urlKey);
-      const currentScore = current
-        ? scoreFontRecord(current) +
-          (getFontLogicalKey(current) ? 1000 : 0) +
-          (String(current?.family || '').trim() ? 50 : 0)
-        : -1;
-      const nextScore =
-        scoreFontRecord(font) +
-        (getFontLogicalKey(font) ? 1000 : 0) +
-        (String(font?.family || '').trim() ? 50 : 0);
-
-      if (!current || nextScore > currentScore) {
-        byUrl.set(urlKey, font);
-      }
-    });
-
-    const byLogicalKey = new Map<string, any>();
-    const passthrough: any[] = [];
-
-    Array.from(byUrl.values()).forEach((font) => {
-      const logicalKey = getFontLogicalKey(font);
-
-      if (!logicalKey) {
-        passthrough.push(font);
-        return;
-      }
-
-      const current = byLogicalKey.get(logicalKey);
-      const currentScore = current ? scoreFontRecord(current) : -1;
-      const nextScore = scoreFontRecord(font);
-
-      if (!current || nextScore > currentScore) {
-        byLogicalKey.set(logicalKey, font);
-      }
-    });
-
-    return [...byLogicalKey.values(), ...passthrough];
-  }, [fonts]);
+  const displayFonts = useMemo(() => mergeExtractionFonts(fonts), [fonts]);
 
   useEffect(() => {
     onValidCountChange?.(displayFonts.length);

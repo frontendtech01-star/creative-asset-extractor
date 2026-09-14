@@ -1,3 +1,5 @@
+import { mergeExtractionFonts } from './lib/extractionFontIdentity';
+import { mergeExtractionImages } from './lib/extractionImageIdentity';
 import React, { Suspense, lazy, useState } from 'react';
 import { CheckCircle2, Image as ImageIcon, Type, Palette, Sparkles, Download, Globe, Video, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { WebsiteExtracterToolbar } from './components/WebsitePreviewPanel';
@@ -242,53 +244,7 @@ const preloadExtractorChunks = () => {
   if (SHOW_CREATIVE_BRIEF) void import('./components/AiInsights');
 };
 
-const getImageDimensionHint = (item: any) => {
-  let width = Math.max(0, Number(item?.width || 0));
-  let height = Math.max(0, Number(item?.height || 0));
-  const rawUrl = String(item?.url || item?.src || '').trim();
-
-  try {
-    const parsed = new URL(rawUrl);
-    width = width || Math.max(0, Number(parsed.searchParams.get('width') || parsed.searchParams.get('w') || 0));
-    height = height || Math.max(0, Number(parsed.searchParams.get('height') || parsed.searchParams.get('h') || 0));
-
-    const sizeMatch = parsed.pathname.match(/[-_](\d{2,5})x(\d{2,5})(?=\.[a-z0-9]+$)/i);
-    if (sizeMatch) {
-      width = width || Number(sizeMatch[1] || 0);
-      height = height || Number(sizeMatch[2] || 0);
-    }
-  } catch {
-    // Extracted width/height remains the fallback.
-  }
-
-  return { width, height };
-};
-
-const getImageMergeQualityScore = (item: any) => {
-  const { width, height } = getImageDimensionHint(item);
-  const dimensionScore = width > 0 && height > 0 ? width * height : Math.max(width, height) ** 2;
-  const bytes = Math.max(0, Number(item?.bytes || item?.size || 0));
-  const cachedBonus = String(item?.cachedUrl || '').trim() ? 10 : 0;
-  return dimensionScore * 1000 + bytes + cachedBonus;
-};
-
-const mergeImageAssets = (images: any[] = [], icons: any[] = []) => {
-  const seen = new Map<string, any>();
-
-  [...images, ...icons].forEach((item) => {
-    const rawUrl = String(item?.url || item?.src || '').trim();
-    if (!rawUrl) return;
-
-    const key = getImageDedupeKey(item) || `url:${rawUrl}`;
-    const current = seen.get(key);
-
-    if (!current || getImageMergeQualityScore(item) > getImageMergeQualityScore(current)) {
-      seen.set(key, item);
-    }
-  });
-
-  return Array.from(seen.values());
-};
+const mergeImageAssets = (images: any[] = [], icons: any[] = []) => mergeExtractionImages([...images, ...icons]);
 
 const normalizeFontUrlKey = (font: any) => {
   const raw = String(font?.url || font?.cachedUrl || '').trim();
@@ -333,40 +289,7 @@ const expandKnownVariableFontInstances = (fonts: any[] = []) =>
     );
   });
 
-const mergeFontAssets = (left: any[] = [], right: any[] = []) => {
-  const byUrl = new Map<string, any>();
-
-  expandKnownVariableFontInstances([...left, ...right]).forEach((font) => {
-    // Variable-font instances intentionally share one source URL.  Keep each
-    // requested weight/style instance instead of letting the first URL bucket
-    // collapse the entire family into one card.
-    const urlKey = getFontSelectionKey(font) || normalizeFontUrlKey(font);
-    if (!urlKey) return;
-
-    const current = byUrl.get(urlKey);
-    if (!current || getFontMergeQualityScore(font) > getFontMergeQualityScore(current)) {
-      byUrl.set(urlKey, font);
-    }
-  });
-
-  const byLogicalKey = new Map<string, any>();
-  const passthrough: any[] = [];
-
-  Array.from(byUrl.values()).forEach((font) => {
-    const logicalKey = getFontLogicalKey(font);
-    if (!logicalKey) {
-      passthrough.push(font);
-      return;
-    }
-
-    const current = byLogicalKey.get(logicalKey);
-    if (!current || getFontMergeQualityScore(font) > getFontMergeQualityScore(current)) {
-      byLogicalKey.set(logicalKey, font);
-    }
-  });
-
-  return [...byLogicalKey.values(), ...passthrough];
-};
+const mergeFontAssets = (left: any[] = [], right: any[] = []) => mergeExtractionFonts(expandKnownVariableFontInstances([...left, ...right]));
 
 const isTechnicalPlayerResourceUrl = (rawUrl: string) => {
   const value = String(rawUrl || '').trim().toLowerCase();
